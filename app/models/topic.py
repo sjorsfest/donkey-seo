@@ -1,0 +1,105 @@
+"""Topic cluster model (Step 6 output)."""
+
+from __future__ import annotations
+
+import uuid
+from typing import TYPE_CHECKING
+
+from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base, TimestampMixin, UUIDMixin
+
+if TYPE_CHECKING:
+    from app.models.content import ContentBrief
+    from app.models.keyword import Keyword
+    from app.models.project import Project
+
+
+class Topic(Base, UUIDMixin, TimestampMixin):
+    """Clustered topic (Step 6 output)."""
+
+    __tablename__ = "topics"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parent_topic_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("topics.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pillar_seed_topic_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("seed_topics.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Basic info
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Clustering data
+    cluster_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    cluster_coherence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    primary_keyword_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    # Dominant characteristics
+    dominant_intent: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    dominant_page_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    funnel_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Aggregated metrics
+    total_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_difficulty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    keyword_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    estimated_demand: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Step 7: Priority
+    priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    priority_factors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    recommended_url_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    recommended_publish_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_money_pages: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    expected_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Step 10: Cannibalization
+    cannibalization_risk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    overlapping_topic_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+
+    # Notes
+    cluster_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Relationships
+    project: Mapped[Project] = relationship("Project", back_populates="topics")
+    keywords: Mapped[list[Keyword]] = relationship(
+        "Keyword",
+        back_populates="topic",
+        foreign_keys="Keyword.topic_id",
+    )
+    children: Mapped[list[Topic]] = relationship(
+        "Topic",
+        back_populates="parent",
+        foreign_keys=[parent_topic_id],
+    )
+    parent: Mapped[Topic | None] = relationship(
+        "Topic",
+        back_populates="children",
+        remote_side="Topic.id",
+        foreign_keys=[parent_topic_id],
+    )
+    content_briefs: Mapped[list[ContentBrief]] = relationship(
+        "ContentBrief",
+        back_populates="topic",
+    )
+
+    def __repr__(self) -> str:
+        return f"<Topic {self.name}>"

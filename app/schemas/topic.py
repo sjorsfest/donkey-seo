@@ -1,0 +1,104 @@
+"""Topic schemas."""
+
+from datetime import datetime
+
+from pydantic import BaseModel
+
+
+class TopicCreate(BaseModel):
+    """Schema for creating a topic."""
+
+    name: str
+    description: str | None = None
+    parent_topic_id: str | None = None
+
+
+class TopicUpdate(BaseModel):
+    """Schema for updating a topic."""
+
+    name: str | None = None
+    description: str | None = None
+    parent_topic_id: str | None = None
+    priority_rank: int | None = None
+
+
+class TopicResponse(BaseModel):
+    """Schema for topic response."""
+
+    id: str
+    name: str
+    description: str | None
+    parent_topic_id: str | None
+
+    # Clustering data
+    cluster_method: str | None
+    cluster_coherence: float | None
+    primary_keyword_id: str | None
+
+    # Characteristics
+    dominant_intent: str | None
+    dominant_page_type: str | None
+    funnel_stage: str | None
+
+    # Aggregated metrics
+    total_volume: int | None
+    avg_difficulty: float | None
+    keyword_count: int
+
+    # Priority
+    priority_rank: int | None
+    priority_score: float | None
+    expected_role: str | None
+
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TopicDetailResponse(TopicResponse):
+    """Detailed topic response."""
+
+    priority_factors: dict | None
+    recommended_url_type: str | None
+    recommended_publish_order: int | None
+    target_money_pages: list[str] | None
+    cannibalization_risk: float | None
+    overlapping_topic_ids: list[str] | None
+    cluster_notes: str | None
+
+
+class TopicListResponse(BaseModel):
+    """Schema for topic list response."""
+
+    items: list[TopicResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class TopicHierarchyResponse(BaseModel):
+    """Schema for topic hierarchy response."""
+
+    id: str
+    name: str
+    keyword_count: int
+    priority_rank: int | None
+    children: list["TopicHierarchyResponse"]
+
+    model_config = {"from_attributes": True}
+
+
+class TopicMergeRequest(BaseModel):
+    """Schema for merging topics."""
+
+    source_topic_ids: list[str]
+    target_name: str
+    target_description: str | None = None
+
+
+class TopicSplitRequest(BaseModel):
+    """Schema for splitting a topic."""
+
+    keyword_groups: list[list[str]]
+    new_topic_names: list[str]
