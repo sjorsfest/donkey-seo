@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -10,7 +9,13 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import (
+    KeywordCreateDTO,
+    KeywordPatchDTO,
+    SeedTopicCreateDTO,
+    SeedTopicPatchDTO,
+)
 
 if TYPE_CHECKING:
     from app.models.project import Project
@@ -24,7 +29,12 @@ FunnelStage = Literal["tofu", "mofu", "bofu"]
 KeywordStatus = Literal["active", "excluded", "merged"]
 
 
-class SeedTopic(Base, UUIDMixin, TimestampMixin):
+class SeedTopic(
+    TypedModelMixin[SeedTopicCreateDTO, SeedTopicPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Seed topic/pillar generated in Step 2."""
 
     __tablename__ = "seed_topics"
@@ -64,7 +74,7 @@ class SeedTopic(Base, UUIDMixin, TimestampMixin):
         return f"<SeedTopic {self.name}>"
 
 
-class Keyword(Base, UUIDMixin, TimestampMixin):
+class Keyword(TypedModelMixin[KeywordCreateDTO, KeywordPatchDTO], Base, UUIDMixin, TimestampMixin):
     """Keyword with metrics, intent, and priority data."""
 
     __tablename__ = "keywords"

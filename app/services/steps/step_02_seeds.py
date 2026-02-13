@@ -14,7 +14,6 @@ from app.models.brand import BrandProfile
 from app.models.generated_dtos import SeedTopicCreateDTO
 from app.models.keyword import SeedTopic
 from app.models.project import Project
-from app.persistence.typed import create, delete
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -148,7 +147,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             select(SeedTopic).where(SeedTopic.project_id == self.project_id)
         )
         for topic in existing.scalars():
-            await delete(self.session, SeedTopic, topic)
+            await topic.delete(self.session)
 
         # Create bucket name to info map
         bucket_map = {b["name"]: b for b in result.buckets}
@@ -157,9 +156,8 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
         for seed_data in result.seeds:
             bucket_info = bucket_map.get(seed_data["bucket_name"], {})
 
-            create(
+            SeedTopic.create(
                 self.session,
-                SeedTopic,
                 SeedTopicCreateDTO(
                     project_id=self.project_id,
                     name=seed_data["keyword"],

@@ -19,7 +19,6 @@ from app.models.generated_dtos import ContentBriefCreateDTO
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
-from app.persistence.typed import create
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -543,9 +542,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         """Save content briefs to database."""
         for brief_data in result.briefs:
             # Create ContentBrief record
-            create(
+            ContentBrief.create(
                 self.session,
-                ContentBrief,
                 ContentBriefCreateDTO(
                     project_id=self.project_id,
                     topic_id=brief_data["topic_id"],

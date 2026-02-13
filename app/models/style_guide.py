@@ -2,21 +2,31 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import (
+    BriefDeltaCreateDTO,
+    BriefDeltaPatchDTO,
+    ProjectStyleGuideCreateDTO,
+    ProjectStyleGuidePatchDTO,
+)
 
 if TYPE_CHECKING:
     from app.models.content import ContentBrief
     from app.models.project import Project
 
 
-class ProjectStyleGuide(Base, UUIDMixin, TimestampMixin):
+class ProjectStyleGuide(
+    TypedModelMixin[ProjectStyleGuideCreateDTO, ProjectStyleGuidePatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Project-level style guide (generated ONCE per project).
 
     Contains brand voice, compliance rules, and base QA checklist
@@ -115,7 +125,12 @@ class ProjectStyleGuide(Base, UUIDMixin, TimestampMixin):
         return f"<ProjectStyleGuide for project {self.project_id}>"
 
 
-class BriefDelta(Base, UUIDMixin, TimestampMixin):
+class BriefDelta(
+    TypedModelMixin[BriefDeltaCreateDTO, BriefDeltaPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Per-brief delta from the project style guide.
 
     Contains ONLY the page-type specific additions that differ

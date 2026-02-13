@@ -20,7 +20,6 @@ from app.models.generated_dtos import TopicCreateDTO
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
-from app.persistence.typed import create, delete
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -557,7 +556,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             select(Topic).where(Topic.project_id == self.project_id)
         )
         for topic in existing.scalars():
-            await delete(self.session, Topic, topic)
+            await topic.delete(self.session)
 
         # Create new topics
         for cluster in result.clusters:
@@ -583,7 +582,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                 cluster_coherence=cluster.get("coherence", 0.5),
                 cluster_notes=notes or None,
             )
-            topic = create(self.session, Topic, topic_data)
+            topic = Topic.create(self.session, topic_data)
 
             # Update keywords to reference this topic
             for kw in keywords:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -10,13 +9,24 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import (
+    PipelineRunCreateDTO,
+    PipelineRunPatchDTO,
+    StepExecutionCreateDTO,
+    StepExecutionPatchDTO,
+)
 
 if TYPE_CHECKING:
     from app.models.project import Project
 
 
-class PipelineRun(Base, UUIDMixin, TimestampMixin):
+class PipelineRun(
+    TypedModelMixin[PipelineRunCreateDTO, PipelineRunPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Track a pipeline execution run."""
 
     __tablename__ = "pipeline_runs"
@@ -58,7 +68,12 @@ class PipelineRun(Base, UUIDMixin, TimestampMixin):
         return f"<PipelineRun {self.id} ({self.status})>"
 
 
-class StepExecution(Base, UUIDMixin, TimestampMixin):
+class StepExecution(
+    TypedModelMixin[StepExecutionCreateDTO, StepExecutionPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Track individual step execution."""
 
     __tablename__ = "step_executions"

@@ -21,7 +21,6 @@ from app.models.generated_dtos import (
 )
 from app.models.pipeline import PipelineRun, StepExecution
 from app.models.project import Project
-from app.persistence.typed import create, patch
 from app.services.steps.base_step import BaseStepService
 from app.services.steps.step_00_setup import SetupInput, Step00SetupService
 from app.services.steps.step_01_brand import BrandInput, Step01BrandService
@@ -131,9 +130,8 @@ class PipelineOrchestrator:
             raise PipelineAlreadyRunningError(self.project_id)
 
         if run_uuid is None:
-            run = create(
+            run = PipelineRun.create(
                 self.session,
-                PipelineRun,
                 PipelineRunCreateDTO(
                     project_id=self.project_id,
                     status="running",
@@ -159,10 +157,8 @@ class PipelineOrchestrator:
             if run is None:
                 raise ValueError(f"Pipeline run not found: {run_id}")
 
-            patch(
+            run.patch(
                 self.session,
-                PipelineRun,
-                run,
                 PipelineRunPatchDTO.from_partial({
                     "status": "running",
                     "started_at": datetime.now(timezone.utc),
@@ -537,9 +533,8 @@ class PipelineOrchestrator:
         in a previous step can't leave behind a stale connection.
         """
         async with get_session_context() as step_session:
-            execution = create(
+            execution = StepExecution.create(
                 step_session,
-                StepExecution,
                 StepExecutionCreateDTO(
                     pipeline_run_id=str(run.id),
                     step_number=step_number,
@@ -639,7 +634,7 @@ class PipelineOrchestrator:
         async with get_session_context() as session:
             result = await session.execute(select(PipelineRun).where(PipelineRun.id == run_id))
             run = result.scalar_one()
-            patch(session, PipelineRun, run, PipelineRunPatchDTO.from_partial(updates))
+            run.patch(session, PipelineRunPatchDTO.from_partial(updates))
 
     async def _create_skipped_execution(
         self,
@@ -649,9 +644,8 @@ class PipelineOrchestrator:
     ) -> StepExecution:
         """Create a skipped step execution record."""
         async with get_session_context() as session:
-            execution = create(
+            execution = StepExecution.create(
                 session,
-                StepExecution,
                 StepExecutionCreateDTO(
                     pipeline_run_id=str(run.id),
                     step_number=step_number,
@@ -669,9 +663,8 @@ class PipelineOrchestrator:
         if self._current_run:
             return self._current_run
 
-        run = create(
+        run = PipelineRun.create(
             self.session,
-            PipelineRun,
             PipelineRunCreateDTO(
                 project_id=self.project_id,
                 status="running",

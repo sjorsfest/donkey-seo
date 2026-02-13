@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import (
+    ContentBriefCreateDTO,
+    ContentBriefPatchDTO,
+    WriterInstructionsCreateDTO,
+    WriterInstructionsPatchDTO,
+)
 
 if TYPE_CHECKING:
     from app.models.keyword import Keyword
@@ -17,7 +22,12 @@ if TYPE_CHECKING:
     from app.models.topic import Topic
 
 
-class ContentBrief(Base, UUIDMixin, TimestampMixin):
+class ContentBrief(
+    TypedModelMixin[ContentBriefCreateDTO, ContentBriefPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Content brief for a topic (Step 12 output)."""
 
     __tablename__ = "content_briefs"
@@ -88,7 +98,12 @@ class ContentBrief(Base, UUIDMixin, TimestampMixin):
         return f"<ContentBrief {self.primary_keyword}>"
 
 
-class WriterInstructions(Base, UUIDMixin, TimestampMixin):
+class WriterInstructions(
+    TypedModelMixin[WriterInstructionsCreateDTO, WriterInstructionsPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Writer instructions and QA gates for a brief (Step 13 output)."""
 
     __tablename__ = "writer_instructions"

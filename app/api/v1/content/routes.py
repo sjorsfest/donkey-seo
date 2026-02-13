@@ -16,7 +16,6 @@ from app.api.v1.dependencies import get_user_project
 from app.dependencies import CurrentUser, DbSession
 from app.models.content import ContentBrief, WriterInstructions
 from app.models.generated_dtos import ContentBriefCreateDTO, ContentBriefPatchDTO
-from app.persistence.typed import create, delete, patch
 from app.schemas.content import (
     ContentBriefCreate,
     ContentBriefDetailResponse,
@@ -105,9 +104,8 @@ async def create_brief(
     """Create a new content brief."""
     await get_user_project(project_id, current_user, session)
 
-    brief = create(
+    brief = ContentBrief.create(
         session,
-        ContentBrief,
         ContentBriefCreateDTO(
             project_id=str(project_id),
             topic_id=brief_data.topic_id,
@@ -158,10 +156,8 @@ async def update_brief(
         )
 
     update_data = brief_data.model_dump(exclude_unset=True)
-    patch(
+    brief.patch(
         session,
-        ContentBrief,
-        brief,
         ContentBriefPatchDTO.from_partial(update_data),
     )
 
@@ -195,7 +191,7 @@ async def delete_brief(
             detail=CONTENT_BRIEF_NOT_FOUND_DETAIL,
         )
 
-    await delete(session, ContentBrief, brief)
+    await brief.delete(session)
 
 
 @router.get(

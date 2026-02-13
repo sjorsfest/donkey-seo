@@ -11,7 +11,6 @@ from app.api.v1.projects.constants import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_P
 from app.dependencies import CurrentUser, DbSession
 from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 from app.models.project import Project
-from app.persistence.typed import create, delete, patch
 from app.schemas.project import (
     ProjectCreate,
     ProjectListResponse,
@@ -31,9 +30,8 @@ async def create_project(
     session: DbSession,
 ) -> Project:
     """Create a new keyword research project."""
-    project = create(
+    project = Project.create(
         session,
-        Project,
         ProjectCreateDTO(
             user_id=current_user.id,
             name=project_data.name,
@@ -122,10 +120,8 @@ async def update_project(
         for field, value in update_data.items()
         if hasattr(project, field)
     }
-    patch(
+    project.patch(
         session,
-        Project,
-        project,
         ProjectPatchDTO.from_partial(patch_data),
     )
 
@@ -149,4 +145,4 @@ async def delete_project(
         extra={"project_id": str(project_id), "user_id": str(current_user.id)},
     )
 
-    await delete(session, Project, project)
+    await project.delete(session)

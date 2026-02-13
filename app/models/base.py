@@ -2,11 +2,20 @@
 
 import uuid
 from datetime import datetime
+from typing import Any, Generic, TypeVar
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
+
+from app.persistence.typed.contracts import CreateDTOProtocol, PatchDTOProtocol
+
+
+CreateDTOT = TypeVar("CreateDTOT", bound=CreateDTOProtocol)
+PatchDTOT = TypeVar("PatchDTOT", bound=PatchDTOProtocol)
+ModelSelfT = TypeVar("ModelSelfT", bound="TypedModelMixin[Any, Any]")
 
 
 class StringUUID(TypeDecorator):
@@ -30,6 +39,38 @@ class Base(DeclarativeBase):
     """Base class for all SQLAlchemy models."""
 
     pass
+
+
+class TypedModelMixin(Generic[CreateDTOT, PatchDTOT]):
+    """Typed CRUD helpers delegated to the typed write adapter layer."""
+
+    @classmethod
+    async def get(
+        cls: type[ModelSelfT],
+        session: AsyncSession,
+        model_id: str | uuid.UUID,
+    ) -> ModelSelfT | None:
+        """Fetch a model by primary key."""
+        return await session.get(cls, model_id)
+
+    @classmethod
+    def create(cls: type[ModelSelfT], session: AsyncSession, dto: CreateDTOT) -> ModelSelfT:
+        """Create a model via registered typed adapter."""
+        from app.persistence.typed import create as typed_create
+
+        return typed_create(session, cls, dto)
+
+    def patch(self: ModelSelfT, session: AsyncSession, dto: PatchDTOT) -> ModelSelfT:
+        """Patch a model via registered typed adapter."""
+        from app.persistence.typed import patch as typed_patch
+
+        return typed_patch(session, type(self), self, dto)
+
+    async def delete(self, session: AsyncSession) -> None:
+        """Delete a model via registered typed adapter."""
+        from app.persistence.typed import delete as typed_delete
+
+        await typed_delete(session, type(self), self)
 
 
 class UUIDMixin:

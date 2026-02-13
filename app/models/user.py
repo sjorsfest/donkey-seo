@@ -7,14 +7,15 @@ from typing import TYPE_CHECKING
 from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import UserCreateDTO, UserPatchDTO
 
 if TYPE_CHECKING:
     from app.models.oauth_account import OAuthAccount
     from app.models.project import Project
 
 
-class User(Base, UUIDMixin, TimestampMixin):
+class User(TypedModelMixin[UserCreateDTO, UserPatchDTO], Base, UUIDMixin, TimestampMixin):
     """User account for authentication and project ownership."""
 
     __tablename__ = "users"

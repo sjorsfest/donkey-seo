@@ -7,13 +7,19 @@ from typing import TYPE_CHECKING
 from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import OAuthAccountCreateDTO, OAuthAccountPatchDTO
 
 if TYPE_CHECKING:
     from app.models.user import User
 
 
-class OAuthAccount(Base, UUIDMixin, TimestampMixin):
+class OAuthAccount(
+    TypedModelMixin[OAuthAccountCreateDTO, OAuthAccountPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """External OAuth identity linked to a local user."""
 
     __tablename__ = "oauth_accounts"

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 
 if TYPE_CHECKING:
     from app.models.brand import BrandProfile
@@ -24,7 +24,7 @@ ProjectStatus = Literal["created", "running", "paused", "completed", "failed"]
 SiteMaturity = Literal["new", "mid", "strong"]
 
 
-class Project(Base, UUIDMixin, TimestampMixin):
+class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixin, TimestampMixin):
     """Keyword research project."""
 
     __tablename__ = "projects"

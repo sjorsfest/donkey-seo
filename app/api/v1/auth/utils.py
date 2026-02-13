@@ -33,7 +33,6 @@ from app.models.generated_dtos import (
 )
 from app.models.oauth_account import OAuthAccount
 from app.models.user import User
-from app.persistence.typed import create, patch
 
 logger = logging.getLogger(__name__)
 
@@ -204,17 +203,13 @@ async def find_or_create_oauth_user(
             raise ValueError("oauth_account_user_missing")
 
         if email and oauth_account.email != email:
-            patch(
+            oauth_account.patch(
                 session,
-                OAuthAccount,
-                oauth_account,
                 OAuthAccountPatchDTO.from_partial({"email": email}),
             )
         if full_name and not linked_user.full_name:
-            patch(
+            linked_user.patch(
                 session,
-                User,
-                linked_user,
                 UserPatchDTO.from_partial({"full_name": full_name}),
             )
 
@@ -231,9 +226,8 @@ async def find_or_create_oauth_user(
         if email is None:
             user_email = await _ensure_unique_email(session, user_email)
 
-        user = create(
+        user = User.create(
             session,
-            User,
             UserCreateDTO(
                 email=user_email,
                 hashed_password=None,
@@ -242,16 +236,13 @@ async def find_or_create_oauth_user(
         )
         await session.flush()
     elif full_name and not user.full_name:
-        patch(
+        user.patch(
             session,
-            User,
-            user,
             UserPatchDTO.from_partial({"full_name": full_name}),
         )
 
-    create(
+    OAuthAccount.create(
         session,
-        OAuthAccount,
         OAuthAccountCreateDTO(
             user_id=user.id,
             provider=provider,

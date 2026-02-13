@@ -26,7 +26,6 @@ from app.models.generated_dtos import (
 )
 from app.models.project import Project
 from app.models.style_guide import BriefDelta, ProjectStyleGuide
-from app.persistence.typed import create
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -217,9 +216,8 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 deltas_created += 1
 
                 # Create BriefDelta record
-                create(
+                BriefDelta.create(
                     self.session,
-                    BriefDelta,
                     BriefDeltaCreateDTO(
                         style_guide_id=style_guide.id,
                         brief_id=brief.id,
@@ -232,9 +230,8 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 )
 
                 # Also create WriterInstructions (legacy model)
-                create(
+                WriterInstructions.create(
                     self.session,
-                    WriterInstructions,
                     WriterInstructionsCreateDTO(
                         brief_id=brief.id,
                         voice_tone_constraints=style_guide.voice_tone_constraints,
@@ -307,9 +304,8 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             sg = output.style_guide
 
             # Create style guide record
-            style_guide = create(
+            style_guide = ProjectStyleGuide.create(
                 self.session,
-                ProjectStyleGuide,
                 ProjectStyleGuideCreateDTO(
                     project_id=self.project_id,
                     voice_tone_constraints={
@@ -344,9 +340,8 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
 
         except Exception:
             # Fallback: create minimal style guide
-            style_guide = create(
+            style_guide = ProjectStyleGuide.create(
                 self.session,
-                ProjectStyleGuide,
                 ProjectStyleGuideCreateDTO(
                     project_id=self.project_id,
                     voice_tone_constraints={

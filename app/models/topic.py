@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import TopicCreateDTO, TopicPatchDTO
 
 if TYPE_CHECKING:
     from app.models.content import ContentBrief
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from app.models.project import Project
 
 
-class Topic(Base, UUIDMixin, TimestampMixin):
+class Topic(TypedModelMixin[TopicCreateDTO, TopicPatchDTO], Base, UUIDMixin, TimestampMixin):
     """Clustered topic (Step 6 output)."""
 
     __tablename__ = "topics"

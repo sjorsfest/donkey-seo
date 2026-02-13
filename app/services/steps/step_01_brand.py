@@ -14,7 +14,6 @@ from app.integrations.scraper import scrape_website
 from app.models.brand import BrandProfile
 from app.models.generated_dtos import BrandProfileCreateDTO, BrandProfilePatchDTO
 from app.models.project import Project
-from app.persistence.typed import create, patch
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -177,16 +176,13 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         }
 
         if brand_profile:
-            patch(
+            brand_profile.patch(
                 self.session,
-                BrandProfile,
-                brand_profile,
                 BrandProfilePatchDTO.from_partial(profile_payload),
             )
         else:
-            create(
+            BrandProfile.create(
                 self.session,
-                BrandProfile,
                 BrandProfileCreateDTO(
                     project_id=self.project_id,
                     company_name=result.company_name,

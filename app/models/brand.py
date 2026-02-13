@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.generated_dtos import BrandProfileCreateDTO, BrandProfilePatchDTO
 
 if TYPE_CHECKING:
     from app.models.project import Project
 
 
-class BrandProfile(Base, UUIDMixin, TimestampMixin):
+class BrandProfile(
+    TypedModelMixin[BrandProfileCreateDTO, BrandProfilePatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
     """Extracted brand profile from website scraping (Step 1 output)."""
 
     __tablename__ = "brand_profiles"

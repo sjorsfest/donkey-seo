@@ -19,7 +19,6 @@ from app.dependencies import CurrentUser, DbSession
 from app.models.generated_dtos import TopicCreateDTO, TopicPatchDTO
 from app.models.keyword import Keyword
 from app.models.topic import Topic
-from app.persistence.typed import create, delete, patch
 from app.schemas.topic import (
     TopicCreate,
     TopicDetailResponse,
@@ -151,9 +150,8 @@ async def create_topic(
     """Create a new topic."""
     await get_user_project(project_id, current_user, session)
 
-    topic = create(
+    topic = Topic.create(
         session,
-        Topic,
         TopicCreateDTO(
             project_id=str(project_id),
             name=topic_data.name,
@@ -190,10 +188,8 @@ async def update_topic(
         )
 
     update_data = topic_data.model_dump(exclude_unset=True)
-    patch(
+    topic.patch(
         session,
-        Topic,
-        topic,
         TopicPatchDTO.from_partial(update_data),
     )
 
@@ -224,7 +220,7 @@ async def delete_topic(
             detail=TOPIC_NOT_FOUND_DETAIL,
         )
 
-    await delete(session, Topic, topic)
+    await topic.delete(session)
 
 
 @router.post("/{project_id}/merge", response_model=TopicResponse)
@@ -251,9 +247,8 @@ async def merge_topics(
             detail=SOME_TOPICS_NOT_FOUND_DETAIL,
         )
 
-    merged_topic = create(
+    merged_topic = Topic.create(
         session,
-        Topic,
         TopicCreateDTO(
             project_id=str(project_id),
             name=request.target_name,
@@ -272,7 +267,7 @@ async def merge_topics(
         )
 
     for source_topic in source_topics:
-        await delete(session, Topic, source_topic)
+        await source_topic.delete(session)
 
     await session.refresh(merged_topic)
 

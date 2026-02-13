@@ -44,7 +44,6 @@ from app.core.security import (
 from app.dependencies import CurrentUser, DbSession
 from app.models.generated_dtos import UserCreateDTO
 from app.models.user import User
-from app.persistence.typed import create
 from app.schemas.auth import Token, TokenRefresh, UserCreate, UserLogin, UserResponse
 
 logger = logging.getLogger(__name__)
@@ -67,9 +66,8 @@ async def register(user_data: UserCreate, session: DbSession) -> User:
             detail="User with this email already exists",
         )
 
-    user = create(
+    user = User.create(
         session,
-        User,
         UserCreateDTO(
             email=user_data.email,
             hashed_password=get_password_hash(user_data.password),

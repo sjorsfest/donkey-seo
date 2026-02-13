@@ -15,7 +15,6 @@ from app.models.generated_dtos import (
 )
 from app.models.topic import Topic
 from app.models.user import User
-from app.persistence.typed import create, delete, patch
 from app.persistence.typed.errors import InvalidPatchFieldError
 from scripts.check_typed_writes import find_violations
 
@@ -26,6 +25,7 @@ class FakeAsyncSession:
     def __init__(self) -> None:
         self.added: list[object] = []
         self.deleted: list[object] = []
+        self.fetched: dict[tuple[type[object], str], object] = {}
 
     def add(self, instance: object) -> None:
         self.added.append(instance)
@@ -33,14 +33,16 @@ class FakeAsyncSession:
     async def delete(self, instance: object) -> None:
         self.deleted.append(instance)
 
+    async def get(self, model_cls: type[object], model_id: str) -> object | None:
+        return self.fetched.get((model_cls, model_id))
 
-def test_writes_create_and_patch_user() -> None:
+
+def test_model_create_and_patch_user() -> None:
     session = FakeAsyncSession()
     typed_session = cast(AsyncSession, session)
 
-    user = create(
+    user = User.create(
         typed_session,
-        User,
         UserCreateDTO(email="user@example.com", hashed_password="hashed"),
     )
 
@@ -48,10 +50,8 @@ def test_writes_create_and_patch_user() -> None:
     assert user.email == "user@example.com"
     assert session.added == [user]
 
-    patch(
+    user.patch(
         typed_session,
-        User,
-        user,
         UserPatchDTO.from_partial({"full_name": "Test User"}),
     )
 
@@ -59,14 +59,26 @@ def test_writes_create_and_patch_user() -> None:
 
 
 @pytest.mark.asyncio
-async def test_writes_delete_uses_adapter() -> None:
+async def test_model_delete_uses_adapter() -> None:
     session = FakeAsyncSession()
     typed_session = cast(AsyncSession, session)
     user = User(email="delete@example.com", hashed_password="x")
 
-    await delete(typed_session, User, user)
+    await user.delete(typed_session)
 
     assert session.deleted == [user]
+
+
+@pytest.mark.asyncio
+async def test_model_get_uses_session_get() -> None:
+    session = FakeAsyncSession()
+    typed_session = cast(AsyncSession, session)
+    user = User(email="fetch@example.com", hashed_password="x")
+    session.fetched[(User, "user-1")] = user
+
+    found = await User.get(typed_session, "user-1")
+
+    assert found is user
 
 
 def test_patch_rejects_protected_topic_fields() -> None:
@@ -75,10 +87,8 @@ def test_patch_rejects_protected_topic_fields() -> None:
     topic = Topic(project_id="project-1", name="Topic")
 
     with pytest.raises(InvalidPatchFieldError):
-        patch(
+        topic.patch(
             typed_session,
-            Topic,
-            topic,
             TopicPatchDTO.from_partial({"project_id": "new-project"}),
         )
 

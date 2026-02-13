@@ -23,7 +23,6 @@ from app.api.v1.pipeline.utils import (
 from app.dependencies import CurrentUser, DbSession
 from app.models.generated_dtos import PipelineRunCreateDTO
 from app.models.pipeline import PipelineRun
-from app.persistence.typed import create
 from app.schemas.pipeline import (
     PipelineProgressResponse,
     PipelineRunResponse,
@@ -78,9 +77,8 @@ async def start_pipeline(
     end_step = request.end_step or 13
     skip_steps = request.skip_steps or project.skip_steps or []
 
-    pipeline_run = create(
+    pipeline_run = PipelineRun.create(
         session,
-        PipelineRun,
         PipelineRunCreateDTO(
             project_id=project_id_str,
             status="pending",

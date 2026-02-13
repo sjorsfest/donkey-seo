@@ -16,7 +16,6 @@ from app.api.v1.keywords.constants import (
 from app.dependencies import CurrentUser, DbSession
 from app.models.generated_dtos import KeywordCreateDTO, KeywordPatchDTO
 from app.models.keyword import Keyword
-from app.persistence.typed import create, patch
 from app.schemas.keyword import (
     KeywordBulkUpdateRequest,
     KeywordCreate,
@@ -117,9 +116,8 @@ async def create_keyword(
     """Manually add a keyword to a project."""
     await get_user_project(project_id, current_user, session)
 
-    keyword = create(
+    keyword = Keyword.create(
         session,
-        Keyword,
         KeywordCreateDTO(
             project_id=str(project_id),
             keyword=keyword_data.keyword,
@@ -158,10 +156,8 @@ async def update_keyword(
         )
 
     update_data = keyword_data.model_dump(exclude_unset=True)
-    patch(
+    keyword.patch(
         session,
-        Keyword,
-        keyword,
         KeywordPatchDTO.from_partial(update_data),
     )
 
@@ -192,10 +188,8 @@ async def delete_keyword(
             detail=KEYWORD_NOT_FOUND_DETAIL,
         )
 
-    patch(
+    keyword.patch(
         session,
-        Keyword,
-        keyword,
         KeywordPatchDTO.from_partial({"status": "excluded"}),
     )
     await session.flush()
@@ -229,10 +223,8 @@ async def bulk_update_keywords(
         if request.topic_id:
             patch_data["topic_id"] = str(request.topic_id)
         if patch_data:
-            patch(
+            keyword.patch(
                 session,
-                Keyword,
-                keyword,
                 KeywordPatchDTO.from_partial(patch_data),
             )
         updated += 1

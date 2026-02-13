@@ -15,7 +15,6 @@ from app.models.brand import BrandProfile
 from app.models.generated_dtos import KeywordCreateDTO
 from app.models.keyword import Keyword, SeedTopic
 from app.models.project import Project
-from app.persistence.typed import create, delete
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -283,13 +282,12 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
             )
         )
         for keyword in existing.scalars():
-            await delete(self.session, Keyword, keyword)
+            await keyword.delete(self.session)
 
         # Create new keywords
         for kw_data in result.keywords:
-            create(
+            Keyword.create(
                 self.session,
-                Keyword,
                 KeywordCreateDTO(
                     project_id=self.project_id,
                     keyword=kw_data["keyword_text"],
