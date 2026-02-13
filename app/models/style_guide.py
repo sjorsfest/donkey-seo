@@ -6,10 +6,10 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.content import ContentBrief
@@ -30,8 +30,8 @@ class ProjectStyleGuide(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "project_style_guides"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         unique=True,  # Only one per project
         nullable=False,
@@ -125,14 +125,14 @@ class BriefDelta(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "brief_deltas"
 
-    style_guide_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    style_guide_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("project_style_guides.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    brief_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    brief_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("content_briefs.id", ondelete="CASCADE"),
         unique=True,  # One delta per brief
         nullable=False,

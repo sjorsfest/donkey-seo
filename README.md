@@ -154,11 +154,17 @@ DATAFORSEO_PASSWORD=your-password
 ## Development
 
 ```bash
+# Generate typed model DTOs (auto-generated)
+python scripts/generate_model_dtos.py
+
 # Run tests
 pytest
 
 # Type checking
-mypy app
+ty check app
+
+# Typed write guardrails (warning mode)
+python scripts/check_typed_writes.py
 
 # Linting
 ruff check app

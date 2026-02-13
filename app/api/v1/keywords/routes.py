@@ -1,13 +1,22 @@
 """Keywords API endpoints."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 
+from app.api.v1.dependencies import get_user_project
+from app.api.v1.keywords.constants import (
+    DEFAULT_PAGE,
+    DEFAULT_PAGE_SIZE,
+    KEYWORD_NOT_FOUND_DETAIL,
+    MAX_PAGE_SIZE,
+)
 from app.dependencies import CurrentUser, DbSession
+from app.models.generated_dtos import KeywordCreateDTO, KeywordPatchDTO
 from app.models.keyword import Keyword
-from app.models.project import Project
+from app.persistence.typed import create, patch
 from app.schemas.keyword import (
     KeywordBulkUpdateRequest,
     KeywordCreate,
@@ -17,26 +26,9 @@ from app.schemas.keyword import (
     KeywordUpdate,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
-
-
-async def get_user_project(
-    project_id: uuid.UUID,
-    current_user: CurrentUser,
-    session: DbSession,
-) -> Project:
-    """Helper to get and verify project ownership."""
-    result = await session.execute(
-        select(Project).where(Project.id == project_id, Project.user_id == current_user.id)
-    )
-    project = result.scalar_one_or_none()
-
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-    return project
 
 
 @router.get("/{project_id}", response_model=KeywordListResponse)
@@ -44,8 +36,8 @@ async def list_keywords(
     project_id: uuid.UUID,
     current_user: CurrentUser,
     session: DbSession,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page: int = Query(DEFAULT_PAGE, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     intent: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
     topic_id: uuid.UUID | None = Query(None),
@@ -56,10 +48,8 @@ async def list_keywords(
     """List keywords for a project with filters."""
     await get_user_project(project_id, current_user, session)
 
-    # Build query
     query = select(Keyword).where(Keyword.project_id == project_id)
 
-    # Apply filters
     if intent:
         query = query.where(Keyword.intent == intent)
     if status_filter:
@@ -73,18 +63,20 @@ async def list_keywords(
     if search:
         query = query.where(Keyword.keyword.ilike(f"%{search}%"))
 
-    # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total = await session.scalar(count_query) or 0
 
-    # Get paginated results
     offset = (page - 1) * page_size
-    query = query.order_by(Keyword.priority_score.desc().nulls_last()).offset(offset).limit(page_size)
+    query = (
+        query.order_by(Keyword.priority_score.desc().nulls_last())
+        .offset(offset)
+        .limit(page_size)
+    )
     result = await session.execute(query)
     keywords = result.scalars().all()
 
     return KeywordListResponse(
-        items=[KeywordResponse.model_validate(k) for k in keywords],
+        items=[KeywordResponse.model_validate(keyword) for keyword in keywords],
         total=total,
         page=page,
         page_size=page_size,
@@ -109,7 +101,7 @@ async def get_keyword(
     if not keyword:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Keyword not found",
+            detail=KEYWORD_NOT_FOUND_DETAIL,
         )
 
     return keyword
@@ -125,15 +117,18 @@ async def create_keyword(
     """Manually add a keyword to a project."""
     await get_user_project(project_id, current_user, session)
 
-    keyword = Keyword(
-        project_id=project_id,
-        keyword=keyword_data.keyword,
-        keyword_normalized=keyword_data.keyword.lower().strip(),
-        language=keyword_data.language,
-        locale=keyword_data.locale,
-        source=keyword_data.source,
+    keyword = create(
+        session,
+        Keyword,
+        KeywordCreateDTO(
+            project_id=str(project_id),
+            keyword=keyword_data.keyword,
+            keyword_normalized=keyword_data.keyword.lower().strip(),
+            language=keyword_data.language,
+            locale=keyword_data.locale,
+            source=keyword_data.source,
+        ),
     )
-    session.add(keyword)
     await session.flush()
     await session.refresh(keyword)
 
@@ -159,12 +154,16 @@ async def update_keyword(
     if not keyword:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Keyword not found",
+            detail=KEYWORD_NOT_FOUND_DETAIL,
         )
 
     update_data = keyword_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(keyword, field, value)
+    patch(
+        session,
+        Keyword,
+        keyword,
+        KeywordPatchDTO.from_partial(update_data),
+    )
 
     await session.flush()
     await session.refresh(keyword)
@@ -190,11 +189,15 @@ async def delete_keyword(
     if not keyword:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Keyword not found",
+            detail=KEYWORD_NOT_FOUND_DETAIL,
         )
 
-    # Soft delete by setting status
-    keyword.status = "excluded"
+    patch(
+        session,
+        Keyword,
+        keyword,
+        KeywordPatchDTO.from_partial({"status": "excluded"}),
+    )
     await session.flush()
 
 
@@ -208,10 +211,9 @@ async def bulk_update_keywords(
     """Bulk update keywords."""
     await get_user_project(project_id, current_user, session)
 
-    # Get keywords
     result = await session.execute(
         select(Keyword).where(
-            Keyword.id.in_([uuid.UUID(k) for k in request.keyword_ids]),
+            Keyword.id.in_([uuid.UUID(keyword_id) for keyword_id in request.keyword_ids]),
             Keyword.project_id == project_id,
         )
     )
@@ -219,14 +221,27 @@ async def bulk_update_keywords(
 
     updated = 0
     for keyword in keywords:
+        patch_data: dict[str, str] = {}
         if request.status:
-            keyword.status = request.status
+            patch_data["status"] = request.status
         if request.intent:
-            keyword.intent = request.intent
+            patch_data["intent"] = request.intent
         if request.topic_id:
-            keyword.topic_id = uuid.UUID(request.topic_id)
+            patch_data["topic_id"] = str(request.topic_id)
+        if patch_data:
+            patch(
+                session,
+                Keyword,
+                keyword,
+                KeywordPatchDTO.from_partial(patch_data),
+            )
         updated += 1
 
     await session.flush()
+
+    logger.info(
+        "Keywords bulk updated",
+        extra={"project_id": str(project_id), "updated_count": updated},
+    )
 
     return {"updated": updated}

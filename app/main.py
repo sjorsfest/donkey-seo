@@ -1,24 +1,46 @@
 """FastAPI application entry point."""
 
-from contextlib import asynccontextmanager
+import logging
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1.router import api_router
 from app.config import settings
 from app.core.database import close_db, init_db
-from app.api.v1.router import api_router
+from app.core.logging import setup_logging
+from app.core.redis import close_redis
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
-    # Startup
+    setup_logging()
+
+    logger.info(
+        "Starting DonkeySEO",
+        extra={
+            "environment": settings.environment,
+            "version": settings.app_version,
+            "model_reasoning": settings.get_model("reasoning"),
+            "model_standard": settings.get_model("standard"),
+            "model_fast": settings.get_model("fast"),
+        },
+    )
+
     if settings.environment == "development":
         await init_db()
+        logger.info("Development database initialized")
+
     yield
-    # Shutdown
+
+    logger.info("Shutting down DonkeySEO")
+    await close_redis()
     await close_db()
 
 
@@ -27,7 +49,10 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        description="Keyword research backend service with a 14-step pipeline for programmatic content planning",
+        description=(
+            "Keyword research backend service with a 14-step pipeline for "
+            "programmatic content planning"
+        ),
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
         lifespan=lifespan,
@@ -35,7 +60,7 @@ def create_app() -> FastAPI:
 
     # CORS middleware
     app.add_middleware(
-        CORSMiddleware,
+        cast(Any, CORSMiddleware),
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],

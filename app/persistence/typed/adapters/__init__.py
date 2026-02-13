@@ -1,0 +1,1 @@
+"""Typed write adapters package."""

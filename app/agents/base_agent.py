@@ -1,12 +1,16 @@
 """Base class for Pydantic AI agents."""
 
+import logging
+import time
 from abc import ABC, abstractmethod
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
@@ -22,32 +26,56 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
     4. Optionally override _setup_tools to add agent-specific tools
     """
 
-    # Default model from settings, can be overridden per agent
-    model: str = settings.default_llm_model
+    # Model tier for environment-aware resolution (reasoning / standard / fast)
+    model_tier: str = "standard"
+    # Explicit model override at the class level (bypasses tier resolution)
+    model: str | None = None
     temperature: float = 0.7
     max_retries: int = settings.llm_max_retries
 
     def __init__(self, model_override: str | None = None) -> None:
         """Initialize the agent.
 
-        Args:
-            model_override: Optional model to use instead of the default.
+        Model resolution priority:
+        1. model_override parameter (explicit runtime override)
+        2. model class attribute (if set by subclass)
+        3. settings.get_model(self.model_tier) (environment-aware)
         """
-        self._model = model_override or self.model
-        self._agent: Agent[Any, OutputT] | None = None
+        if model_override:
+            self._model = model_override
+        elif self.model:
+            self._model = self.model
+        else:
+            self._model = settings.get_model(self.model_tier)
+        self._agent: Agent[None, OutputT] | None = None
+
+        logger.info(
+            "Agent initialized",
+            extra={
+                "agent": self.__class__.__name__,
+                "model": self._model,
+                "model_tier": self.model_tier,
+                "temperature": self.temperature,
+            },
+        )
 
     @property
-    def agent(self) -> Agent[Any, OutputT]:
+    def agent(self) -> Agent[None, OutputT]:
         """Lazily initialize and return the Pydantic AI agent."""
         if self._agent is None:
-            self._agent = Agent(
-                model=self._model,
-                result_type=self.output_type,
-                system_prompt=self.system_prompt,
-                retries=self.max_retries,
+            self._agent = cast(
+                Agent[None, OutputT],
+                Agent(
+                    model=self._model,
+                    output_type=self.output_type,
+                    system_prompt=self.system_prompt,
+                    retries=self.max_retries,
+                ),
             )
             self._setup_tools()
-        return self._agent
+        agent = self._agent
+        assert agent is not None
+        return agent
 
     @property
     @abstractmethod
@@ -85,14 +113,44 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
         Returns:
             Structured output as defined by output_type.
         """
-        prompt = self._build_prompt(input_data)
-
-        result = await self.agent.run(
-            prompt,
-            deps=context or {},
+        agent_name = self.__class__.__name__
+        logger.info(
+            "Agent run started",
+            extra={
+                "agent": agent_name,
+                "input_type": type(input_data).__name__,
+                "model": self._model,
+            },
         )
 
-        return result.data
+        prompt = self._build_prompt(input_data)
+        logger.info(
+            "Prompt built, sending to LLM",
+            extra={
+                "agent": agent_name,
+                "prompt_length": len(prompt),
+                "model": self._model,
+            },
+        )
+
+        t0 = time.perf_counter()
+        result = await self.agent.run(prompt)
+        elapsed = time.perf_counter() - t0
+
+        usage = result.usage()
+        logger.info(
+            "Agent run completed",
+            extra={
+                "agent": agent_name,
+                "duration_s": round(elapsed, 2),
+                "request_tokens": usage.request_tokens,
+                "response_tokens": usage.response_tokens,
+                "total_tokens": usage.total_tokens,
+                "output_type": type(result.output).__name__,
+            },
+        )
+
+        return result.output
 
     @abstractmethod
     def _build_prompt(self, input_data: InputT) -> str:
@@ -109,13 +167,11 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
     async def run_with_messages(
         self,
         messages: list[dict[str, str]],
-        context: dict[str, Any] | None = None,
     ) -> OutputT:
         """Run the agent with a list of messages (for multi-turn conversations).
 
         Args:
             messages: List of message dicts with 'role' and 'content'.
-            context: Optional context dict passed as deps to the agent.
 
         Returns:
             Structured output as defined by output_type.
@@ -132,9 +188,6 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
 
         prompt = "\n\n".join(prompt_parts)
 
-        result = await self.agent.run(
-            prompt,
-            deps=context or {},
-        )
+        result = await self.agent.run(prompt)
 
-        return result.data
+        return result.output

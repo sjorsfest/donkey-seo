@@ -1,8 +1,12 @@
 """Brand extractor agent for Step 1: Brand Profile extraction."""
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from app.agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class ProductService(BaseModel):
@@ -75,7 +79,7 @@ class BrandExtractorAgent(BaseAgent[BrandExtractorInput, BrandProfile]):
     target audience, and positioning from website content.
     """
 
-    model = "openai:gpt-4-turbo"  # Use GPT-4 for better extraction
+    model_tier = "reasoning"  # Complex extraction needs quality
     temperature = 0.3  # Lower temperature for more factual extraction
 
     @property
@@ -115,6 +119,14 @@ Guidelines:
         return BrandProfile
 
     def _build_prompt(self, input_data: BrandExtractorInput) -> str:
+        logger.info(
+            "Building brand extraction prompt",
+            extra={
+                "domain": input_data.domain,
+                "content_length": len(input_data.scraped_content),
+                "has_additional_context": input_data.additional_context is not None,
+            },
+        )
         # Truncate content if too long (keep first 15k chars)
         content = input_data.scraped_content
         if len(content) > 15000:

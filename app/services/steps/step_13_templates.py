@@ -4,12 +4,12 @@ Creates project-level style guide (once) + per-brief deltas (smaller).
 This approach reduces storage by ~80% and ensures consistency.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.template_generator import (
     BriefDeltaGeneratorAgent,
@@ -19,9 +19,17 @@ from app.agents.template_generator import (
 )
 from app.models.brand import BrandProfile
 from app.models.content import ContentBrief, WriterInstructions
+from app.models.generated_dtos import (
+    BriefDeltaCreateDTO,
+    ProjectStyleGuideCreateDTO,
+    WriterInstructionsCreateDTO,
+)
 from app.models.project import Project
 from app.models.style_guide import BriefDelta, ProjectStyleGuide
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.persistence.typed import create
+from app.services.steps.base_step import BaseStepService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -106,6 +114,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             )
         )
         style_guide = style_guide_result.scalar_one_or_none()
+        logger.info("Style guide status", extra={"project_id": input_data.project_id, "exists": style_guide is not None})
 
         style_guide_created = False
         style_guide_data = {}
@@ -116,6 +125,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 project, brand
             )
             style_guide_created = True
+            logger.info("Style guide generated", extra={"project_id": input_data.project_id})
         else:
             # Extract existing style guide data
             style_guide_data = {
@@ -207,41 +217,46 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 deltas_created += 1
 
                 # Create BriefDelta record
-                brief_delta = BriefDelta(
-                    id=uuid.uuid4(),
-                    style_guide_id=style_guide.id,
-                    brief_id=brief.id,
-                    page_type_rules=delta_data["page_type_rules"],
-                    must_include_sections=delta_data["must_include_sections"],
-                    h1_h2_usage=delta_data["h1_h2_usage"],
-                    schema_type=delta_data["schema_type"],
-                    additional_qa_items=delta_data["additional_qa_items"],
+                create(
+                    self.session,
+                    BriefDelta,
+                    BriefDeltaCreateDTO(
+                        style_guide_id=style_guide.id,
+                        brief_id=brief.id,
+                        page_type_rules=delta_data["page_type_rules"],
+                        must_include_sections=delta_data["must_include_sections"],
+                        h1_h2_usage=delta_data["h1_h2_usage"],
+                        schema_type=delta_data["schema_type"],
+                        additional_qa_items=delta_data["additional_qa_items"],
+                    ),
                 )
-                self.session.add(brief_delta)
 
                 # Also create WriterInstructions (legacy model)
-                writer_instructions = WriterInstructions(
-                    id=uuid.uuid4(),
-                    brief_id=brief.id,
-                    voice_tone_constraints=style_guide.voice_tone_constraints,
-                    forbidden_claims=style_guide.forbidden_claims,
-                    compliance_notes=style_guide.compliance_notes,
-                    formatting_requirements=style_guide.formatting_requirements,
-                    h1_h2_usage=delta_data["h1_h2_usage"],
-                    internal_linking_minimums={
-                        "min_internal": style_guide.default_internal_linking_min or 3,
-                        "min_external": style_guide.default_external_linking_min or 2,
-                    },
-                    schema_guidance=f"Use {delta_data['schema_type']} schema",
-                    qa_checklist=style_guide.base_qa_checklist,
-                    common_failure_modes=[
-                        {"mode": fm, "severity": "warning"}
-                        for fm in (style_guide.common_failure_modes or [])
-                    ],
+                create(
+                    self.session,
+                    WriterInstructions,
+                    WriterInstructionsCreateDTO(
+                        brief_id=brief.id,
+                        voice_tone_constraints=style_guide.voice_tone_constraints,
+                        forbidden_claims=style_guide.forbidden_claims,
+                        compliance_notes=style_guide.compliance_notes,
+                        formatting_requirements=style_guide.formatting_requirements,
+                        h1_h2_usage=delta_data["h1_h2_usage"],
+                        internal_linking_minimums={
+                            "min_internal": style_guide.default_internal_linking_min or 3,
+                            "min_external": style_guide.default_external_linking_min or 2,
+                        },
+                        schema_guidance=f"Use {delta_data['schema_type']} schema",
+                        qa_checklist=style_guide.base_qa_checklist,
+                        common_failure_modes=[
+                            {"mode": fm, "severity": "warning"}
+                            for fm in (style_guide.common_failure_modes or [])
+                        ],
+                    ),
                 )
-                self.session.add(writer_instructions)
 
             except Exception:
+                logger.warning("Brief delta generation failed", extra={"brief_id": str(brief.id), "keyword": brief.primary_keyword})
                 # Fallback: create minimal delta
                 delta_data = {
                     "brief_id": str(brief.id),
@@ -252,6 +267,8 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                     "additional_qa_items": [],
                 }
                 output_deltas.append(delta_data)
+
+        logger.info("Template generation complete", extra={"style_guide_created": style_guide_created, "briefs_processed": len(briefs), "deltas_created": deltas_created})
 
         await self._update_progress(100, "Template generation complete")
 
@@ -273,15 +290,15 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
 
         # Prepare input from brand profile
         agent_input = StyleGuideGeneratorInput(
-            company_name=brand.company_name if brand else project.name,
-            tagline=brand.tagline if brand else "",
+            company_name=(brand.company_name or project.name) if brand else project.name,
+            tagline=(brand.tagline or "") if brand else "",
             products_services=[
                 p.get("name", "") for p in (brand.products_services or [])[:5]
             ] if brand else [],
-            tone_attributes=brand.tone_attributes if brand else [],
-            target_audience=brand.target_audience.get("target_roles", []) if brand and brand.target_audience else [],
-            allowed_claims=brand.allowed_claims if brand else [],
-            restricted_claims=brand.restricted_claims if brand else [],
+            tone_attributes=(brand.tone_attributes or []) if brand else [],
+            target_audience=(brand.target_roles or []) if brand else [],
+            allowed_claims=(brand.allowed_claims or []) if brand else [],
+            restricted_claims=(brand.restricted_claims or []) if brand else [],
             compliance_flags=project.compliance_flags or [],
         )
 
@@ -290,27 +307,29 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             sg = output.style_guide
 
             # Create style guide record
-            style_guide = ProjectStyleGuide(
-                id=uuid.uuid4(),
-                project_id=uuid.UUID(self.project_id),
-                voice_tone_constraints={
-                    "do_list": sg.voice_tone_constraints.do_list,
-                    "dont_list": sg.voice_tone_constraints.dont_list,
-                    "good_examples": sg.voice_tone_constraints.good_examples,
-                    "bad_examples": sg.voice_tone_constraints.bad_examples,
-                },
-                forbidden_claims=sg.forbidden_claims,
-                compliance_notes=sg.compliance_notes,
-                formatting_requirements=sg.formatting_requirements,
-                base_qa_checklist=[
-                    {"item": qa.item, "required": qa.required, "threshold": qa.threshold}
-                    for qa in sg.base_qa_checklist
-                ],
-                common_failure_modes=sg.common_failure_modes,
-                default_internal_linking_min=3,
-                default_external_linking_min=2,
+            style_guide = create(
+                self.session,
+                ProjectStyleGuide,
+                ProjectStyleGuideCreateDTO(
+                    project_id=self.project_id,
+                    voice_tone_constraints={
+                        "do_list": sg.voice_tone_constraints.do_list,
+                        "dont_list": sg.voice_tone_constraints.dont_list,
+                        "good_examples": sg.voice_tone_constraints.good_examples,
+                        "bad_examples": sg.voice_tone_constraints.bad_examples,
+                    },
+                    forbidden_claims=sg.forbidden_claims,
+                    compliance_notes=sg.compliance_notes,
+                    formatting_requirements=sg.formatting_requirements,
+                    base_qa_checklist=[
+                        {"item": qa.item, "required": qa.required, "threshold": qa.threshold}
+                        for qa in sg.base_qa_checklist
+                    ],
+                    common_failure_modes=sg.common_failure_modes,
+                    default_internal_linking_min=3,
+                    default_external_linking_min=2,
+                ),
             )
-            self.session.add(style_guide)
 
             style_guide_data = {
                 "voice_tone_constraints": style_guide.voice_tone_constraints,
@@ -325,32 +344,34 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
 
         except Exception:
             # Fallback: create minimal style guide
-            style_guide = ProjectStyleGuide(
-                id=uuid.uuid4(),
-                project_id=uuid.UUID(self.project_id),
-                voice_tone_constraints={
-                    "do_list": ["Be helpful", "Use examples", "Be clear"],
-                    "dont_list": ["Use jargon", "Make unsubstantiated claims"],
-                    "good_examples": [],
-                    "bad_examples": [],
-                },
-                forbidden_claims=["#1 in the industry", "Best in class", "Guaranteed results"],
-                compliance_notes=project.compliance_flags or [],
-                formatting_requirements={
-                    "headings": "Use H2 for main sections, H3 for subsections",
-                    "lists": "Use bullet points for lists of 3+ items",
-                },
-                base_qa_checklist=[
-                    {"item": "Primary keyword in title", "required": True, "threshold": ""},
-                    {"item": "Meta description < 160 chars", "required": True, "threshold": "160"},
-                    {"item": "At least 3 internal links", "required": True, "threshold": "3"},
-                    {"item": "At least 2 external links", "required": False, "threshold": "2"},
-                ],
-                common_failure_modes=["Missing meta description", "No internal links", "Title too long"],
-                default_internal_linking_min=3,
-                default_external_linking_min=2,
+            style_guide = create(
+                self.session,
+                ProjectStyleGuide,
+                ProjectStyleGuideCreateDTO(
+                    project_id=self.project_id,
+                    voice_tone_constraints={
+                        "do_list": ["Be helpful", "Use examples", "Be clear"],
+                        "dont_list": ["Use jargon", "Make unsubstantiated claims"],
+                        "good_examples": [],
+                        "bad_examples": [],
+                    },
+                    forbidden_claims=["#1 in the industry", "Best in class", "Guaranteed results"],
+                    compliance_notes=project.compliance_flags or [],
+                    formatting_requirements={
+                        "headings": "Use H2 for main sections, H3 for subsections",
+                        "lists": "Use bullet points for lists of 3+ items",
+                    },
+                    base_qa_checklist=[
+                        {"item": "Primary keyword in title", "required": True, "threshold": ""},
+                        {"item": "Meta description < 160 chars", "required": True, "threshold": "160"},
+                        {"item": "At least 3 internal links", "required": True, "threshold": "3"},
+                        {"item": "At least 2 external links", "required": False, "threshold": "2"},
+                    ],
+                    common_failure_modes=["Missing meta description", "No internal links", "Title too long"],
+                    default_internal_linking_min=3,
+                    default_external_linking_min=2,
+                ),
             )
-            self.session.add(style_guide)
 
             style_guide_data = {
                 "voice_tone_constraints": style_guide.voice_tone_constraints,

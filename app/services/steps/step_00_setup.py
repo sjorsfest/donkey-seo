@@ -4,6 +4,7 @@ Validates domain accessibility, detects language/locale, estimates site maturity
 and sets up project configuration.
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.pipeline import StepExecution
 from app.models.project import Project
 from app.services.steps.base_step import BaseStepService, StepResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,6 +75,7 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
         )
         project = result.scalar_one()
         domain = project.domain
+        logger.info("Setting up project", extra={"project_id": input_data.project_id, "domain": domain})
 
         await self._update_progress(10, "Validating domain accessibility...")
 
@@ -85,21 +89,25 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
         html_content = access_result["html"]
         final_url = access_result["final_url"]
         redirect_chain = access_result["redirect_chain"]
+        logger.info("Domain check complete", extra={"domain": domain, "accessible": domain_accessible, "final_url": final_url, "redirect_count": len(redirect_chain) - 1})
 
         await self._update_progress(30, "Detecting language and locale...")
 
         # Detect language
         primary_language, primary_locale = self._detect_language(html_content, domain)
+        logger.info("Language detected", extra={"language": primary_language, "locale": primary_locale})
 
         await self._update_progress(50, "Checking sitemap...")
 
         # Check sitemap
         sitemap_url, sitemap_page_count = await self._check_sitemap(final_url)
+        logger.info("Sitemap check complete", extra={"sitemap_url": sitemap_url, "page_count": sitemap_page_count})
 
         await self._update_progress(70, "Checking robots.txt...")
 
         # Check robots.txt and determine if we're allowed to crawl
         robots_allowed = await self._check_robots_allowed(final_url)
+        logger.info("Robots.txt check", extra={"robots_allowed": robots_allowed})
 
         await self._update_progress(85, "Estimating site maturity...")
 
@@ -108,6 +116,7 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
             sitemap_page_count,
             html_content,
         )
+        logger.info("Site maturity estimated", extra={"maturity": site_maturity, "maturity_score": maturity_signals.get("maturity_score")})
 
         # Infer compliance SUGGESTIONS (not hard flags - user can override)
         compliance_suggestions = self._infer_compliance_suggestions(html_content)
@@ -205,6 +214,7 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
                     "redirect_chain": redirect_chain,
                 }
         except httpx.HTTPError:
+            logger.warning("Domain not accessible", extra={"domain": domain})
             return {
                 "accessible": False,
                 "html": "",

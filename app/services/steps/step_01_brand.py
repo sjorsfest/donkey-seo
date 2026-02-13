@@ -3,18 +3,21 @@
 Scrapes key pages and extracts brand positioning, products, and audience using LLM.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.brand_extractor import BrandExtractorAgent, BrandExtractorInput
 from app.integrations.scraper import scrape_website
 from app.models.brand import BrandProfile
-from app.models.pipeline import StepExecution
+from app.models.generated_dtos import BrandProfileCreateDTO, BrandProfilePatchDTO
 from app.models.project import Project
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.persistence.typed import create, patch
+from app.services.steps.base_step import BaseStepService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -76,13 +79,16 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         )
         project = result.scalar_one()
         domain = project.domain
+        logger.info("Starting brand extraction", extra={"project_id": input_data.project_id, "domain": domain})
 
         await self._update_progress(10, f"Scraping website: {domain}...")
 
         # Scrape website
         scraped_data = await scrape_website(domain, max_pages=10)
+        logger.info("Website scraped", extra={"domain": domain, "pages_scraped": len(scraped_data.get("source_urls", [])), "content_length": len(scraped_data.get("combined_content", ""))})
 
         if scraped_data.get("error"):
+            logger.warning("Scraping failed", extra={"domain": domain, "error": scraped_data["error"]})
             raise ValueError(f"Failed to scrape website: {scraped_data['error']}")
 
         await self._update_progress(40, "Analyzing brand content with AI...")
@@ -97,6 +103,7 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         # Run brand extraction agent
         agent = BrandExtractorAgent()
         brand_profile = await agent.run(agent_input)
+        logger.info("Brand profile extracted", extra={"company_name": brand_profile.company_name, "confidence": brand_profile.extraction_confidence, "products_count": len(brand_profile.products_services)})
 
         await self._update_progress(90, "Finalizing brand profile...")
 
@@ -147,52 +154,62 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         )
         brand_profile = existing.scalar_one_or_none()
 
+        profile_payload = {
+            "company_name": result.company_name,
+            "tagline": result.tagline,
+            "products_services": result.products_services,
+            "money_pages": result.money_pages,
+            "unique_value_props": result.unique_value_props,
+            "differentiators": result.differentiators,
+            "target_roles": result.target_audience.get("target_roles", []),
+            "target_industries": result.target_audience.get("target_industries", []),
+            "company_sizes": result.target_audience.get("company_sizes", []),
+            "primary_pains": result.target_audience.get("primary_pains", []),
+            "desired_outcomes": result.target_audience.get("desired_outcomes", []),
+            "objections": result.target_audience.get("objections", []),
+            "tone_attributes": result.tone_attributes,
+            "allowed_claims": result.allowed_claims,
+            "restricted_claims": result.restricted_claims,
+            "in_scope_topics": result.in_scope_topics,
+            "out_of_scope_topics": result.out_of_scope_topics,
+            "source_pages": result.source_pages,
+            "extraction_confidence": result.extraction_confidence,
+        }
+
         if brand_profile:
-            # Update existing
-            brand_profile.company_name = result.company_name
-            brand_profile.tagline = result.tagline
-            brand_profile.products_services = result.products_services
-            brand_profile.money_pages = result.money_pages
-            brand_profile.unique_value_props = result.unique_value_props
-            brand_profile.differentiators = result.differentiators
-            brand_profile.target_roles = result.target_audience.get("target_roles", [])
-            brand_profile.target_industries = result.target_audience.get("target_industries", [])
-            brand_profile.company_sizes = result.target_audience.get("company_sizes", [])
-            brand_profile.primary_pains = result.target_audience.get("primary_pains", [])
-            brand_profile.desired_outcomes = result.target_audience.get("desired_outcomes", [])
-            brand_profile.objections = result.target_audience.get("objections", [])
-            brand_profile.tone_attributes = result.tone_attributes
-            brand_profile.allowed_claims = result.allowed_claims
-            brand_profile.restricted_claims = result.restricted_claims
-            brand_profile.in_scope_topics = result.in_scope_topics
-            brand_profile.out_of_scope_topics = result.out_of_scope_topics
-            brand_profile.source_pages = result.source_pages
-            brand_profile.extraction_confidence = result.extraction_confidence
-        else:
-            # Create new
-            brand_profile = BrandProfile(
-                project_id=self.project_id,
-                company_name=result.company_name,
-                tagline=result.tagline,
-                products_services=result.products_services,
-                money_pages=result.money_pages,
-                unique_value_props=result.unique_value_props,
-                differentiators=result.differentiators,
-                target_roles=result.target_audience.get("target_roles", []),
-                target_industries=result.target_audience.get("target_industries", []),
-                company_sizes=result.target_audience.get("company_sizes", []),
-                primary_pains=result.target_audience.get("primary_pains", []),
-                desired_outcomes=result.target_audience.get("desired_outcomes", []),
-                objections=result.target_audience.get("objections", []),
-                tone_attributes=result.tone_attributes,
-                allowed_claims=result.allowed_claims,
-                restricted_claims=result.restricted_claims,
-                in_scope_topics=result.in_scope_topics,
-                out_of_scope_topics=result.out_of_scope_topics,
-                source_pages=result.source_pages,
-                extraction_confidence=result.extraction_confidence,
+            patch(
+                self.session,
+                BrandProfile,
+                brand_profile,
+                BrandProfilePatchDTO.from_partial(profile_payload),
             )
-            self.session.add(brand_profile)
+        else:
+            create(
+                self.session,
+                BrandProfile,
+                BrandProfileCreateDTO(
+                    project_id=self.project_id,
+                    company_name=result.company_name,
+                    tagline=result.tagline,
+                    products_services=result.products_services,
+                    money_pages=result.money_pages,
+                    unique_value_props=result.unique_value_props,
+                    differentiators=result.differentiators,
+                    target_roles=result.target_audience.get("target_roles", []),
+                    target_industries=result.target_audience.get("target_industries", []),
+                    company_sizes=result.target_audience.get("company_sizes", []),
+                    primary_pains=result.target_audience.get("primary_pains", []),
+                    desired_outcomes=result.target_audience.get("desired_outcomes", []),
+                    objections=result.target_audience.get("objections", []),
+                    tone_attributes=result.tone_attributes,
+                    allowed_claims=result.allowed_claims,
+                    restricted_claims=result.restricted_claims,
+                    in_scope_topics=result.in_scope_topics,
+                    out_of_scope_topics=result.out_of_scope_topics,
+                    source_pages=result.source_pages,
+                    extraction_confidence=result.extraction_confidence,
+                ),
+            )
 
         # Update project step
         project_result = await self.session.execute(

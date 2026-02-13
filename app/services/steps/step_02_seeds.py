@@ -1,20 +1,23 @@
-"""Step 2: Seed Topic Generation.
+"""Step 2: Seed Keyword Generation.
 
-Generates 10-50 seed topics organized into 3-8 pillars based on brand profile.
+Generates 20-50 seed keywords organized into buckets based on brand profile.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.topic_generator import TopicGeneratorAgent, TopicGeneratorInput
 from app.models.brand import BrandProfile
+from app.models.generated_dtos import SeedTopicCreateDTO
 from app.models.keyword import SeedTopic
-from app.models.pipeline import StepExecution
 from app.models.project import Project
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.persistence.typed import create, delete
+from app.services.steps.base_step import BaseStepService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,22 +31,22 @@ class SeedsInput:
 class SeedsOutput:
     """Output from Step 2."""
 
-    pillars_created: int
-    topics_created: int
-    pillars: list[dict[str, Any]]
-    topics: list[dict[str, Any]]
+    buckets_created: int
+    seeds_created: int
+    buckets: list[dict[str, Any]]
+    seeds: list[dict[str, Any]]
     known_gaps: list[str]
 
 
 class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
-    """Step 2: Seed Topic Generation.
+    """Step 2: Seed Keyword Generation.
 
-    Uses TopicGeneratorAgent to create content pillars and seed topics
+    Uses TopicGeneratorAgent to create seed keyword buckets and seed keywords
     based on the brand profile from Step 1.
     """
 
     step_number = 2
-    step_name = "seed_topics"
+    step_name = "seed_keywords"
     is_optional = False
 
     async def _validate_preconditions(self, input_data: SeedsInput) -> None:
@@ -67,14 +70,15 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             raise ValueError("Brand profile not found. Run Step 1 first.")
 
     async def _execute(self, input_data: SeedsInput) -> SeedsOutput:
-        """Execute seed topic generation."""
+        """Execute seed keyword generation."""
         # Load brand profile
         result = await self.session.execute(
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         brand = result.scalar_one()
+        logger.info("Generating seed keywords", extra={"project_id": input_data.project_id, "company": brand.company_name})
 
-        await self._update_progress(10, "Preparing brand context for topic generation...")
+        await self._update_progress(10, "Preparing brand context for seed keyword generation...")
 
         # Prepare agent input
         agent_input = TopicGeneratorInput(
@@ -91,77 +95,81 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             out_of_scope_topics=brand.out_of_scope_topics or [],
         )
 
-        await self._update_progress(30, "Generating content pillars and seed topics...")
+        await self._update_progress(30, "Generating seed keywords...")
 
         # Run topic generator agent
         agent = TopicGeneratorAgent()
         output = await agent.run(agent_input)
+        logger.info("Seed keywords generated", extra={"buckets_count": len(output.buckets), "seeds_count": len(output.seed_keywords), "known_gaps": len(output.known_gaps)})
 
-        await self._update_progress(80, "Processing generated topics...")
+        await self._update_progress(80, "Processing generated seed keywords...")
 
         # Convert to output format
-        pillars = [
+        buckets = [
             {
-                "name": p.name,
-                "description": p.description,
-                "icp_relevance": p.icp_relevance,
-                "product_tie_in": p.product_tie_in,
+                "name": b.name,
+                "description": b.description,
+                "icp_relevance": b.icp_relevance,
+                "product_tie_in": b.product_tie_in,
             }
-            for p in output.pillars
+            for b in output.buckets
         ]
 
-        topics = [
+        seeds = [
             {
-                "topic_phrase": t.topic_phrase,
-                "pillar_name": t.pillar_name,
-                "intended_content_types": t.intended_content_types,
-                "coverage_intent": t.coverage_intent,
-                "funnel_stage": t.funnel_stage,
-                "relevance_score": t.relevance_score,
+                "keyword": s.keyword,
+                "bucket_name": s.bucket_name,
+                "relevance_score": s.relevance_score,
             }
-            for t in output.seed_topics
+            for s in output.seed_keywords
         ]
 
-        await self._update_progress(100, "Seed topic generation complete")
+        await self._update_progress(100, "Seed keyword generation complete")
 
         return SeedsOutput(
-            pillars_created=len(pillars),
-            topics_created=len(topics),
-            pillars=pillars,
-            topics=topics,
+            buckets_created=len(buckets),
+            seeds_created=len(seeds),
+            buckets=buckets,
+            seeds=seeds,
             known_gaps=output.known_gaps,
         )
 
-    async def _persist_results(self, result: SeedsOutput) -> None:
-        """Save seed topics to database."""
-        import uuid
+    async def _validate_output(self, result: SeedsOutput, input_data: SeedsInput) -> None:
+        """Ensure output can be consumed by Step 3."""
+        if result.seeds_created <= 0:
+            raise ValueError(
+                "Step 2 generated 0 seed keywords. Step 3 requires at least one seed keyword."
+            )
 
+    async def _persist_results(self, result: SeedsOutput) -> None:
+        """Save seed keywords to database."""
         # Delete existing seed topics for this project
         existing = await self.session.execute(
             select(SeedTopic).where(SeedTopic.project_id == self.project_id)
         )
         for topic in existing.scalars():
-            await self.session.delete(topic)
+            await delete(self.session, SeedTopic, topic)
 
-        # Create pillar name to description map
-        pillar_map = {p["name"]: p for p in result.pillars}
+        # Create bucket name to info map
+        bucket_map = {b["name"]: b for b in result.buckets}
 
-        # Create seed topics
-        for topic_data in result.topics:
-            pillar_info = pillar_map.get(topic_data["pillar_name"], {})
+        # Create seed keyword records
+        for seed_data in result.seeds:
+            bucket_info = bucket_map.get(seed_data["bucket_name"], {})
 
-            seed_topic = SeedTopic(
-                project_id=uuid.UUID(self.project_id),
-                name=topic_data["topic_phrase"],
-                description=pillar_info.get("description"),
-                pillar_type="main_pillar",
-                icp_relevance=pillar_info.get("icp_relevance"),
-                product_tie_in=pillar_info.get("product_tie_in"),
-                intended_content_types=topic_data["intended_content_types"],
-                coverage_intent=topic_data["coverage_intent"],
-                relevance_score=topic_data["relevance_score"],
+            create(
+                self.session,
+                SeedTopic,
+                SeedTopicCreateDTO(
+                    project_id=self.project_id,
+                    name=seed_data["keyword"],
+                    description=bucket_info.get("description"),
+                    pillar_type=seed_data["bucket_name"],
+                    icp_relevance=bucket_info.get("icp_relevance"),
+                    product_tie_in=bucket_info.get("product_tie_in"),
+                    relevance_score=seed_data["relevance_score"],
+                ),
             )
-            self.session.add(seed_topic)
 
         # Update project step
         project_result = await self.session.execute(
@@ -172,10 +180,10 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
 
         # Set result summary
         self.set_result_summary({
-            "pillars_created": result.pillars_created,
-            "topics_created": result.topics_created,
+            "buckets_created": result.buckets_created,
+            "seeds_created": result.seeds_created,
             "known_gaps_count": len(result.known_gaps),
-            "pillar_names": [p["name"] for p in result.pillars],
+            "bucket_names": [b["name"] for b in result.buckets],
         })
 
         await self.session.commit()

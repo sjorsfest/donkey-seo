@@ -4,6 +4,7 @@ Ranks topic backlog by business value and achievability.
 Uses per-project weights with auditable explanations.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,6 +21,8 @@ from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
 from app.services.steps.base_step import BaseStepService, StepResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -119,14 +122,15 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         )
         all_topics = list(topics_result.scalars())
 
+        # Get per-project priority weights early for logging
+        weights = self._get_priority_weights(project)
+        logger.info("Prioritization starting", extra={"project_id": input_data.project_id, "topic_count": len(all_topics), "weights": weights})
+
         if not all_topics:
             return PrioritizationOutput(
                 topics_ranked=0,
                 weights_used=DEFAULT_PRIORITY_WEIGHTS,
             )
-
-        # Get per-project priority weights (or use defaults)
-        weights = self._get_priority_weights(project)
 
         await self._update_progress(10, f"Scoring {len(all_topics)} topics...")
 
@@ -236,6 +240,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                     strategy_notes = output.overall_strategy_notes
 
             except Exception:
+                logger.warning("Prioritization LLM batch failed, using fallback", extra={"batch_start": batch_start})
                 # Fallback: assign defaults based on metrics
                 for j, st in enumerate(batch):
                     topic = st["topic"]
@@ -278,6 +283,8 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 "validation_notes": prioritization["validation_notes"] if prioritization else "",
             })
 
+        logger.info("Prioritization complete", extra={"topics_ranked": len(output_topics)})
+
         await self._update_progress(100, "Prioritization complete")
 
         return PrioritizationOutput(
@@ -286,6 +293,17 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             topics=output_topics,
             strategy_notes=strategy_notes if 'strategy_notes' in dir() else "",
         )
+
+    async def _validate_output(
+        self,
+        result: PrioritizationOutput,
+        input_data: PrioritizationInput,
+    ) -> None:
+        """Ensure output can be consumed by Step 12."""
+        if result.topics_ranked <= 0:
+            raise ValueError(
+                "Step 7 ranked 0 topics. Step 12 requires at least one prioritized topic."
+            )
 
     def _get_priority_weights(self, project: Project) -> dict[str, float]:
         """Get priority weights from project settings or use defaults."""

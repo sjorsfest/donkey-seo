@@ -4,10 +4,11 @@ Fetches search volume, CPC, difficulty, and trends for all keywords.
 Implements caching with configurable TTL (default 14 days for metrics).
 """
 
+import logging
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -18,6 +19,8 @@ from app.integrations.dataforseo import DataForSEOClient, get_location_code
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.services.steps.base_step import BaseStepService, StepResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -110,7 +113,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
         # Separate into needs-fetch and already-cached
         keywords_to_fetch: list[Keyword] = []
         cached_keywords: list[Keyword] = []
-        cache_cutoff = datetime.utcnow() - timedelta(days=cache_ttl_days)
+        cache_cutoff = datetime.now(timezone.utc) - timedelta(days=cache_ttl_days)
 
         for kw in all_keywords:
             # Check if we have recent metrics
@@ -118,6 +121,8 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                 cached_keywords.append(kw)
             else:
                 keywords_to_fetch.append(kw)
+
+        logger.info("Metrics enrichment starting", extra={"project_id": input_data.project_id, "to_fetch": len(keywords_to_fetch), "cached": len(cached_keywords)})
 
         await self._update_progress(
             10,
@@ -170,10 +175,10 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                                 kw_model.search_volume = metrics.get("search_volume")
                                 kw_model.cpc = metrics.get("cpc")
                                 kw_model.competition = metrics.get("competition")
-                                kw_model.difficulty = metrics.get("competition_index")  # Use as proxy
+                                kw_model.difficulty = metrics.get("difficulty")
                                 kw_model.trend_data = metrics.get("trend_data")
                                 kw_model.metrics_data_source = "dataforseo"
-                                kw_model.metrics_updated_at = datetime.utcnow()
+                                kw_model.metrics_updated_at = datetime.now(timezone.utc)
                                 kw_model.metrics_confidence = 1.0 if metrics.get("search_volume") else 0.5
 
                                 enriched_keywords.append({
@@ -182,7 +187,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                                     "search_volume": metrics.get("search_volume"),
                                     "cpc": metrics.get("cpc"),
                                     "competition": metrics.get("competition"),
-                                    "difficulty": metrics.get("competition_index"),
+                                    "difficulty": metrics.get("difficulty"),
                                     "trend_data": metrics.get("trend_data"),
                                 })
 
@@ -194,18 +199,19 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                                 kw_model = kw_map.get(kw_normalized)
                                 if kw_model:
                                     # Set null metrics with low confidence
-                                    kw_model.metrics_updated_at = datetime.utcnow()
+                                    kw_model.metrics_updated_at = datetime.now(timezone.utc)
                                     kw_model.metrics_confidence = 0.1
                                     kw_model.metrics_data_source = "dataforseo"
                                     failed_keywords.append(kw_text)
 
                     except Exception as e:
+                        logger.warning("Metrics API error for batch", extra={"batch_num": batch_num + 1, "batch_size": len(batch), "error": str(e)})
                         # Handle API errors gracefully
                         for kw_text in batch:
                             kw_normalized = kw_text.lower().strip()
                             kw_model = kw_map.get(kw_normalized)
                             if kw_model:
-                                kw_model.metrics_updated_at = datetime.utcnow()
+                                kw_model.metrics_updated_at = datetime.now(timezone.utc)
                                 kw_model.metrics_confidence = 0.0
                                 failed_keywords.append(kw_text)
 
@@ -230,6 +236,8 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                 "trend_data": kw.trend_data,
                 "cached": True,
             })
+
+        logger.info("Metrics enrichment complete", extra={"enriched": len(enriched_keywords), "failed": len(failed_keywords), "cached": len(cached_keywords), "api_calls": api_calls_made})
 
         await self._update_progress(100, "Metrics enrichment complete")
 

@@ -1,12 +1,15 @@
 """Website scraper for extracting content from web pages."""
 
 import asyncio
+import logging
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class WebsiteScraper:
@@ -49,10 +52,12 @@ class WebsiteScraper:
         Returns:
             Dict with url, title, meta_description, headings, text_content, links
         """
+        logger.info("Scraping page", extra={"url": url})
         try:
             response = await self.client.get(url)
             response.raise_for_status()
         except httpx.HTTPError as e:
+            logger.warning("Failed to scrape page", extra={"url": url, "error": str(e)})
             return {"url": url, "error": str(e)}
 
         soup = BeautifulSoup(response.text, "lxml")
@@ -87,6 +92,8 @@ class WebsiteScraper:
         links = []
         for a in soup.find_all("a", href=True):
             href = a["href"]
+            if not isinstance(href, str):
+                continue
             full_url = urljoin(url, href)
             parsed = urlparse(full_url)
             if parsed.netloc == base_domain:
@@ -110,6 +117,7 @@ class WebsiteScraper:
         Returns:
             Dict with domain, pages[], combined_content, source_urls[]
         """
+        logger.info("Scraping website", extra={"domain": domain, "max_pages": self.max_pages})
         # Ensure domain has scheme
         if not domain.startswith(("http://", "https://")):
             domain = f"https://{domain}"
@@ -132,6 +140,7 @@ class WebsiteScraper:
         # Start with homepage
         homepage = await self.scrape_page(domain)
         if "error" in homepage:
+            logger.warning("Homepage scrape failed", extra={"domain": domain, "error": homepage["error"]})
             return {"domain": domain, "error": homepage["error"], "pages": []}
 
         pages = [homepage]
@@ -181,6 +190,7 @@ class WebsiteScraper:
 
             combined_parts.append("")
 
+        logger.info("Website scrape complete", extra={"domain": domain, "pages_scraped": len(pages), "urls_found": len(crawled_urls)})
         return {
             "domain": domain,
             "pages": pages,

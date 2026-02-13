@@ -1,18 +1,25 @@
 """Project API endpoints."""
 
+import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 from sqlalchemy import func, select
 
+from app.api.v1.dependencies import get_user_project
+from app.api.v1.projects.constants import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.dependencies import CurrentUser, DbSession
+from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 from app.models.project import Project
+from app.persistence.typed import create, delete, patch
 from app.schemas.project import (
     ProjectCreate,
     ProjectListResponse,
     ProjectResponse,
     ProjectUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -24,21 +31,33 @@ async def create_project(
     session: DbSession,
 ) -> Project:
     """Create a new keyword research project."""
-    project = Project(
-        user_id=current_user.id,
-        name=project_data.name,
-        domain=project_data.domain,
-        description=project_data.description,
-        primary_language=project_data.primary_language,
-        primary_locale=project_data.primary_locale,
-        secondary_locales=project_data.secondary_locales,
-        primary_goal=project_data.goals.primary_objective if project_data.goals else None,
-        secondary_goals=project_data.goals.secondary_goals if project_data.goals else None,
-        skip_steps=project_data.settings.skip_steps if project_data.settings else None,
+    project = create(
+        session,
+        Project,
+        ProjectCreateDTO(
+            user_id=current_user.id,
+            name=project_data.name,
+            domain=project_data.domain,
+            description=project_data.description,
+            primary_language=project_data.primary_language,
+            primary_locale=project_data.primary_locale,
+            secondary_locales=project_data.secondary_locales,
+            primary_goal=project_data.goals.primary_objective if project_data.goals else None,
+            secondary_goals=project_data.goals.secondary_goals if project_data.goals else None,
+            skip_steps=project_data.settings.skip_steps if project_data.settings else None,
+        ),
     )
-    session.add(project)
     await session.flush()
     await session.refresh(project)
+
+    logger.info(
+        "Project created",
+        extra={
+            "project_id": str(project.id),
+            "domain": project.domain,
+            "user_id": str(current_user.id),
+        },
+    )
 
     return project
 
@@ -47,15 +66,17 @@ async def create_project(
 async def list_projects(
     current_user: CurrentUser,
     session: DbSession,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page: int = Query(DEFAULT_PAGE, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
 ) -> ProjectListResponse:
     """List all projects for the current user."""
-    # Count total
-    count_query = select(func.count()).select_from(Project).where(Project.user_id == current_user.id)
+    count_query = (
+        select(func.count())
+        .select_from(Project)
+        .where(Project.user_id == current_user.id)
+    )
     total = await session.scalar(count_query) or 0
 
-    # Get paginated results
     offset = (page - 1) * page_size
     query = (
         select(Project)
@@ -82,18 +103,7 @@ async def get_project(
     session: DbSession,
 ) -> Project:
     """Get a specific project by ID."""
-    result = await session.execute(
-        select(Project).where(Project.id == project_id, Project.user_id == current_user.id)
-    )
-    project = result.scalar_one_or_none()
-
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-
-    return project
+    return await get_user_project(project_id, current_user, session)
 
 
 @router.put("/{project_id}", response_model=ProjectResponse)
@@ -104,22 +114,20 @@ async def update_project(
     session: DbSession,
 ) -> Project:
     """Update a project."""
-    result = await session.execute(
-        select(Project).where(Project.id == project_id, Project.user_id == current_user.id)
-    )
-    project = result.scalar_one_or_none()
+    project = await get_user_project(project_id, current_user, session)
 
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-
-    # Update fields
     update_data = project_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        if hasattr(project, field):
-            setattr(project, field, value)
+    patch_data = {
+        field: value
+        for field, value in update_data.items()
+        if hasattr(project, field)
+    }
+    patch(
+        session,
+        Project,
+        project,
+        ProjectPatchDTO.from_partial(patch_data),
+    )
 
     await session.flush()
     await session.refresh(project)
@@ -134,15 +142,11 @@ async def delete_project(
     session: DbSession,
 ) -> None:
     """Delete a project."""
-    result = await session.execute(
-        select(Project).where(Project.id == project_id, Project.user_id == current_user.id)
+    project = await get_user_project(project_id, current_user, session)
+
+    logger.info(
+        "Project deleted",
+        extra={"project_id": str(project_id), "user_id": str(current_user.id)},
     )
-    project = result.scalar_one_or_none()
 
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-
-    await session.delete(project)
+    await delete(session, Project, project)

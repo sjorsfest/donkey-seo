@@ -7,10 +7,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.project import Project
@@ -29,8 +29,8 @@ class SeedTopic(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "seed_topics"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -69,26 +69,26 @@ class Keyword(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "keywords"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    seed_topic_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
+    seed_topic_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
         ForeignKey("seed_topics.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    topic_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
+    topic_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
         ForeignKey("topics.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    parent_keyword_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
+    parent_keyword_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
         ForeignKey("keywords.id", ondelete="SET NULL"),
         nullable=True,
     )

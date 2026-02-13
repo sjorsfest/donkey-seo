@@ -1,8 +1,12 @@
 """Prioritization agent for Step 7: Topic Prioritization."""
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from app.agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class TopicPrioritization(BaseModel):
@@ -58,7 +62,7 @@ class PrioritizationAgent(BaseAgent[PrioritizationAgentInput, PrioritizationAgen
     - Flag topics that need SERP validation
     """
 
-    model = "openai:gpt-4-turbo"
+    model_tier = "standard"
     temperature = 0.3
 
     @property
@@ -101,6 +105,15 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
         return PrioritizationAgentOutput
 
     def _build_prompt(self, input_data: PrioritizationAgentInput) -> str:
+        logger.info(
+            "Building prioritization prompt",
+            extra={
+                "topic_count": len(input_data.topics),
+                "money_pages_count": len(input_data.money_pages),
+                "has_brand_context": bool(input_data.brand_context),
+                "primary_goal": input_data.primary_goal or "not set",
+            },
+        )
         topics_text = []
         for i, topic in enumerate(input_data.topics):
             name = topic.get("name", f"Topic {i}")

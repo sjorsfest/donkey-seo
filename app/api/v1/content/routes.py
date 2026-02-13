@@ -1,13 +1,22 @@
 """Content briefs API endpoints."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 
+from app.api.v1.content.constants import (
+    CONTENT_BRIEF_NOT_FOUND_DETAIL,
+    DEFAULT_PAGE,
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+)
+from app.api.v1.dependencies import get_user_project
 from app.dependencies import CurrentUser, DbSession
 from app.models.content import ContentBrief, WriterInstructions
-from app.models.project import Project
+from app.models.generated_dtos import ContentBriefCreateDTO, ContentBriefPatchDTO
+from app.persistence.typed import create, delete, patch
 from app.schemas.content import (
     ContentBriefCreate,
     ContentBriefDetailResponse,
@@ -17,26 +26,9 @@ from app.schemas.content import (
     WriterInstructionsResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
-
-
-async def get_user_project(
-    project_id: uuid.UUID,
-    current_user: CurrentUser,
-    session: DbSession,
-) -> Project:
-    """Helper to get and verify project ownership."""
-    result = await session.execute(
-        select(Project).where(Project.id == project_id, Project.user_id == current_user.id)
-    )
-    project = result.scalar_one_or_none()
-
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-    return project
 
 
 @router.get("/{project_id}/briefs", response_model=ContentBriefListResponse)
@@ -44,31 +36,28 @@ async def list_briefs(
     project_id: uuid.UUID,
     current_user: CurrentUser,
     session: DbSession,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page: int = Query(DEFAULT_PAGE, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     status_filter: str | None = Query(None, alias="status"),
 ) -> ContentBriefListResponse:
     """List content briefs for a project."""
     await get_user_project(project_id, current_user, session)
 
-    # Build query
     query = select(ContentBrief).where(ContentBrief.project_id == project_id)
 
     if status_filter:
         query = query.where(ContentBrief.status == status_filter)
 
-    # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total = await session.scalar(count_query) or 0
 
-    # Get paginated results
     offset = (page - 1) * page_size
     query = query.order_by(ContentBrief.created_at.desc()).offset(offset).limit(page_size)
     result = await session.execute(query)
     briefs = result.scalars().all()
 
     return ContentBriefListResponse(
-        items=[ContentBriefResponse.model_validate(b) for b in briefs],
+        items=[ContentBriefResponse.model_validate(brief) for brief in briefs],
         total=total,
         page=page,
         page_size=page_size,
@@ -96,13 +85,17 @@ async def get_brief(
     if not brief:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content brief not found",
+            detail=CONTENT_BRIEF_NOT_FOUND_DETAIL,
         )
 
     return brief
 
 
-@router.post("/{project_id}/briefs", response_model=ContentBriefResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{project_id}/briefs",
+    response_model=ContentBriefResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_brief(
     project_id: uuid.UUID,
     brief_data: ContentBriefCreate,
@@ -112,17 +105,29 @@ async def create_brief(
     """Create a new content brief."""
     await get_user_project(project_id, current_user, session)
 
-    brief = ContentBrief(
-        project_id=project_id,
-        topic_id=uuid.UUID(brief_data.topic_id),
-        primary_keyword=brief_data.primary_keyword,
-        working_titles=brief_data.working_titles,
-        target_word_count_min=brief_data.target_word_count_min,
-        target_word_count_max=brief_data.target_word_count_max,
+    brief = create(
+        session,
+        ContentBrief,
+        ContentBriefCreateDTO(
+            project_id=str(project_id),
+            topic_id=brief_data.topic_id,
+            primary_keyword=brief_data.primary_keyword,
+            working_titles=brief_data.working_titles,
+            target_word_count_min=brief_data.target_word_count_min,
+            target_word_count_max=brief_data.target_word_count_max,
+        ),
     )
-    session.add(brief)
     await session.flush()
     await session.refresh(brief)
+
+    logger.info(
+        "Content brief created",
+        extra={
+            "project_id": str(project_id),
+            "brief_id": str(brief.id),
+            "keyword": brief.primary_keyword,
+        },
+    )
 
     return brief
 
@@ -149,12 +154,16 @@ async def update_brief(
     if not brief:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content brief not found",
+            detail=CONTENT_BRIEF_NOT_FOUND_DETAIL,
         )
 
     update_data = brief_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(brief, field, value)
+    patch(
+        session,
+        ContentBrief,
+        brief,
+        ContentBriefPatchDTO.from_partial(update_data),
+    )
 
     await session.flush()
     await session.refresh(brief)
@@ -183,13 +192,16 @@ async def delete_brief(
     if not brief:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content brief not found",
+            detail=CONTENT_BRIEF_NOT_FOUND_DETAIL,
         )
 
-    await session.delete(brief)
+    await delete(session, ContentBrief, brief)
 
 
-@router.get("/{project_id}/briefs/{brief_id}/instructions", response_model=WriterInstructionsResponse | None)
+@router.get(
+    "/{project_id}/briefs/{brief_id}/instructions",
+    response_model=WriterInstructionsResponse | None,
+)
 async def get_writer_instructions(
     project_id: uuid.UUID,
     brief_id: uuid.UUID,
@@ -199,7 +211,6 @@ async def get_writer_instructions(
     """Get writer instructions for a brief."""
     await get_user_project(project_id, current_user, session)
 
-    # Verify brief exists
     result = await session.execute(
         select(ContentBrief).where(
             ContentBrief.id == brief_id,
@@ -211,10 +222,9 @@ async def get_writer_instructions(
     if not brief:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Content brief not found",
+            detail=CONTENT_BRIEF_NOT_FOUND_DETAIL,
         )
 
-    # Get instructions
     result = await session.execute(
         select(WriterInstructions).where(WriterInstructions.brief_id == brief_id)
     )

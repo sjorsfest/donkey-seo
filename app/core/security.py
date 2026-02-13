@@ -1,26 +1,31 @@
 """JWT authentication and password hashing utilities."""
 
+import logging
+
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.config import settings
 from app.core.exceptions import InvalidTokenError
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger(__name__)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    return bcrypt.checkpw(
+        plain_password.encode("utf-8"), hashed_password.encode("utf-8")
+    )
 
 
 def get_password_hash(password: str) -> str:
     """Hash a password."""
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
 
 
 def create_access_token(
@@ -29,6 +34,7 @@ def create_access_token(
     extra_claims: dict[str, Any] | None = None,
 ) -> str:
     """Create a JWT access token."""
+    logger.info("Creating access token", extra={"subject": subject})
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
@@ -56,6 +62,7 @@ def create_refresh_token(
     expires_delta: timedelta | None = None,
 ) -> str:
     """Create a JWT refresh token."""
+    logger.info("Creating refresh token", extra={"subject": subject})
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
@@ -88,15 +95,18 @@ def decode_token(token: str, expected_type: str = "access") -> dict[str, Any]:
         # Verify token type
         token_type = payload.get("type")
         if token_type != expected_type:
+            logger.warning("Token type mismatch", extra={"expected": expected_type, "got": token_type})
             raise InvalidTokenError(f"Expected {expected_type} token, got {token_type}")
 
         # Check if subject exists
         if payload.get("sub") is None:
+            logger.warning("Token missing subject")
             raise InvalidTokenError("Token missing subject")
 
         return payload
 
     except JWTError as e:
+        logger.warning("Token decode failed", extra={"error": str(e)})
         raise InvalidTokenError(str(e)) from e
 
 

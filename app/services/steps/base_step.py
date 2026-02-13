@@ -1,5 +1,6 @@
 """Base class for pipeline step services."""
 
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
@@ -8,6 +9,8 @@ import traceback
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pipeline import StepExecution
+
+logger = logging.getLogger(__name__)
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -56,26 +59,41 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
 
     async def run(self, input_data: InputT) -> StepResult[OutputT]:
         """Main execution method with error handling and progress tracking."""
+        step_info = {"step": self.step_number, "step_name": self.step_name, "project_id": self.project_id}
+        logger.info("Step started", extra=step_info)
+
         try:
             await self._update_status("running")
 
             # Check for checkpoint to resume
             if self.execution.checkpoint_data:
+                logger.info("Restoring from checkpoint", extra=step_info)
                 await self._restore_checkpoint(self.execution.checkpoint_data)
 
             # Validate preconditions
             await self._validate_preconditions(input_data)
+            logger.info("Preconditions validated", extra=step_info)
 
             # Execute main logic
             result = await self._execute(input_data)
+            logger.info("Step execution finished, validating output", extra=step_info)
+
+            # Validate output is usable downstream
+            await self._validate_output(result, input_data)
+            logger.info("Output validated, persisting results", extra=step_info)
 
             # Persist results
             await self._persist_results(result)
 
             await self._update_status("completed")
+            logger.info("Step completed successfully", extra=step_info)
             return StepResult(success=True, data=result)
 
         except Exception as e:
+            logger.warning(
+                "Step failed",
+                extra={**step_info, "error": str(e)},
+            )
             await self._handle_error(e)
             return StepResult(success=False, error=str(e))
 
@@ -98,6 +116,14 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
         """Save results to database."""
         pass
 
+    async def _validate_output(self, result: OutputT, input_data: InputT) -> None:
+        """Validate step output before persisting.
+
+        Override in step services when the next step requires minimum output
+        guarantees (e.g., non-empty seeds, keywords, or topics).
+        """
+        return None
+
     async def _update_progress(
         self,
         percent: float,
@@ -115,6 +141,10 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
 
     async def _save_checkpoint(self, checkpoint_data: dict[str, Any]) -> None:
         """Save checkpoint for resumability."""
+        logger.info(
+            "Saving checkpoint",
+            extra={"step": self.step_number, "step_name": self.step_name, "checkpoint_keys": list(checkpoint_data.keys())},
+        )
         self.execution.checkpoint_data = checkpoint_data
         await self.session.commit()
 

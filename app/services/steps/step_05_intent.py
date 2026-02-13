@@ -4,19 +4,21 @@ Classifies search intent and recommends content format for each keyword.
 Uses deterministic rules first, then LLM for ambiguous cases.
 """
 
+import asyncio
+import logging
 import re
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.intent_classifier import IntentClassifierAgent, IntentClassifierInput
-from app.models.keyword import Keyword
 from app.models.brand import BrandProfile
+from app.models.keyword import Keyword
 from app.models.project import Project
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.services.steps.base_step import BaseStepService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -121,6 +123,7 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
     is_optional = False
 
     LLM_BATCH_SIZE = 30  # Keywords per LLM call
+    LLM_MAX_CONCURRENT_BATCHES = 3
 
     async def _validate_preconditions(self, input_data: IntentInput) -> None:
         """Validate Step 4 is completed."""
@@ -145,7 +148,14 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
 
         brand_context = ""
         if brand:
-            brand_context = f"Brand: {brand.company_name}. Products: {', '.join(p.get('name', '') for p in (brand.products_services or [])[:5])}"
+            products = [
+                p.get("name", "")
+                for p in (brand.products_services or [])[:5]
+            ]
+            brand_context = (
+                f"Brand: {brand.company_name}. "
+                f"Products: {', '.join(products)}"
+            )
 
         await self._update_progress(5, "Loading keywords...")
 
@@ -171,6 +181,16 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
             else:
                 needs_llm.append(kw)
 
+        logger.info(
+            "Intent rule classification done",
+            extra={
+                "project_id": input_data.project_id,
+                "rule_classified": len(rule_classified),
+                "needs_llm": len(needs_llm),
+                "total_keywords": len(all_keywords),
+            },
+        )
+
         await self._update_progress(
             30,
             f"Rules classified {len(rule_classified)}, "
@@ -181,52 +201,116 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
         llm_classified: list[tuple[Keyword, dict]] = []
 
         if needs_llm:
-            agent = IntentClassifierAgent()
-
             total_batches = (len(needs_llm) + self.LLM_BATCH_SIZE - 1) // self.LLM_BATCH_SIZE
+            keyword_positions = {id(kw): idx for idx, kw in enumerate(needs_llm)}
+            max_concurrent = min(self.LLM_MAX_CONCURRENT_BATCHES, total_batches)
+            semaphore = asyncio.Semaphore(max_concurrent)
 
+            logger.info(
+                "Intent LLM batching",
+                extra={
+                    "project_id": input_data.project_id,
+                    "total_batches": total_batches,
+                    "batch_size": self.LLM_BATCH_SIZE,
+                    "max_concurrent_batches": max_concurrent,
+                },
+            )
+
+            await self._update_progress(
+                35,
+                f"Running {total_batches} LLM batches (max {max_concurrent} concurrent)...",
+            )
+
+            async def _process_batch(
+                batch_num: int,
+                batch: list[Keyword],
+            ) -> tuple[int, list[tuple[Keyword, dict]]]:
+                batch_size = len(batch)
+                async with semaphore:
+                    logger.info(
+                        "Intent LLM batch started",
+                        extra={
+                            "batch_num": batch_num + 1,
+                            "total_batches": total_batches,
+                            "batch_size": batch_size,
+                        },
+                    )
+                    agent = IntentClassifierAgent()
+                    batch_results: list[tuple[Keyword, dict]] = []
+                    used_fallback = False
+                    try:
+                        agent_input = IntentClassifierInput(
+                            keywords=[kw.keyword for kw in batch],
+                            context=brand_context,
+                        )
+                        output = await agent.run(agent_input)
+
+                        # Match classifications to keywords
+                        kw_map = {kw.keyword.lower(): kw for kw in batch}
+                        for classification in output.classifications:
+                            kw = kw_map.get(classification.keyword.lower())
+                            if kw:
+                                batch_results.append((kw, {
+                                    "intent": classification.intent_label,
+                                    "intent_confidence": classification.intent_confidence,
+                                    "page_type": classification.recommended_page_type,
+                                    "funnel_stage": classification.funnel_stage,
+                                    "rationale": classification.intent_rationale,
+                                    "risk_flags": classification.risk_flags,
+                                }))
+                    except Exception:
+                        logger.warning(
+                            "Intent LLM batch failed, using fallback",
+                            extra={
+                                "batch_num": batch_num + 1,
+                                "total_batches": total_batches,
+                                "batch_size": batch_size,
+                            },
+                        )
+                        used_fallback = True
+                        # Fallback: mark as informational with low confidence
+                        for kw in batch:
+                            batch_results.append((kw, {
+                                "intent": "informational",
+                                "intent_confidence": 0.3,
+                                "page_type": "guide",
+                                "funnel_stage": "tofu",
+                                "rationale": "Fallback classification",
+                                "risk_flags": ["ambiguous"],
+                            }))
+
+                    logger.info(
+                        "Intent LLM batch completed",
+                        extra={
+                            "batch_num": batch_num + 1,
+                            "total_batches": total_batches,
+                            "result_count": len(batch_results),
+                            "fallback_used": used_fallback,
+                        },
+                    )
+
+                    return batch_num, batch_results
+
+            tasks = []
             for batch_num in range(total_batches):
                 start_idx = batch_num * self.LLM_BATCH_SIZE
                 end_idx = min(start_idx + self.LLM_BATCH_SIZE, len(needs_llm))
                 batch = needs_llm[start_idx:end_idx]
+                tasks.append(asyncio.create_task(_process_batch(batch_num, batch)))
 
-                progress = 30 + int((batch_num / total_batches) * 60)
+            completed = 0
+            for completed_task in asyncio.as_completed(tasks):
+                _, batch_results = await completed_task
+                llm_classified.extend(batch_results)
+                completed += 1
+                progress = 35 + int((completed / total_batches) * 55)
                 await self._update_progress(
                     progress,
-                    f"LLM batch {batch_num + 1}/{total_batches}..."
+                    f"LLM batches complete: {completed}/{total_batches}",
                 )
 
-                try:
-                    agent_input = IntentClassifierInput(
-                        keywords=[kw.keyword for kw in batch],
-                        context=brand_context,
-                    )
-                    output = await agent.run(agent_input)
-
-                    # Match classifications to keywords
-                    kw_map = {kw.keyword.lower(): kw for kw in batch}
-                    for classification in output.classifications:
-                        kw = kw_map.get(classification.keyword.lower())
-                        if kw:
-                            llm_classified.append((kw, {
-                                "intent": classification.intent_label,
-                                "intent_confidence": classification.intent_confidence,
-                                "page_type": classification.recommended_page_type,
-                                "funnel_stage": classification.funnel_stage,
-                                "rationale": classification.intent_rationale,
-                                "risk_flags": classification.risk_flags,
-                            }))
-                except Exception:
-                    # Fallback: mark as informational with low confidence
-                    for kw in batch:
-                        llm_classified.append((kw, {
-                            "intent": "informational",
-                            "intent_confidence": 0.3,
-                            "page_type": "guide",
-                            "funnel_stage": "tofu",
-                            "rationale": "Fallback classification",
-                            "risk_flags": ["ambiguous"],
-                        }))
+            # Keep output stable to match keyword load order
+            llm_classified.sort(key=lambda item: keyword_positions.get(id(item[0]), len(needs_llm)))
 
         await self._update_progress(95, "Finalizing classifications...")
 
@@ -252,6 +336,15 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
                 "funnel_stage": classification["funnel_stage"],
                 "risk_flags": classification.get("risk_flags", []),
             })
+
+        logger.info(
+            "Intent classification complete",
+            extra={
+                "total_labeled": len(all_classified),
+                "by_rule": len(rule_classified),
+                "by_llm": len(llm_classified),
+            },
+        )
 
         await self._update_progress(100, "Intent classification complete")
 

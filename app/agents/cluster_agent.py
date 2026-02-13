@@ -1,8 +1,12 @@
 """Cluster agent for Step 6: Keyword Clustering."""
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from app.agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class ClusterValidation(BaseModel):
@@ -40,7 +44,7 @@ class ClusterAgent(BaseAgent[ClusterAgentInput, ClusterAgentOutput]):
     - Flag clusters that should be split or merged
     """
 
-    model = "openai:gpt-4-turbo"
+    model_tier = "standard"
     temperature = 0.4
 
     @property
@@ -80,6 +84,13 @@ Be precise and practical. Focus on whether keywords can be addressed by a single
         return ClusterAgentOutput
 
     def _build_prompt(self, input_data: ClusterAgentInput) -> str:
+        logger.info(
+            "Building cluster validation prompt",
+            extra={
+                "cluster_count": len(input_data.clusters),
+                "total_keywords": sum(len(c.get("keywords", [])) for c in input_data.clusters),
+            },
+        )
         clusters_text = []
         for i, cluster in enumerate(input_data.clusters):
             keywords = cluster.get("keywords", [])

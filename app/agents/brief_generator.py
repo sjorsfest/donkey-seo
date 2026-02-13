@@ -1,8 +1,12 @@
 """Brief generator agent for Step 12: Content Brief Generation."""
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from app.agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class OutlineSection(BaseModel):
@@ -101,7 +105,7 @@ class BriefGeneratorAgent(BaseAgent[BriefGeneratorInput, BriefGeneratorOutput]):
     - Word count targets
     """
 
-    model = "openai:gpt-4-turbo"
+    model_tier = "reasoning"  # Complex generation
     temperature = 0.5
 
     @property
@@ -154,6 +158,16 @@ Be specific and actionable. The writer should know exactly what to create."""
         return BriefGeneratorOutput
 
     def _build_prompt(self, input_data: BriefGeneratorInput) -> str:
+        logger.info(
+            "Building content brief prompt",
+            extra={
+                "topic": input_data.topic_name,
+                "primary_keyword": input_data.primary_keyword,
+                "page_type": input_data.page_type,
+                "funnel_stage": input_data.funnel_stage,
+                "supporting_keywords_count": len(input_data.supporting_keywords),
+            },
+        )
         # Format supporting keywords
         supporting_kws = "\n".join(f"  - {kw}" for kw in input_data.supporting_keywords[:15])
 

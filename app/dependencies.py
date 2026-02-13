@@ -1,5 +1,7 @@
 """Dependency injection providers."""
 
+import logging
+
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -12,6 +14,8 @@ from app.core.exceptions import InvalidTokenError, UserNotFoundError
 from app.core.security import verify_access_token
 from app.models.user import User
 
+logger = logging.getLogger(__name__)
+
 security = HTTPBearer()
 
 
@@ -23,6 +27,7 @@ async def get_current_user(
     try:
         user_id = verify_access_token(credentials.credentials)
     except InvalidTokenError as e:
+        logger.warning("Authentication failed: invalid token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
@@ -33,6 +38,7 @@ async def get_current_user(
     user = result.scalar_one_or_none()
 
     if user is None:
+        logger.warning("Authentication failed: user not found", extra={"user_id": user_id})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
@@ -40,6 +46,7 @@ async def get_current_user(
         )
 
     if not user.is_active:
+        logger.warning("Authentication failed: inactive user", extra={"user_id": str(user.id)})
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is deactivated",

@@ -6,10 +6,10 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.keyword import Keyword
@@ -22,20 +22,20 @@ class ContentBrief(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "content_briefs"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    topic_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    topic_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("topics.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    target_keyword_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    target_keyword_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("keywords.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -93,8 +93,8 @@ class WriterInstructions(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "writer_instructions"
 
-    brief_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    brief_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("content_briefs.id", ondelete="CASCADE"),
         unique=True,
         nullable=False,

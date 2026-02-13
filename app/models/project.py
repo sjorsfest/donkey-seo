@@ -6,10 +6,10 @@ import uuid
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.brand import BrandProfile
@@ -30,8 +30,8 @@ class Project(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "projects"
 
     # Owner
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    user_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

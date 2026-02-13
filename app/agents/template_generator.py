@@ -1,8 +1,12 @@
 """Template generator agent for Step 13: Writer Instructions + QA Gates."""
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from app.agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 # ========== Project Style Guide Generation ==========
@@ -109,7 +113,7 @@ class StyleGuideGeneratorAgent(BaseAgent[StyleGuideGeneratorInput, StyleGuideGen
     - Base QA checklist
     """
 
-    model = "openai:gpt-4-turbo"
+    model_tier = "reasoning"  # Complex generation
     temperature = 0.3
 
     @property
@@ -155,6 +159,14 @@ Be specific and actionable. This guide will be used by writers and AI tools."""
         return StyleGuideGeneratorOutput
 
     def _build_prompt(self, input_data: StyleGuideGeneratorInput) -> str:
+        logger.info(
+            "Building style guide prompt",
+            extra={
+                "company": input_data.company_name,
+                "tone_attributes_count": len(input_data.tone_attributes),
+                "compliance_flags": input_data.compliance_flags,
+            },
+        )
         products = ", ".join(input_data.products_services) if input_data.products_services else "Not specified"
         tone = ", ".join(input_data.tone_attributes) if input_data.tone_attributes else "Professional"
         audience = ", ".join(input_data.target_audience) if input_data.target_audience else "General audience"
@@ -244,7 +256,7 @@ class BriefDeltaGeneratorAgent(BaseAgent[BriefDeltaGeneratorInput, BriefDeltaGen
     from the base ProjectStyleGuide.
     """
 
-    model = "openai:gpt-4-turbo"
+    model_tier = "fast"  # Simple templating
     temperature = 0.3
 
     @property
@@ -284,6 +296,14 @@ Be concise - only include what's DIFFERENT from a standard article."""
         return BriefDeltaGeneratorOutput
 
     def _build_prompt(self, input_data: BriefDeltaGeneratorInput) -> str:
+        logger.info(
+            "Building brief delta prompt",
+            extra={
+                "page_type": input_data.page_type,
+                "search_intent": input_data.search_intent,
+                "funnel_stage": input_data.funnel_stage,
+            },
+        )
         brief = input_data.brief_summary
 
         return f"""Generate page-type specific instructions for this brief:

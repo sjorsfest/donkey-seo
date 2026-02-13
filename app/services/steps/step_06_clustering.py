@@ -5,22 +5,25 @@ Groups keywords into topic clusters using two-stage clustering:
 2. Refine with HDBSCAN embeddings
 """
 
-import re
-import uuid
+import asyncio
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.cluster_agent import ClusterAgent, ClusterAgentInput
 from app.integrations.embeddings import EmbeddingsClient
 from app.models.brand import BrandProfile
+from app.models.generated_dtos import TopicCreateDTO
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.persistence.typed import create, delete
+from app.services.steps.base_step import BaseStepService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -87,7 +90,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         brand = brand_result.scalar_one_or_none()
-        brand_context = brand.company_name if brand else ""
+        brand_context = (brand.company_name or "") if brand else ""
 
         await self._update_progress(5, "Loading keywords with intent...")
 
@@ -99,6 +102,13 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             )
         )
         all_keywords = list(keywords_result.scalars())
+        logger.info(
+            "Clustering starting",
+            extra={
+                "project_id": input_data.project_id,
+                "keyword_count": len(all_keywords),
+            },
+        )
 
         if len(all_keywords) < self.MIN_CLUSTER_SIZE:
             return ClusteringOutput(
@@ -111,14 +121,22 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
 
         # Stage 1: Coarse clustering
         coarse_clusters = self._stage1_coarse_cluster(all_keywords)
+        logger.info("Coarse clustering done", extra={"cluster_count": len(coarse_clusters)})
 
         await self._update_progress(30, f"Created {len(coarse_clusters)} coarse clusters")
         await self._update_progress(35, "Stage 2: Refining with embeddings...")
 
         # Stage 2: Refine with embeddings
         refined_clusters = await self._stage2_refine_with_embeddings(coarse_clusters)
+        logger.info("Refinement done", extra={"refined_count": len(refined_clusters)})
 
-        await self._update_progress(70, f"Refined to {len(refined_clusters)} clusters")
+        await self._update_progress(65, f"Refined to {len(refined_clusters)} clusters")
+
+        # Merge undersized clusters so they don't all get filtered out
+        refined_clusters = self._merge_small_clusters(refined_clusters)
+        logger.info("After merging small clusters", extra={"cluster_count": len(refined_clusters)})
+
+        await self._update_progress(70, f"Merged to {len(refined_clusters)} clusters")
         await self._update_progress(75, "Validating and naming clusters...")
 
         # Validate and name clusters with LLM
@@ -135,6 +153,13 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
         for c in final_clusters:
             if len(c["keywords"]) < self.MIN_CLUSTER_SIZE:
                 unclustered.extend(c["keywords"])
+        logger.info(
+            "Cluster validation done",
+            extra={
+                "valid_clusters": len(valid_clusters),
+                "unclustered": len(unclustered),
+            },
+        )
 
         await self._update_progress(100, "Clustering complete")
 
@@ -144,6 +169,13 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             clusters=valid_clusters,
             unclustered_keywords=[kw.keyword for kw in unclustered],
         )
+
+    async def _validate_output(self, result: ClusteringOutput, input_data: ClusteringInput) -> None:
+        """Ensure output can be consumed by Step 7."""
+        if result.clusters_created <= 0:
+            raise ValueError(
+                "Step 6 produced 0 valid clusters. Step 7 requires at least one cluster/topic."
+            )
 
     def _stage1_coarse_cluster(
         self,
@@ -230,7 +262,10 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                     )
 
                     # Group by cluster label
-                    sub_clusters: dict[int, list[tuple[Keyword, float, list[float]]]] = defaultdict(list)
+                    sub_clusters: dict[
+                        int,
+                        list[tuple[Keyword, float, list[float]]],
+                    ] = defaultdict(list)
                     for kw, label, prob, emb in zip(keywords, labels, probs, embeddings):
                         sub_clusters[label].append((kw, prob, emb))
 
@@ -266,6 +301,13 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                             })
 
                 except Exception:
+                    logger.warning(
+                        "HDBSCAN clustering failed for cluster, using fallback",
+                        extra={
+                            "cluster_key": cluster_key,
+                            "keyword_count": len(keywords),
+                        },
+                    )
                     # Fallback: keep as single cluster
                     intent = cluster_key.split("::")[0]
                     refined_clusters.append({
@@ -275,6 +317,79 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                     })
 
         return refined_clusters
+
+    def _merge_small_clusters(
+        self,
+        clusters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge undersized clusters into same-intent neighbors.
+
+        Clusters with fewer than MIN_CLUSTER_SIZE keywords get absorbed into
+        the closest same-intent cluster (matched by shared head-term words).
+        Remaining orphans with the same intent are grouped together.
+        """
+        large: list[dict[str, Any]] = []
+        small: list[dict[str, Any]] = []
+
+        for c in clusters:
+            if len(c.get("keywords", [])) >= self.MIN_CLUSTER_SIZE:
+                large.append(c)
+            else:
+                small.append(c)
+
+        if not small:
+            return clusters
+
+        logger.info(
+            "Merging small clusters",
+            extra={"large": len(large), "small": len(small)},
+        )
+
+        # Try to merge each small cluster into a same-intent large cluster
+        # that shares at least one head-term word
+        unmerged: list[dict[str, Any]] = []
+        for sc in small:
+            sc_intent = sc.get("dominant_intent", "unknown")
+            sc_head_words = set(sc.get("head_term", "").split())
+
+            best_match: dict[str, Any] | None = None
+            best_overlap = 0
+            for lc in large:
+                if lc.get("dominant_intent") != sc_intent:
+                    continue
+                lc_head_words = set(lc.get("head_term", "").split())
+                overlap = len(sc_head_words & lc_head_words)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_match = lc
+
+            if best_match is not None and best_overlap > 0:
+                best_match["keywords"].extend(sc.get("keywords", []))
+            else:
+                unmerged.append(sc)
+
+        # Group remaining orphans by intent
+        orphan_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for sc in unmerged:
+            orphan_groups[sc.get("dominant_intent", "unknown")].append(sc)
+
+        for intent, group in orphan_groups.items():
+            merged_keywords = []
+            head_terms = []
+            for sc in group:
+                merged_keywords.extend(sc.get("keywords", []))
+                head_terms.append(sc.get("head_term", ""))
+
+            # Split into chunks of MAX_CLUSTER_SIZE if too many
+            for i in range(0, len(merged_keywords), self.MAX_CLUSTER_SIZE):
+                chunk = merged_keywords[i : i + self.MAX_CLUSTER_SIZE]
+                large.append({
+                    "keywords": chunk,
+                    "dominant_intent": intent,
+                    "head_term": head_terms[0] if head_terms else "",
+                })
+
+        return large
 
     async def _validate_and_name_clusters(
         self,
@@ -292,73 +407,146 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                 "total_volume": sum(kw.search_volume or 0 for kw in keywords),
             })
 
-        # Process in batches of 10 clusters
-        validated = []
-        batch_size = 10
+        # Process in batches of 25 clusters, run up to 5 batches concurrently
+        batch_size = 25
+        max_concurrent = 5
         agent = ClusterAgent()
+        semaphore = asyncio.Semaphore(max_concurrent)
+        total_batches = (len(agent_clusters) + batch_size - 1) // batch_size
+        logger.info(
+            "Cluster validation batching",
+            extra={
+                "total_clusters": len(agent_clusters),
+                "batch_size": batch_size,
+                "total_batches": total_batches,
+                "max_concurrent_batches": max_concurrent,
+            },
+        )
 
-        for i in range(0, len(agent_clusters), batch_size):
-            batch = agent_clusters[i:i + batch_size]
-
-            try:
-                agent_input = ClusterAgentInput(
-                    clusters=batch,
-                    context=brand_context,
+        async def _process_batch(
+            batch_index: int,
+            batch_start: int,
+            batch: list[dict],
+        ) -> list[dict]:
+            async with semaphore:
+                logger.info(
+                    "Cluster validation batch started",
+                    extra={
+                        "batch_index": batch_index + 1,
+                        "total_batches": total_batches,
+                        "cluster_count": len(batch),
+                    },
                 )
-                output = await agent.run(agent_input)
+                try:
+                    agent_input = ClusterAgentInput(
+                        clusters=batch,
+                        context=brand_context,
+                    )
+                    output = await agent.run(agent_input)
 
-                for j, validation in enumerate(output.validations):
-                    cluster_idx = i + j
-                    if cluster_idx < len(clusters):
-                        original = clusters[cluster_idx]
-                        keywords = original.get("keywords", [])
+                    results = []
+                    for j, validation in enumerate(output.validations):
+                        cluster_idx = batch_start + j
+                        if cluster_idx < len(clusters):
+                            original = clusters[cluster_idx]
+                            keywords = original.get("keywords", [])
 
-                        # Find primary keyword
-                        primary_kw = next(
-                            (kw for kw in keywords if kw.keyword.lower() == validation.primary_keyword.lower()),
-                            keywords[0] if keywords else None
-                        )
+                            # Find primary keyword
+                            primary_kw = next(
+                                (
+                                    kw
+                                    for kw in keywords
+                                    if kw.keyword.lower()
+                                    == validation.primary_keyword.lower()
+                                ),
+                                keywords[0] if keywords else None
+                            )
 
-                        validated.append({
-                            "name": validation.name,
-                            "description": validation.description,
-                            "keywords": keywords,
-                            "primary_keyword": primary_kw,
-                            "dominant_intent": original.get("dominant_intent"),
-                            "coherence": validation.coherence_score,
-                            "needs_serp_validation": validation.coherence_score < self.LOW_COHERENCE_THRESHOLD,
-                            "action": validation.action,
-                            "notes": validation.notes,
-                            "total_volume": sum(kw.search_volume or 0 for kw in keywords),
-                            "avg_difficulty": (
-                                sum(kw.difficulty or 0 for kw in keywords) / len(keywords)
-                                if keywords else 0
-                            ),
-                        })
+                            results.append({
+                                "name": validation.name,
+                                "description": validation.description,
+                                "keywords": keywords,
+                                "primary_keyword": primary_kw,
+                                "dominant_intent": original.get("dominant_intent"),
+                                "coherence": validation.coherence_score,
+                                "needs_serp_validation": (
+                                    validation.coherence_score
+                                    < self.LOW_COHERENCE_THRESHOLD
+                                ),
+                                "action": validation.action,
+                                "notes": validation.notes,
+                                "total_volume": sum(kw.search_volume or 0 for kw in keywords),
+                                "avg_difficulty": (
+                                    sum(kw.difficulty or 0 for kw in keywords) / len(keywords)
+                                    if keywords else 0
+                                ),
+                            })
+                    logger.info(
+                        "Cluster validation batch completed",
+                        extra={
+                            "batch_index": batch_index + 1,
+                            "total_batches": total_batches,
+                            "result_count": len(results),
+                            "fallback_used": False,
+                        },
+                    )
+                    return results
 
-            except Exception:
-                # Fallback: create basic cluster info
-                for j, cluster in enumerate(batch):
-                    cluster_idx = i + j
-                    if cluster_idx < len(clusters):
-                        original = clusters[cluster_idx]
-                        keywords = original.get("keywords", [])
-                        validated.append({
-                            "name": f"Cluster {cluster_idx + 1}",
-                            "description": "",
-                            "keywords": keywords,
-                            "primary_keyword": keywords[0] if keywords else None,
-                            "dominant_intent": original.get("dominant_intent"),
-                            "coherence": original.get("coherence", 0.5),
-                            "needs_serp_validation": True,
-                            "action": "keep",
-                            "notes": "Auto-generated cluster",
-                            "total_volume": sum(kw.search_volume or 0 for kw in keywords),
-                            "avg_difficulty": (
-                                sum(kw.difficulty or 0 for kw in keywords) / len(keywords)
-                                if keywords else 0
-                            ),
-                        })
+                except Exception:
+                    logger.warning(
+                        "Cluster validation batch failed, using fallback",
+                        extra={
+                            "batch_index": batch_index + 1,
+                            "total_batches": total_batches,
+                            "cluster_count": len(batch),
+                        },
+                    )
+                    # Fallback: create basic cluster info
+                    results = []
+                    for j, cluster in enumerate(batch):
+                        cluster_idx = batch_start + j
+                        if cluster_idx < len(clusters):
+                            original = clusters[cluster_idx]
+                            keywords = original.get("keywords", [])
+                            results.append({
+                                "name": f"Cluster {cluster_idx + 1}",
+                                "description": "",
+                                "keywords": keywords,
+                                "primary_keyword": keywords[0] if keywords else None,
+                                "dominant_intent": original.get("dominant_intent"),
+                                "coherence": original.get("coherence", 0.5),
+                                "needs_serp_validation": True,
+                                "action": "keep",
+                                "notes": "Auto-generated cluster",
+                                "total_volume": sum(kw.search_volume or 0 for kw in keywords),
+                                "avg_difficulty": (
+                                    sum(kw.difficulty or 0 for kw in keywords) / len(keywords)
+                                    if keywords else 0
+                                ),
+                            })
+                    logger.info(
+                        "Cluster validation batch completed",
+                        extra={
+                            "batch_index": batch_index + 1,
+                            "total_batches": total_batches,
+                            "result_count": len(results),
+                            "fallback_used": True,
+                        },
+                    )
+                    return results
+
+        # Launch all batches concurrently
+        tasks = []
+        for batch_index, i in enumerate(range(0, len(agent_clusters), batch_size)):
+            batch = agent_clusters[i:i + batch_size]
+            tasks.append(_process_batch(batch_index, i, batch))
+
+        batch_results = await asyncio.gather(*tasks)
+
+        # Flatten results in order
+        validated = []
+        for batch_result in batch_results:
+            validated.extend(batch_result)
 
         return validated
 
@@ -369,29 +557,36 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             select(Topic).where(Topic.project_id == self.project_id)
         )
         for topic in existing.scalars():
-            await self.session.delete(topic)
+            await delete(self.session, Topic, topic)
 
         # Create new topics
         for cluster in result.clusters:
             primary_kw = cluster.get("primary_keyword")
-            topic = Topic(
-                id=uuid.uuid4(),
-                project_id=uuid.UUID(self.project_id),
+            keywords = cluster.get("keywords", [])
+            total_volume = cluster.get("total_volume", 0)
+            notes = cluster.get("notes") or ""
+            if cluster.get("needs_serp_validation"):
+                notes = "[needs_serp_validation] " + notes if notes else "[needs_serp_validation]"
+            topic_data = TopicCreateDTO(
+                project_id=self.project_id,
                 name=cluster["name"],
                 description=cluster.get("description"),
                 primary_keyword_id=primary_kw.id if primary_kw else None,
+                cluster_method="two_stage_hdbscan_llm",
                 dominant_intent=cluster.get("dominant_intent"),
                 dominant_page_type=primary_kw.recommended_page_type if primary_kw else None,
-                estimated_total_demand=cluster.get("total_volume", 0),
+                funnel_stage=primary_kw.funnel_stage if primary_kw else None,
+                total_volume=total_volume,
+                keyword_count=len(keywords),
+                estimated_demand=total_volume,
                 avg_difficulty=cluster.get("avg_difficulty", 0),
                 cluster_coherence=cluster.get("coherence", 0.5),
-                needs_serp_validation=cluster.get("needs_serp_validation", False),
-                cluster_notes=cluster.get("notes"),
+                cluster_notes=notes or None,
             )
-            self.session.add(topic)
+            topic = create(self.session, Topic, topic_data)
 
             # Update keywords to reference this topic
-            for kw in cluster.get("keywords", []):
+            for kw in keywords:
                 kw.topic_id = topic.id
                 if kw == primary_kw:
                     # Mark as primary

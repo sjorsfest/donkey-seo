@@ -1,29 +1,30 @@
-"""Topic generator agent for Step 2: Seed Topic Generation."""
+"""Topic generator agent for Step 2: Seed Keyword Generation."""
+
+import logging
 
 from pydantic import BaseModel, Field
 
 from app.agents.base_agent import BaseAgent
 
-
-class Pillar(BaseModel):
-    """A content pillar/theme."""
-
-    name: str
-    description: str
-    icp_relevance: str = Field(description="Why this matters to the target audience")
-    product_tie_in: str = Field(description="How this relates to products/services")
+logger = logging.getLogger(__name__)
 
 
-class SeedTopic(BaseModel):
-    """A seed topic under a pillar."""
+class SeedBucket(BaseModel):
+    """A seed keyword bucket/category."""
 
-    topic_phrase: str
-    pillar_name: str
-    intended_content_types: list[str] = Field(
-        description="E.g., guide, comparison, tutorial, listicle"
+    name: str = Field(description="Bucket name, e.g. 'Core Offer', 'Pain Points', 'Use Cases'")
+    description: str = Field(description="What this bucket covers")
+    icp_relevance: str = Field(description="Why this bucket matters to the target audience")
+    product_tie_in: str = Field(description="How this bucket relates to products/services")
+
+
+class SeedKeyword(BaseModel):
+    """A seed keyword for keyword research."""
+
+    keyword: str = Field(
+        description="Short seed keyword (1-4 words). Must be a broad, generic term suitable for keyword research tools.",
     )
-    coverage_intent: str = Field(description="educate, compare, or convert")
-    funnel_stage: str = Field(description="tofu, mofu, or bofu")
+    bucket_name: str = Field(description="Which bucket this keyword belongs to")
     relevance_score: float = Field(ge=0, le=1, description="Relevance to brand 0-1")
 
 
@@ -41,81 +42,101 @@ class TopicGeneratorInput(BaseModel):
 class TopicGeneratorOutput(BaseModel):
     """Output from topic generator agent."""
 
-    pillars: list[Pillar]
-    seed_topics: list[SeedTopic]
+    buckets: list[SeedBucket]
+    seed_keywords: list[SeedKeyword]
     known_gaps: list[str] = Field(
         default_factory=list,
-        description="Topics that couldn't be inferred but might be valuable",
+        description="Areas that couldn't be inferred but might yield good seeds",
     )
 
 
 class TopicGeneratorAgent(BaseAgent[TopicGeneratorInput, TopicGeneratorOutput]):
-    """Agent for generating seed topics from brand profile.
+    """Agent for generating seed keywords from brand profile.
 
-    Used in Step 2 to create 3-8 content pillars and 10-50 seed topics
-    organized under those pillars.
+    Used in Step 2 to create seed keyword buckets and 20-50 seed keywords
+    that can be fed into keyword research tools for expansion.
     """
 
-    model = "openai:gpt-4-turbo"
-    temperature = 0.6  # Moderate creativity for topic ideation
+    model_tier = "reasoning"
+    temperature = 0.6
 
     @property
     def system_prompt(self) -> str:
-        return """You are an SEO content strategist specializing in building topical authority.
+        return """You are an SEO keyword researcher. Your job is to generate SEED KEYWORDS — the broad starter terms that get plugged into keyword research tools (like DataForSEO, Ahrefs, SEMrush) to discover hundreds of longer, more specific keyword ideas.
 
-Given a brand profile, your task is to generate a strategic content map:
+## WHAT SEED KEYWORDS ARE
 
-## PILLARS (3-8)
-Create content pillars that:
-1. Align with the company's products/services
-2. Address target audience pain points and goals
-3. Build topical authority in the brand's domain
-4. Stay within the defined topic boundaries
+Seed keywords are SHORT (1-4 words), broad, generic terms. They are NOT article titles, NOT long-tail phrases, NOT full sentences.
 
-Each pillar should have a clear connection to business goals.
+GOOD seed keywords:
+- live chat software
+- customer support
+- helpdesk pricing
+- ticketing system
+- chatbot
+- knowledge base
+- support automation
+- CRM for startups
 
-## SEED TOPICS (10-50)
-For each pillar, generate seed topics that:
-1. Address specific audience questions or needs
-2. Have clear search intent
-3. Can be developed into standalone content
-4. Vary across the marketing funnel (TOFU/MOFU/BOFU)
+BAD seed keywords (TOO SPECIFIC / TOO LONG — never generate these):
+- "Pricing breakdown for real-time integration features across free and Pro tiers"
+- "How to collect visitor email and name without disrupting user flow"
+- "Advanced automation scenarios without per-seat pricing"
+- "Choosing the right plan for your indie SaaS support"
 
-### Funnel Stage Guidelines:
-- **TOFU (Top of Funnel)**: Educational, awareness content
-  - "What is X", "How does X work", "Guide to X"
-  - Intent: informational
+## SEED KEYWORD BUCKETS
 
-- **MOFU (Middle of Funnel)**: Consideration content
-  - "Best X for Y", "X vs Y", "X alternatives", "How to choose X"
-  - Intent: commercial investigation
+Organize seeds into these buckets (use only the ones that apply):
 
-- **BOFU (Bottom of Funnel)**: Decision content
-  - "X pricing", "X review", "X demo", "Buy X"
-  - Intent: transactional
+1) **Core Offer** — Product/service category names. The generic term someone would search before they know brands.
+   Examples: project management software, roof repair, meal prep, accounting services
 
-### Content Types:
-- guide: Comprehensive how-to or educational content
-- comparison: X vs Y format
-- listicle: Top 10, Best X, etc.
-- tutorial: Step-by-step instructions
-- review: In-depth product/service analysis
-- glossary: Definition and explanation
-- case_study: Real-world example/story
+2) **Pain Points** — Problems the audience has. Short "how to" / "fix" / "reduce" roots.
+   Examples: reduce churn, fix slow website, improve sleep, stop back pain
 
-## KNOWN GAPS
-Identify topics that:
-- Couldn't be confidently inferred from the brand profile
-- Might be valuable but need confirmation
-- Are borderline in-scope/out-of-scope
+3) **Use Cases** — Jobs-to-be-done. "[thing] for [audience]" patterns.
+   Examples: CRM for small business, invoicing for freelancers, yoga for beginners
 
-Be strategic and focused. Quality over quantity."""
+4) **Audience Modifiers** — Who it's for (combine with core terms in expansion).
+   Examples: for startups, for dentists, for remote teams, for ecommerce
+
+5) **Features** — Major features people search/shop by.
+   Examples: time tracking, automations, online booking, inventory management
+
+6) **Alternatives & Competitors** — "alternative", "vs", adjacent categories.
+   Examples: Asana alternative, Mailchimp vs, password manager, email marketing
+
+7) **Location** (only if the business is local) — City/area + service.
+   Examples: plumber amsterdam, dentist centrum, wedding photographer near me
+
+8) **Purchase Intent** — Words that signal buying/evaluating.
+   Examples: pricing, cost, best, reviews, demo, free trial
+
+## RULES
+
+1. Each seed keyword MUST be 1-4 words. Absolutely no exceptions.
+2. Seeds must be terms that real people actually search for on Google.
+3. Seeds must be broad enough that a keyword tool can expand them into 10-100+ related keywords.
+4. Do NOT generate article titles, questions, or full phrases.
+5. Do NOT over-specify — "live chat" is better than "live chat for SaaS startups with 2-person teams".
+6. Aim for 20-50 seed keywords total.
+7. Stay within the defined topic boundaries.
+8. Prefer simple, commonly searched terms over niche jargon."""
 
     @property
     def output_type(self) -> type[TopicGeneratorOutput]:
         return TopicGeneratorOutput
 
     def _build_prompt(self, input_data: TopicGeneratorInput) -> str:
+        logger.info(
+            "Building seed keyword generation prompt",
+            extra={
+                "company": input_data.company_name,
+                "products_count": len(input_data.products_services),
+                "in_scope_count": len(input_data.in_scope_topics),
+                "out_of_scope_count": len(input_data.out_of_scope_topics),
+            },
+        )
         products_text = "\n".join(
             f"- {p.get('name', 'Unknown')}: {p.get('description', 'No description')}"
             for p in input_data.products_services
@@ -128,7 +149,7 @@ Pain Points: {', '.join(input_data.target_audience.get('primary_pains', []))}
 Desired Outcomes: {', '.join(input_data.target_audience.get('desired_outcomes', []))}
 """
 
-        return f"""Generate content pillars and seed topics for {input_data.company_name}.
+        return f"""Generate seed keywords for {input_data.company_name}.
 
 ## Products/Services
 {products_text}
@@ -144,10 +165,11 @@ In-scope: {', '.join(input_data.in_scope_topics) or 'Not specified'}
 Out-of-scope: {', '.join(input_data.out_of_scope_topics) or 'Not specified'}
 
 ## Instructions
-1. Create 3-8 strategic content pillars
-2. Generate 10-50 seed topics distributed across pillars
-3. Ensure a mix of TOFU (40%), MOFU (40%), BOFU (20%) content
-4. Assign content types based on topic intent
-5. Score relevance to the brand (0-1)
-6. Note any gaps or uncertainties
+1. Create seed keyword buckets (only use buckets that apply to this business)
+2. Generate 20-50 short seed keywords (1-4 words each) distributed across buckets
+3. Each seed must be a broad term suitable for keyword research tool expansion
+4. Score relevance to the brand (0-1)
+5. Note any gaps — areas where you couldn't confidently generate seeds
+
+Remember: seed keywords are SHORT. "live chat software" not "How to choose the right live chat software for your business".
 """

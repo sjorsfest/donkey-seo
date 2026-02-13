@@ -10,6 +10,7 @@ class ProjectGoals(BaseModel):
     """Business goals for the keyword research project."""
 
     primary_objective: str = "traffic"
+    secondary_goals: list[str] | None = None
     target_monthly_traffic: int | None = None
     target_conversion_rate: float | None = None
     priority_topics: list[str] | None = None

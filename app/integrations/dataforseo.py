@@ -4,13 +4,16 @@ Single provider for all SEO data needs - simpler ops, consistent fields, one bil
 """
 
 import base64
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from app.config import settings
 from app.core.exceptions import APIKeyMissingError, ExternalAPIError, RateLimitExceededError
+
+logger = logging.getLogger(__name__)
 
 
 class DataForSEOClient:
@@ -73,18 +76,21 @@ class DataForSEOClient:
         data: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Make a POST request to DataForSEO API."""
+        logger.info("DataForSEO API request", extra={"endpoint": endpoint})
         url = f"{self.BASE_URL}/{endpoint}"
 
         try:
             response = await self.client.post(url, json=data)
 
             if response.status_code == 429:
+                logger.warning("DataForSEO rate limit hit", extra={"endpoint": endpoint})
                 raise RateLimitExceededError("DataForSEO")
 
             response.raise_for_status()
             result = response.json()
 
             if result.get("status_code") != 20000:
+                logger.warning("DataForSEO API error", extra={"endpoint": endpoint, "status": result.get("status_message")})
                 raise ExternalAPIError(
                     "DataForSEO",
                     result.get("status_message", "Unknown error"),
@@ -100,29 +106,34 @@ class DataForSEOClient:
             return results
 
         except httpx.HTTPError as e:
+            logger.warning("DataForSEO HTTP error", extra={"endpoint": endpoint, "error": str(e)})
             raise ExternalAPIError("DataForSEO", str(e)) from e
 
     async def get_keyword_suggestions(
         self,
-        seed: str,
+        seeds: list[str],
         location_code: int = 2840,  # US
         language_code: str = "en",
-        limit: int = 100,
+        limit: int = 700,
     ) -> list[dict[str, Any]]:
-        """Get keyword suggestions for a seed keyword.
+        """Get keyword suggestions for seed keywords.
 
         Args:
-            seed: Seed keyword to expand
+            seeds: Seed keywords to expand (batched into one API call)
             location_code: DataForSEO location code (2840 = US)
             language_code: Language code (en, de, etc.)
             limit: Maximum keywords to return
 
         Returns:
-            List of keyword suggestions with metrics
+            List of keyword suggestions with metrics (deduplicated)
         """
+        if not seeds:
+            return []
+
+        logger.info("Fetching keyword suggestions", extra={"seeds": len(seeds), "location": location_code, "limit": limit})
         data = [
             {
-                "keyword": seed,
+                "keywords": seeds,
                 "location_code": location_code,
                 "language_code": language_code,
                 "limit": limit,
@@ -130,84 +141,40 @@ class DataForSEOClient:
         ]
 
         results = await self._make_request(
-            "keywords_data/google_ads/keywords_for_keywords/live",
-            data,
-        )
-
-        keywords = []
-        for result in results:
-            for kw in result.get("keywords", []):
-                keywords.append({
-                    "keyword": kw.get("keyword"),
-                    "search_volume": kw.get("search_volume"),
-                    "cpc": kw.get("cpc"),
-                    "competition": kw.get("competition"),
-                    "competition_index": kw.get("competition_index"),
-                    "monthly_searches": kw.get("monthly_searches", []),
-                })
-
-        return keywords
-
-    async def get_related_keywords(
-        self,
-        keyword: str,
-        location_code: int = 2840,
-        language_code: str = "en",
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """Get related keywords using SERP data.
-
-        Args:
-            keyword: Keyword to find related terms for
-            location_code: DataForSEO location code
-            language_code: Language code
-            limit: Maximum keywords to return
-
-        Returns:
-            List of related keywords
-        """
-        data = [
-            {
-                "keyword": keyword,
-                "location_code": location_code,
-                "language_code": language_code,
-                "depth": 2,
-                "limit": limit,
-            }
-        ]
-
-        results = await self._make_request(
-            "keywords_data/google_ads/keywords_for_keywords/live",
+            "dataforseo_labs/google/keyword_ideas/live",
             data,
         )
 
         keywords = []
         seen = set()
         for result in results:
-            for kw in result.get("keywords", []):
-                kw_text = kw.get("keyword", "").lower()
+            for item in result.get("items", []):
+                kw_text = (item.get("keyword") or "").lower()
                 if kw_text and kw_text not in seen:
                     seen.add(kw_text)
+                    info = item.get("keyword_info") or {}
                     keywords.append({
-                        "keyword": kw.get("keyword"),
-                        "search_volume": kw.get("search_volume"),
-                        "cpc": kw.get("cpc"),
-                        "competition": kw.get("competition"),
+                        "keyword": item.get("keyword"),
+                        "search_volume": info.get("search_volume"),
+                        "cpc": info.get("cpc"),
+                        "competition": info.get("competition"),
+                        "competition_index": info.get("competition_level"),
+                        "monthly_searches": info.get("monthly_searches", []),
                     })
 
-        return keywords[:limit]
+        return keywords
 
     async def get_keyword_questions(
         self,
-        keyword: str,
+        keywords: list[str],
         location_code: int = 2840,
         language_code: str = "en",
-        limit: int = 20,
+        limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Get question-based keywords (People Also Ask).
 
         Args:
-            keyword: Base keyword
+            keywords: Base keywords to generate question variants for
             location_code: DataForSEO location code
             language_code: Language code
             limit: Maximum questions to return
@@ -215,37 +182,44 @@ class DataForSEOClient:
         Returns:
             List of question keywords
         """
-        # Use keyword suggestions with question modifiers
-        question_words = ["how", "what", "why", "when", "where", "which", "who"]
+        if not keywords:
+            return []
+
+        # Build all question variants in one batch
+        question_words = ["how", "what", "why"]
+        question_seeds = [f"{q} {kw}" for kw in keywords for q in question_words]
+
+        logger.info("Fetching keyword questions", extra={"base_keywords": len(keywords), "question_seeds": len(question_seeds), "limit": limit})
+
+        data = [
+            {
+                "keywords": question_seeds,
+                "location_code": location_code,
+                "language_code": language_code,
+                "limit": limit,
+            }
+        ]
+
+        results = await self._make_request(
+            "dataforseo_labs/google/keyword_ideas/live",
+            data,
+        )
+
+        all_question_words = ["how", "what", "why", "when", "where", "which", "who"]
         questions = []
-
-        for q_word in question_words[:3]:  # Limit to avoid too many API calls
-            data = [
-                {
-                    "keyword": f"{q_word} {keyword}",
-                    "location_code": location_code,
-                    "language_code": language_code,
-                    "limit": limit // 3,
-                }
-            ]
-
-            try:
-                results = await self._make_request(
-                    "keywords_data/google_ads/keywords_for_keywords/live",
-                    data,
-                )
-
-                for result in results:
-                    for kw in result.get("keywords", []):
-                        kw_text = kw.get("keyword", "")
-                        if any(kw_text.lower().startswith(w) for w in question_words):
-                            questions.append({
-                                "keyword": kw_text,
-                                "search_volume": kw.get("search_volume"),
-                                "cpc": kw.get("cpc"),
-                            })
-            except ExternalAPIError:
-                continue  # Skip failed question queries
+        seen = set()
+        for result in results:
+            for item in result.get("items", []):
+                kw_text = item.get("keyword") or ""
+                kw_lower = kw_text.lower()
+                if kw_lower not in seen and any(kw_lower.startswith(w) for w in all_question_words):
+                    seen.add(kw_lower)
+                    info = item.get("keyword_info") or {}
+                    questions.append({
+                        "keyword": kw_text,
+                        "search_volume": info.get("search_volume"),
+                        "cpc": info.get("cpc"),
+                    })
 
         return questions[:limit]
 
@@ -258,18 +232,18 @@ class DataForSEOClient:
         """Get search metrics for a list of keywords.
 
         Args:
-            keywords: List of keywords (max 1000 per request)
+            keywords: List of keywords (max 700 per request)
             location_code: DataForSEO location code
             language_code: Language code
 
         Returns:
-            List of keyword metrics
+            List of keyword metrics including difficulty
         """
+        logger.info("Fetching keyword metrics", extra={"keyword_count": len(keywords), "location": location_code})
         if not keywords:
             return []
 
-        # DataForSEO accepts max 1000 keywords per request
-        batch_size = 1000
+        batch_size = 700
         all_metrics = []
 
         for i in range(0, len(keywords), batch_size):
@@ -284,21 +258,24 @@ class DataForSEOClient:
             ]
 
             results = await self._make_request(
-                "keywords_data/google_ads/search_volume/live",
+                "dataforseo_labs/google/keyword_overview/live",
                 data,
             )
 
             for result in results:
-                for kw_data in result.get("keywords", []):
-                    monthly = kw_data.get("monthly_searches", [])
+                for item in result.get("items", []):
+                    info = item.get("keyword_info") or {}
+                    props = item.get("keyword_properties") or {}
+                    monthly = info.get("monthly_searches") or []
                     trend = [m.get("search_volume", 0) for m in monthly] if monthly else []
 
                     all_metrics.append({
-                        "keyword": kw_data.get("keyword"),
-                        "search_volume": kw_data.get("search_volume"),
-                        "cpc": kw_data.get("cpc"),
-                        "competition": kw_data.get("competition"),
-                        "competition_index": kw_data.get("competition_index"),
+                        "keyword": item.get("keyword"),
+                        "search_volume": info.get("search_volume"),
+                        "cpc": info.get("cpc"),
+                        "competition": info.get("competition"),
+                        "competition_index": info.get("competition_level"),
+                        "difficulty": props.get("keyword_difficulty"),
                         "trend_data": trend,
                     })
 
@@ -313,7 +290,7 @@ class DataForSEOClient:
         """Get keyword difficulty scores.
 
         Args:
-            keywords: List of keywords
+            keywords: List of keywords (max 1000 per request)
             location_code: DataForSEO location code
             language_code: Language code
 
@@ -323,8 +300,7 @@ class DataForSEOClient:
         if not keywords:
             return []
 
-        # Use keyword difficulty endpoint
-        batch_size = 500
+        batch_size = 1000
         all_difficulty = []
 
         for i in range(0, len(keywords), batch_size):
@@ -340,18 +316,17 @@ class DataForSEOClient:
 
             try:
                 results = await self._make_request(
-                    "keywords_data/google_ads/keywords_for_site/live",
+                    "dataforseo_labs/google/bulk_keyword_difficulty/live",
                     data,
                 )
 
                 for result in results:
-                    for kw_data in result.get("keywords", []):
+                    for item in result.get("items", []):
                         all_difficulty.append({
-                            "keyword": kw_data.get("keyword"),
-                            "difficulty": kw_data.get("keyword_difficulty"),
+                            "keyword": item.get("keyword"),
+                            "difficulty": item.get("keyword_difficulty"),
                         })
             except ExternalAPIError:
-                # Difficulty endpoint may not be available, use competition as proxy
                 for kw in batch:
                     all_difficulty.append({
                         "keyword": kw,
@@ -382,6 +357,7 @@ class DataForSEOClient:
         Returns:
             Dict with organic results, SERP features, and metadata
         """
+        logger.info("Fetching SERP results", extra={"keyword": keyword, "device": device})
         data = [
             {
                 "keyword": keyword,
@@ -403,7 +379,7 @@ class DataForSEOClient:
                 "organic_results": [],
                 "serp_features": [],
                 "provider_response_id": None,
-                "fetched_at": datetime.utcnow().isoformat(),
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
 
         result = results[0]
@@ -446,7 +422,7 @@ class DataForSEOClient:
             "serp_features": list(set(serp_features)),
             "total_results": result.get("se_results_count"),
             "provider_response_id": result.get("id"),
-            "fetched_at": datetime.utcnow().isoformat(),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
 
     async def get_serp_batch(
@@ -486,7 +462,7 @@ class DataForSEOClient:
                     "organic_results": [],
                     "serp_features": [],
                     "error": "Failed to fetch SERP",
-                    "fetched_at": datetime.utcnow().isoformat(),
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
                 })
         return results
 

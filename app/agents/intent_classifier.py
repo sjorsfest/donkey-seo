@@ -1,8 +1,12 @@
 """Intent classifier agent for Step 5: Intent Labeling."""
 
+import logging
+
 from pydantic import BaseModel, Field
 
 from app.agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class KeywordIntent(BaseModel):
@@ -53,7 +57,7 @@ class IntentClassifierAgent(BaseAgent[IntentClassifierInput, IntentClassifierOut
     This agent handles ambiguous cases that rules can't classify.
     """
 
-    model = "openai:gpt-4-turbo"
+    model_tier = "standard"
     temperature = 0.3  # Low temperature for consistent classification
 
     @property
@@ -95,6 +99,13 @@ Be precise and consistent. Return structured classifications for each keyword.""
         return IntentClassifierOutput
 
     def _build_prompt(self, input_data: IntentClassifierInput) -> str:
+        logger.info(
+            "Building intent classification prompt",
+            extra={
+                "keyword_count": len(input_data.keywords),
+                "has_context": bool(input_data.context),
+            },
+        )
         keywords_text = "\n".join(f"- {kw}" for kw in input_data.keywords)
 
         context_text = ""

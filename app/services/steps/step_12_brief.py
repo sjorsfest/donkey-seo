@@ -4,21 +4,25 @@ Generates writer-ready briefs for prioritized topics.
 Includes URL slug generation and cannibalization guardrails.
 """
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.brief_generator import BriefGeneratorAgent, BriefGeneratorInput
 from app.models.brand import BrandProfile
 from app.models.content import ContentBrief
+from app.models.generated_dtos import ContentBriefCreateDTO
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.persistence.typed import create
+from app.services.steps.base_step import BaseStepService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -116,6 +120,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             )
 
         all_topics = list(topics_result.scalars())[:input_data.max_briefs]
+        logger.info("Brief generation starting", extra={"project_id": input_data.project_id, "topic_count": len(all_topics)})
 
         if not all_topics:
             return BriefOutput(
@@ -260,6 +265,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 })
 
             except Exception:
+                logger.warning("Brief LLM generation failed", extra={"topic_name": topic.name, "primary_keyword": primary_kw.keyword})
                 # Fallback: create basic brief structure
                 output_briefs.append({
                     "topic_id": str(topic.id),
@@ -283,6 +289,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 })
                 briefs_with_warnings += 1
 
+        logger.info("Brief generation complete", extra={"briefs_generated": len(output_briefs), "with_warnings": briefs_with_warnings})
+
         await self._update_progress(100, "Brief generation complete")
 
         return BriefOutput(
@@ -290,6 +298,13 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             briefs_with_warnings=briefs_with_warnings,
             briefs=output_briefs,
         )
+
+    async def _validate_output(self, result: BriefOutput, input_data: BriefInput) -> None:
+        """Ensure output can be consumed by Step 13."""
+        if result.briefs_generated <= 0:
+            raise ValueError(
+                "Step 12 generated 0 content briefs. Step 13 requires at least one content brief."
+            )
 
     def _build_brand_context(self, brand: BrandProfile | None) -> str:
         """Build brand context string for LLM."""
@@ -528,33 +543,35 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         """Save content briefs to database."""
         for brief_data in result.briefs:
             # Create ContentBrief record
-            brief = ContentBrief(
-                id=uuid.uuid4(),
-                project_id=uuid.UUID(self.project_id),
-                topic_id=uuid.UUID(brief_data["topic_id"]),
-                primary_keyword=brief_data["primary_keyword"],
-                search_intent=brief_data.get("search_intent"),
-                page_type=brief_data.get("page_type"),
-                funnel_stage=brief_data.get("funnel_stage"),
-                working_titles=brief_data.get("working_titles"),
-                target_audience=brief_data.get("target_audience"),
-                reader_job_to_be_done=brief_data.get("reader_job_to_be_done"),
-                outline=brief_data.get("outline"),
-                supporting_keywords=brief_data.get("supporting_keywords"),
-                supporting_keywords_map=brief_data.get("supporting_keywords_map"),
-                examples_required=brief_data.get("examples_required"),
-                faq_questions=brief_data.get("faq_questions"),
-                recommended_schema_type=brief_data.get("recommended_schema_type"),
-                internal_links_out=brief_data.get("internal_links_out"),
-                money_page_links=brief_data.get("money_page_links"),
-                meta_title_guidelines=brief_data.get("meta_title_guidelines"),
-                meta_description_guidelines=brief_data.get("meta_description_guidelines"),
-                target_word_count_min=brief_data.get("target_word_count", {}).get("min"),
-                target_word_count_max=brief_data.get("target_word_count", {}).get("max"),
-                must_include_sections=brief_data.get("must_include_sections"),
-                status="draft",
+            create(
+                self.session,
+                ContentBrief,
+                ContentBriefCreateDTO(
+                    project_id=self.project_id,
+                    topic_id=brief_data["topic_id"],
+                    primary_keyword=brief_data["primary_keyword"],
+                    search_intent=brief_data.get("search_intent"),
+                    page_type=brief_data.get("page_type"),
+                    funnel_stage=brief_data.get("funnel_stage"),
+                    working_titles=brief_data.get("working_titles"),
+                    target_audience=brief_data.get("target_audience"),
+                    reader_job_to_be_done=brief_data.get("reader_job_to_be_done"),
+                    outline=brief_data.get("outline"),
+                    supporting_keywords=brief_data.get("supporting_keywords"),
+                    supporting_keywords_map=brief_data.get("supporting_keywords_map"),
+                    examples_required=brief_data.get("examples_required"),
+                    faq_questions=brief_data.get("faq_questions"),
+                    recommended_schema_type=brief_data.get("recommended_schema_type"),
+                    internal_links_out=brief_data.get("internal_links_out"),
+                    money_page_links=brief_data.get("money_page_links"),
+                    meta_title_guidelines=brief_data.get("meta_title_guidelines"),
+                    meta_description_guidelines=brief_data.get("meta_description_guidelines"),
+                    target_word_count_min=brief_data.get("target_word_count", {}).get("min"),
+                    target_word_count_max=brief_data.get("target_word_count", {}).get("max"),
+                    must_include_sections=brief_data.get("must_include_sections"),
+                    status="draft",
+                ),
             )
-            self.session.add(brief)
 
         # Update project step
         project_result = await self.session.execute(

@@ -7,10 +7,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.project import Project
@@ -21,8 +21,8 @@ class PipelineRun(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "pipeline_runs"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -34,6 +34,10 @@ class PipelineRun(Base, UUIDMixin, TimestampMixin):
 
     # Status
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+
+    # Error tracking
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paused_at_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Configuration snapshot
     steps_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -59,8 +63,8 @@ class StepExecution(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "step_executions"
 
-    pipeline_run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    pipeline_run_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

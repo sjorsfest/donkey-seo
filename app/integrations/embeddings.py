@@ -3,14 +3,17 @@
 Uses OpenAI embeddings with HDBSCAN for density-aware clustering.
 """
 
-import numpy as np
+import logging
 from typing import Any
 
 import httpx
+import numpy as np
 from hdbscan import HDBSCAN
 
 from app.config import settings
 from app.core.exceptions import APIKeyMissingError, ExternalAPIError
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingsClient:
@@ -70,6 +73,7 @@ class EmbeddingsClient:
         Returns:
             List of embedding vectors (each is a list of floats)
         """
+        logger.info("Generating embeddings", extra={"text_count": len(texts), "model": model or self.EMBEDDING_MODEL})
         if not texts:
             return []
 
@@ -89,6 +93,7 @@ class EmbeddingsClient:
                 )
 
                 if response.status_code != 200:
+                    logger.warning("Embeddings API error", extra={"status": response.status_code})
                     raise ExternalAPIError(
                         "OpenAI Embeddings",
                         f"API error: {response.status_code} - {response.text}"
@@ -103,6 +108,7 @@ class EmbeddingsClient:
                 all_embeddings.extend(batch_embeddings)
 
             except httpx.HTTPError as e:
+                logger.warning("Embeddings HTTP error", extra={"error": str(e)})
                 raise ExternalAPIError("OpenAI Embeddings", str(e)) from e
 
         return all_embeddings
@@ -152,6 +158,7 @@ class EmbeddingsClient:
             # Not enough points to cluster
             return [-1] * len(embeddings), [0.0] * len(embeddings)
 
+        logger.info("Running HDBSCAN clustering", extra={"point_count": len(embeddings), "min_cluster_size": min_cluster_size})
         # Convert to numpy array
         X = np.array(embeddings)
 
@@ -167,6 +174,10 @@ class EmbeddingsClient:
         # Fit and predict
         cluster_labels = clusterer.fit_predict(X)
         probabilities = clusterer.probabilities_
+
+        n_clusters = len(set(cluster_labels.tolist())) - (1 if -1 in cluster_labels else 0)
+        noise_count = cluster_labels.tolist().count(-1)
+        logger.info("HDBSCAN complete", extra={"clusters_found": n_clusters, "noise_points": noise_count, "total_points": len(embeddings)})
 
         return cluster_labels.tolist(), probabilities.tolist()
 

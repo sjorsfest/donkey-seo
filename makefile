@@ -1,0 +1,23 @@
+start:
+	@fastapi dev app/main.py
+
+migrate-create:
+ifndef message
+	@read -p "Migration message: " msg && alembic revision --autogenerate -m "$$msg"
+else
+	@alembic revision --autogenerate -m "$(message)"
+endif
+
+migrate:
+	@alembic upgrade head
+
+typecheck:
+	@uv run python scripts/generate_model_dtos.py
+	@uv run python scripts/check_typed_writes.py
+	@uv run --extra dev ty check app
+
+generate-dtos:
+	@uv run python scripts/generate_model_dtos.py
+
+check-typed-writes:
+	@uv run python scripts/check_typed_writes.py

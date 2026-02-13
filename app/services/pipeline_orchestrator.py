@@ -1,31 +1,44 @@
 """Pipeline orchestrator for coordinating step execution."""
 
+import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
-import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_session_context
 from app.core.exceptions import (
     PipelineAlreadyRunningError,
     StepNotFoundError,
     StepPreconditionError,
 )
+from app.models.generated_dtos import (
+    PipelineRunCreateDTO,
+    PipelineRunPatchDTO,
+    StepExecutionCreateDTO,
+)
 from app.models.pipeline import PipelineRun, StepExecution
 from app.models.project import Project
-
-# Step service imports
-from app.services.steps.step_00_setup import Step00SetupService, SetupInput
-from app.services.steps.step_01_brand import Step01BrandService, BrandInput
-from app.services.steps.step_02_seeds import Step02SeedsService, SeedsInput
-from app.services.steps.step_03_expansion import Step03ExpansionService, ExpansionInput
-from app.services.steps.step_04_metrics import Step04MetricsService, MetricsInput
-from app.services.steps.step_05_intent import Step05IntentService, IntentInput
-from app.services.steps.step_06_clustering import Step06ClusteringService, ClusteringInput
-from app.services.steps.step_07_prioritization import Step07PrioritizationService, PrioritizationInput
-from app.services.steps.step_12_brief import Step12BriefService, BriefInput
+from app.persistence.typed import create, patch
+from app.services.steps.base_step import BaseStepService
+from app.services.steps.step_00_setup import SetupInput, Step00SetupService
+from app.services.steps.step_01_brand import BrandInput, Step01BrandService
+from app.services.steps.step_02_seeds import SeedsInput, Step02SeedsService
+from app.services.steps.step_03_expansion import ExpansionInput, Step03ExpansionService
+from app.services.steps.step_04_metrics import MetricsInput, Step04MetricsService
+from app.services.steps.step_05_intent import IntentInput, Step05IntentService
+from app.services.steps.step_06_clustering import ClusteringInput, Step06ClusteringService
+from app.services.steps.step_07_prioritization import (
+    PrioritizationInput,
+    Step07PrioritizationService,
+)
+from app.services.steps.step_12_brief import BriefInput, Step12BriefService
 from app.services.steps.step_13_templates import Step13TemplatesService, TemplatesInput
+from app.services.task_manager import TaskManager
+
+logger = logging.getLogger(__name__)
 
 
 # Step names mapping
@@ -79,6 +92,7 @@ class PipelineOrchestrator:
     def __init__(self, session: AsyncSession, project_id: str) -> None:
         self.session = session
         self.project_id = project_id
+        self.task_manager = TaskManager()
         self._current_run: PipelineRun | None = None
 
     async def start_pipeline(
@@ -86,59 +100,189 @@ class PipelineOrchestrator:
         start_step: int = 0,
         end_step: int | None = None,
         skip_steps: list[int] | None = None,
+        run_id: str | None = None,
     ) -> PipelineRun:
         """Start a new pipeline run."""
         end_step = end_step or 13
         skip_steps = skip_steps or []
+        run_uuid = uuid.UUID(run_id) if run_id else None
+
+        logger.info(
+            "Starting pipeline",
+            extra={
+                "project_id": self.project_id,
+                "run_id": run_id,
+                "start_step": start_step,
+                "end_step": end_step,
+                "skip_steps": skip_steps,
+            },
+        )
 
         # Check for running pipeline
-        result = await self.session.execute(
-            select(PipelineRun).where(
-                PipelineRun.project_id == self.project_id,
-                PipelineRun.status == "running",
-            )
+        running_query = select(PipelineRun).where(
+            PipelineRun.project_id == self.project_id,
+            PipelineRun.status == "running",
         )
+        if run_uuid is not None:
+            running_query = running_query.where(PipelineRun.id != run_uuid)
+
+        result = await self.session.execute(running_query)
         if result.scalar_one_or_none():
             raise PipelineAlreadyRunningError(self.project_id)
 
-        # Create pipeline run
-        run = PipelineRun(
-            project_id=uuid.UUID(self.project_id),
-            status="running",
-            started_at=datetime.now(timezone.utc),
-            start_step=start_step,
-            end_step=end_step,
-            skip_steps=skip_steps,
-            steps_config={
-                "start": start_step,
-                "end": end_step,
-                "skip": skip_steps,
-            },
-        )
-        self.session.add(run)
-        await self.session.flush()
+        if run_uuid is None:
+            run = create(
+                self.session,
+                PipelineRun,
+                PipelineRunCreateDTO(
+                    project_id=self.project_id,
+                    status="running",
+                    started_at=datetime.now(timezone.utc),
+                    start_step=start_step,
+                    end_step=end_step,
+                    skip_steps=skip_steps,
+                    steps_config={
+                        "start": start_step,
+                        "end": end_step,
+                        "skip": skip_steps,
+                    },
+                ),
+            )
+        else:
+            result = await self.session.execute(
+                select(PipelineRun).where(
+                    PipelineRun.id == run_uuid,
+                    PipelineRun.project_id == self.project_id,
+                )
+            )
+            run = result.scalar_one_or_none()
+            if run is None:
+                raise ValueError(f"Pipeline run not found: {run_id}")
 
+            patch(
+                self.session,
+                PipelineRun,
+                run,
+                PipelineRunPatchDTO.from_partial({
+                    "status": "running",
+                    "started_at": datetime.now(timezone.utc),
+                    "completed_at": None,
+                    "error_message": None,
+                    "paused_at_step": None,
+                    "start_step": start_step,
+                    "end_step": end_step,
+                    "skip_steps": skip_steps,
+                    "steps_config": {
+                        "start": start_step,
+                        "end": end_step,
+                        "skip": skip_steps,
+                    },
+                }),
+            )
+
+        # Commit so per-step sessions can see the FK
+        await self.session.commit()
         self._current_run = run
 
-        # Execute steps
+        task_id = str(run.id)
+        total_steps = len(
+            [step for step in range(start_step, end_step + 1) if step not in skip_steps]
+        )
+        await self.task_manager.set_task_state(
+            task_id=task_id,
+            status="running",
+            stage="Pipeline started",
+            project_id=self.project_id,
+            current_step=start_step,
+            current_step_name=STEP_NAMES.get(start_step),
+            completed_steps=0,
+            total_steps=total_steps,
+            progress_percent=0.0,
+            error_message=None,
+        )
+
+        # Execute steps (each step gets its own DB session)
+        step_num = start_step
         try:
             for step_num in range(start_step, end_step + 1):
                 if await self._should_skip_step(step_num, skip_steps):
+                    logger.info(
+                        "Skipping step",
+                        extra={
+                            "project_id": self.project_id,
+                            "step": step_num,
+                            "step_name": STEP_NAMES.get(step_num),
+                        },
+                    )
                     await self._create_skipped_execution(run, step_num)
+                    await self._set_step_skipped_task_state(task_id, step_num)
                     continue
 
-                await self._execute_step(run, step_num)
+                logger.info(
+                    "Executing step",
+                    extra={
+                        "project_id": self.project_id,
+                        "step": step_num,
+                        "step_name": STEP_NAMES.get(step_num),
+                    },
+                )
+                execution = await self._execute_step(run, step_num)
 
+                if execution.status == "completed":
+                    await self.task_manager.mark_step_completed(
+                        task_id=task_id,
+                        step_number=step_num,
+                        step_name=STEP_NAMES.get(step_num, f"step_{step_num}"),
+                    )
+                elif execution.status == "skipped":
+                    await self._set_step_skipped_task_state(task_id, step_num)
+
+            await self._update_run_status(
+                run.id, status="completed", completed_at=datetime.now(timezone.utc)
+            )
             run.status = "completed"
             run.completed_at = datetime.now(timezone.utc)
+            logger.info(
+                "Pipeline completed", extra={"project_id": self.project_id, "run_id": str(run.id)}
+            )
+
+            await self.task_manager.set_task_state(
+                task_id=task_id,
+                status="completed",
+                stage="Pipeline completed",
+                current_step=end_step,
+                current_step_name=STEP_NAMES.get(end_step),
+                completed_steps=total_steps,
+                progress_percent=100.0,
+                error_message=None,
+            )
 
         except Exception as e:
-            run.status = "failed"
-            run.completed_at = datetime.now(timezone.utc)
-            raise
+            try:
+                await self._update_run_status(
+                    run.id, status="paused", error_message=str(e), paused_at_step=step_num
+                )
+            except Exception:
+                logger.error("Failed to persist pipeline error status to DB")
+            run.status = "paused"
+            run.error_message = str(e)
+            run.paused_at_step = step_num
+            logger.warning(
+                "Pipeline paused due to error",
+                extra={"project_id": self.project_id, "step": step_num, "error": str(e)},
+            )
 
-        finally:
-            await self.session.commit()
+            await self.task_manager.set_task_state(
+                task_id=task_id,
+                status="paused",
+                stage=(
+                    "Pipeline paused at step "
+                    f"{step_num}: {STEP_NAMES.get(step_num, f'step_{step_num}')}"
+                ),
+                current_step=step_num,
+                current_step_name=STEP_NAMES.get(step_num),
+                error_message=str(e),
+            )
 
         return run
 
@@ -147,16 +291,52 @@ class PipelineOrchestrator:
         if step_number not in STEP_NAMES:
             raise StepNotFoundError(step_number)
 
+        logger.info(
+            "Running single step",
+            extra={
+                "project_id": self.project_id,
+                "step": step_number,
+                "step_name": STEP_NAMES.get(step_number),
+            },
+        )
+
         # Verify dependencies
         await self._verify_dependencies(step_number)
 
         # Get or create pipeline run
         run = await self._get_or_create_run()
+        task_id = str(run.id)
+        await self.task_manager.set_task_state(
+            task_id=task_id,
+            status="running",
+            stage=f"Running step {step_number}: {STEP_NAMES[step_number]}",
+            project_id=self.project_id,
+            current_step=step_number,
+            current_step_name=STEP_NAMES.get(step_number),
+            completed_steps=0,
+            total_steps=1,
+            progress_percent=0.0,
+            error_message=None,
+        )
 
-        return await self._execute_step(run, step_number)
+        execution = await self._execute_step(run, step_number)
+        if execution.status == "completed":
+            await self.task_manager.set_task_state(
+                task_id=task_id,
+                status="completed",
+                stage=f"Completed step {step_number}: {STEP_NAMES[step_number]}",
+                current_step=step_number,
+                current_step_name=STEP_NAMES.get(step_number),
+                completed_steps=1,
+                total_steps=1,
+                progress_percent=100.0,
+                error_message=None,
+            )
+        return execution
 
     async def resume_pipeline(self, run_id: str) -> PipelineRun:
         """Resume a paused pipeline."""
+        logger.info("Resuming pipeline", extra={"project_id": self.project_id, "run_id": run_id})
         result = await self.session.execute(
             select(PipelineRun).where(
                 PipelineRun.id == run_id,
@@ -177,31 +357,136 @@ class PipelineOrchestrator:
         start_step = last_completed + 1 if last_completed is not None else 0
         end_step = run.end_step or 13
         skip_steps = run.skip_steps or []
+        logger.info(
+            "Last completed step: %s",
+            last_completed,
+            extra={
+                "project_id": self.project_id,
+                "run_id": run_id,
+                "start_step": start_step,
+                "end_step": end_step,
+                "skip_steps": skip_steps,
+            },
+        )
 
+        # Clear previous error when resuming
+        run.error_message = None
+        run.paused_at_step = None
+
+        await self.session.commit()  # Commit status change before steps run
+
+        task_id = str(run.id)
+        existing_status = await self.task_manager.get_task_status(task_id)
+        total_steps = len(
+            [step for step in range(start_step, end_step + 1) if step not in skip_steps]
+        )
+        completed_steps = (
+            await self._count_completed_steps(run.id) if existing_status is None else None
+        )
+        progress_percent = None
+        if completed_steps is not None and total_steps > 0:
+            progress_percent = round((completed_steps / total_steps) * 100, 2)
+
+        await self.task_manager.set_task_state(
+            task_id=task_id,
+            status="running",
+            stage="Pipeline resumed",
+            project_id=self.project_id,
+            current_step=start_step,
+            current_step_name=STEP_NAMES.get(start_step),
+            completed_steps=completed_steps,
+            total_steps=total_steps,
+            progress_percent=progress_percent,
+            error_message=None,
+        )
+
+        step_num = start_step
         try:
             for step_num in range(start_step, end_step + 1):
                 if await self._should_skip_step(step_num, skip_steps):
+                    await self._set_step_skipped_task_state(task_id, step_num)
                     continue
-                await self._execute_step(run, step_num)
+                logger.info(
+                    "Executing step %s",
+                    step_num,
+                    extra={
+                        "project_id": self.project_id,
+                        "run_id": run_id,
+                        "step": step_num,
+                        "step_name": STEP_NAMES.get(step_num),
+                    },
+                )
+                execution = await self._execute_step(run, step_num)
 
+                if execution.status == "completed":
+                    await self.task_manager.mark_step_completed(
+                        task_id=task_id,
+                        step_number=step_num,
+                        step_name=STEP_NAMES.get(step_num, f"step_{step_num}"),
+                    )
+                elif execution.status == "skipped":
+                    await self._set_step_skipped_task_state(task_id, step_num)
+
+            await self._update_run_status(
+                run.id, status="completed", completed_at=datetime.now(timezone.utc)
+            )
             run.status = "completed"
             run.completed_at = datetime.now(timezone.utc)
 
-        except Exception:
-            run.status = "failed"
-            run.completed_at = datetime.now(timezone.utc)
-            raise
+            await self.task_manager.set_task_state(
+                task_id=task_id,
+                status="completed",
+                stage="Pipeline completed",
+                current_step=end_step,
+                current_step_name=STEP_NAMES.get(end_step),
+                progress_percent=100.0,
+                error_message=None,
+            )
 
-        finally:
-            await self.session.commit()
+        except Exception as e:
+            try:
+                await self._update_run_status(
+                    run.id, status="paused", error_message=str(e), paused_at_step=step_num
+                )
+            except Exception:
+                logger.error("Failed to persist pipeline error status to DB")
+            run.status = "paused"
+            run.error_message = str(e)
+            run.paused_at_step = step_num
+            logger.warning(
+                "Resumed pipeline paused due to error",
+                extra={"project_id": self.project_id, "step": step_num, "error": str(e)},
+            )
+
+            await self.task_manager.set_task_state(
+                task_id=task_id,
+                status="paused",
+                stage=(
+                    "Pipeline paused at step "
+                    f"{step_num}: {STEP_NAMES.get(step_num, f'step_{step_num}')}"
+                ),
+                current_step=step_num,
+                current_step_name=STEP_NAMES.get(step_num),
+                error_message=str(e),
+            )
 
         return run
 
     async def pause_pipeline(self) -> None:
         """Pause the current pipeline."""
         if self._current_run:
+            logger.info(
+                "Pausing pipeline",
+                extra={"project_id": self.project_id, "run_id": str(self._current_run.id)},
+            )
             self._current_run.status = "paused"
             await self.session.commit()
+
+            await self.task_manager.set_task_state(
+                task_id=str(self._current_run.id),
+                status="paused",
+                stage="Pipeline paused",
+            )
 
     async def _should_skip_step(self, step_number: int, skip_steps: list[int]) -> bool:
         """Check if a step should be skipped."""
@@ -246,39 +531,51 @@ class PipelineOrchestrator:
         return result.scalar_one_or_none() is not None
 
     async def _execute_step(self, run: PipelineRun, step_number: int) -> StepExecution:
-        """Execute a single step with proper service instantiation."""
-        execution = StepExecution(
-            pipeline_run_id=run.id,
-            step_number=step_number,
-            step_name=STEP_NAMES[step_number],
-            status="pending",
-        )
-        self.session.add(execution)
-        await self.session.flush()
+        """Execute a single step with its own database session.
 
-        # Import and instantiate the appropriate step service
-        service = await self._get_step_service(step_number, execution)
+        Each step gets a fresh DB connection so long-running LLM calls
+        in a previous step can't leave behind a stale connection.
+        """
+        async with get_session_context() as step_session:
+            execution = create(
+                step_session,
+                StepExecution,
+                StepExecutionCreateDTO(
+                    pipeline_run_id=str(run.id),
+                    step_number=step_number,
+                    step_name=STEP_NAMES[step_number],
+                    status="pending",
+                ),
+            )
+            logger.info("Executing step %s: %s", step_number, STEP_NAMES[step_number])
+            await step_session.flush()
 
-        if service is None:
-            # Step not implemented yet - mark as skipped
-            execution.status = "skipped"
-            execution.progress_message = "Step not implemented"
-            await self.session.commit()
+            service = await self._get_step_service(step_number, execution, step_session)
+
+            if service is None:
+                logger.info("Step %s: %s not implemented", step_number, STEP_NAMES[step_number])
+                execution.status = "skipped"
+                execution.progress_message = "Step not implemented"
+                return execution
+
+            input_data = await self._get_step_input(step_number, step_session)
+
+            logger.info("Running step %s: %s", step_number, STEP_NAMES[step_number])
+            result = await service.run(input_data)
+
+            if not result.success:
+                raise RuntimeError(
+                    f"Step {step_number} ({STEP_NAMES[step_number]}) failed: {result.error}"
+                )
+
             return execution
-
-        # Get input data for the step
-        input_data = await self._get_step_input(step_number)
-
-        # Run the step
-        await service.run(input_data)
-
-        return execution
 
     async def _get_step_service(
         self,
         step_number: int,
         execution: StepExecution,
-    ) -> Any | None:
+        session: AsyncSession | None = None,
+    ) -> BaseStepService | None:
         """Get the appropriate step service instance."""
         # Step service registry
         step_services = {
@@ -305,17 +602,16 @@ class PipelineOrchestrator:
             return None
 
         return service_class(
-            session=self.session,
+            session=session or self.session,
             project_id=self.project_id,
             execution=execution,
         )
 
-    async def _get_step_input(self, step_number: int) -> Any:
+    async def _get_step_input(self, step_number: int, session: AsyncSession | None = None) -> Any:
         """Get input data for a step from previous step outputs."""
+        _session = session or self.session
         # Load project
-        result = await self.session.execute(
-            select(Project).where(Project.id == self.project_id)
-        )
+        result = await _session.execute(select(Project).where(Project.id == self.project_id))
         project = result.scalar_one_or_none()
 
         if not project:
@@ -338,6 +634,13 @@ class PipelineOrchestrator:
 
         return step_inputs.get(step_number, {"project_id": self.project_id})
 
+    async def _update_run_status(self, run_id: Any, **updates: Any) -> None:
+        """Update PipelineRun status using a fresh DB session."""
+        async with get_session_context() as session:
+            result = await session.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+            run = result.scalar_one()
+            patch(session, PipelineRun, run, PipelineRunPatchDTO.from_partial(updates))
+
     async def _create_skipped_execution(
         self,
         run: PipelineRun,
@@ -345,17 +648,20 @@ class PipelineOrchestrator:
         reason: str = "Skipped by configuration",
     ) -> StepExecution:
         """Create a skipped step execution record."""
-        execution = StepExecution(
-            pipeline_run_id=run.id,
-            step_number=step_number,
-            step_name=STEP_NAMES[step_number],
-            status="skipped",
-            progress_message=reason,
-            started_at=datetime.now(timezone.utc),
-            completed_at=datetime.now(timezone.utc),
-        )
-        self.session.add(execution)
-        await self.session.flush()
+        async with get_session_context() as session:
+            execution = create(
+                session,
+                StepExecution,
+                StepExecutionCreateDTO(
+                    pipeline_run_id=str(run.id),
+                    step_number=step_number,
+                    step_name=STEP_NAMES[step_number],
+                    status="skipped",
+                    progress_message=reason,
+                    started_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
+                ),
+            )
         return execution
 
     async def _get_or_create_run(self) -> PipelineRun:
@@ -363,12 +669,15 @@ class PipelineOrchestrator:
         if self._current_run:
             return self._current_run
 
-        run = PipelineRun(
-            project_id=uuid.UUID(self.project_id),
-            status="running",
-            started_at=datetime.now(timezone.utc),
+        run = create(
+            self.session,
+            PipelineRun,
+            PipelineRunCreateDTO(
+                project_id=self.project_id,
+                status="running",
+                started_at=datetime.now(timezone.utc),
+            ),
         )
-        self.session.add(run)
         await self.session.flush()
         self._current_run = run
         return run
@@ -386,6 +695,30 @@ class PipelineOrchestrator:
         )
         execution = result.scalar_one_or_none()
         return execution.step_number if execution else None
+
+    async def _count_completed_steps(self, run_id: Any) -> int:
+        """Count completed steps for a run."""
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(StepExecution)
+            .where(
+                StepExecution.pipeline_run_id == run_id,
+                StepExecution.status == "completed",
+            )
+        )
+        count = result.scalar_one()
+        return int(count or 0)
+
+    async def _set_step_skipped_task_state(self, task_id: str, step_num: int) -> None:
+        """Set task stage when a step is skipped."""
+        await self.task_manager.set_task_state(
+            task_id=task_id,
+            status="running",
+            stage=f"Skipped step {step_num}: {STEP_NAMES.get(step_num, f'step_{step_num}')}",
+            current_step=step_num,
+            current_step_name=STEP_NAMES.get(step_num),
+            error_message=None,
+        )
 
     async def _has_existing_content(self) -> bool:
         """Check if the project has existing content to inventory."""

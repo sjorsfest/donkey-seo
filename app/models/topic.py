@@ -6,10 +6,10 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUID, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.content import ContentBrief
@@ -22,19 +22,19 @@ class Topic(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "topics"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    parent_topic_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
+    parent_topic_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
         ForeignKey("topics.id", ondelete="SET NULL"),
         nullable=True,
     )
-    pillar_seed_topic_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
+    pillar_seed_topic_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
         ForeignKey("seed_topics.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -46,8 +46,8 @@ class Topic(Base, UUIDMixin, TimestampMixin):
     # Clustering data
     cluster_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
     cluster_coherence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    primary_keyword_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
+    primary_keyword_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
         nullable=True,
     )
 
