@@ -23,7 +23,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create project",
+    description=(
+        "Create a keyword research project with domain, locale, goals, and optional pipeline "
+        "settings."
+    ),
+)
 async def create_project(
     project_data: ProjectCreate,
     current_user: CurrentUser,
@@ -60,7 +69,12 @@ async def create_project(
     return project
 
 
-@router.get("/", response_model=ProjectListResponse)
+@router.get(
+    "/",
+    response_model=ProjectListResponse,
+    summary="List projects",
+    description="Return paginated projects for the authenticated user, ordered by most recent.",
+)
 async def list_projects(
     current_user: CurrentUser,
     session: DbSession,
@@ -94,7 +108,12 @@ async def list_projects(
     )
 
 
-@router.get("/{project_id}", response_model=ProjectResponse)
+@router.get(
+    "/{project_id}",
+    response_model=ProjectResponse,
+    summary="Get project",
+    description="Return a single project by ID when it belongs to the authenticated user.",
+)
 async def get_project(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -104,7 +123,12 @@ async def get_project(
     return await get_user_project(project_id, current_user, session)
 
 
-@router.put("/{project_id}", response_model=ProjectResponse)
+@router.put(
+    "/{project_id}",
+    response_model=ProjectResponse,
+    summary="Update project",
+    description="Apply partial updates to editable fields on an existing project.",
+)
 async def update_project(
     project_id: uuid.UUID,
     project_data: ProjectUpdate,
@@ -131,7 +155,12 @@ async def update_project(
     return project
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete project",
+    description="Delete a project owned by the authenticated user.",
+)
 async def delete_project(
     project_id: uuid.UUID,
     current_user: CurrentUser,

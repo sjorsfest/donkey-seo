@@ -21,6 +21,8 @@ from app.models.generated_dtos import (
 )
 from app.models.pipeline import PipelineRun, StepExecution
 from app.models.project import Project
+from app.schemas.pipeline import ContentPipelineConfig, PipelineMode
+from app.services.discovery_loop import DiscoveryLoopResult, DiscoveryLoopSupervisor
 from app.services.steps.base_step import BaseStepService
 from app.services.steps.step_00_setup import SetupInput, Step00SetupService
 from app.services.steps.step_01_brand import BrandInput, Step01BrandService
@@ -33,8 +35,16 @@ from app.services.steps.step_07_prioritization import (
     PrioritizationInput,
     Step07PrioritizationService,
 )
+from app.services.steps.step_08_serp import (
+    SerpValidationInput,
+    Step08SerpValidationService,
+)
 from app.services.steps.step_12_brief import BriefInput, Step12BriefService
 from app.services.steps.step_13_templates import Step13TemplatesService, TemplatesInput
+from app.services.steps.step_14_article_writer import (
+    ArticleWriterInput,
+    Step14ArticleWriterService,
+)
 from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -56,7 +66,7 @@ STEP_NAMES = {
     11: "internal_linking",
     12: "content_brief",
     13: "writer_templates",
-    14: "gsc_integration",
+    14: "article_generation",
 }
 
 # Step dependencies
@@ -75,14 +85,12 @@ STEP_DEPENDENCIES = {
     11: [10],
     12: [7],
     13: [12],
-    14: [0],
+    14: [13],
 }
 
 # Optional steps (can be skipped)
-OPTIONAL_STEPS = {8, 9, 10, 11, 14}
-
-# Steps requiring OAuth
-OAUTH_STEPS = {14}
+OPTIONAL_STEPS = {8, 9, 10, 11}
+CONTENT_PRODUCTION_STEPS = (12, 13, 14)
 
 
 class PipelineOrchestrator:
@@ -100,9 +108,10 @@ class PipelineOrchestrator:
         end_step: int | None = None,
         skip_steps: list[int] | None = None,
         run_id: str | None = None,
+        steps_config: dict[str, Any] | None = None,
     ) -> PipelineRun:
         """Start a new pipeline run."""
-        end_step = end_step or 13
+        end_step = end_step or 14
         skip_steps = skip_steps or []
         run_uuid = uuid.UUID(run_id) if run_id else None
 
@@ -114,6 +123,7 @@ class PipelineOrchestrator:
                 "start_step": start_step,
                 "end_step": end_step,
                 "skip_steps": skip_steps,
+                "mode": (steps_config or {}).get("mode"),
             },
         )
 
@@ -130,6 +140,12 @@ class PipelineOrchestrator:
             raise PipelineAlreadyRunningError(self.project_id)
 
         if run_uuid is None:
+            effective_steps_config = self._build_effective_steps_config(
+                start_step=start_step,
+                end_step=end_step,
+                skip_steps=skip_steps,
+                existing_config=steps_config,
+            )
             run = PipelineRun.create(
                 self.session,
                 PipelineRunCreateDTO(
@@ -139,11 +155,7 @@ class PipelineOrchestrator:
                     start_step=start_step,
                     end_step=end_step,
                     skip_steps=skip_steps,
-                    steps_config={
-                        "start": start_step,
-                        "end": end_step,
-                        "skip": skip_steps,
-                    },
+                    steps_config=effective_steps_config,
                 ),
             )
         else:
@@ -156,10 +168,19 @@ class PipelineOrchestrator:
             run = result.scalar_one_or_none()
             if run is None:
                 raise ValueError(f"Pipeline run not found: {run_id}")
-
-            existing_strategy = None
-            if run.steps_config and isinstance(run.steps_config, dict):
-                existing_strategy = run.steps_config.get("strategy")
+            effective_steps_config = self._build_effective_steps_config(
+                start_step=start_step,
+                end_step=end_step,
+                skip_steps=skip_steps,
+                existing_config=run.steps_config,
+            )
+            if steps_config:
+                effective_steps_config = self._build_effective_steps_config(
+                    start_step=start_step,
+                    end_step=end_step,
+                    skip_steps=skip_steps,
+                    existing_config={**effective_steps_config, **steps_config},
+                )
 
             run.patch(
                 self.session,
@@ -172,71 +193,76 @@ class PipelineOrchestrator:
                     "start_step": start_step,
                     "end_step": end_step,
                     "skip_steps": skip_steps,
-                    "steps_config": {
-                        "start": start_step,
-                        "end": end_step,
-                        "skip": skip_steps,
-                        "strategy": existing_strategy,
-                    },
+                    "steps_config": effective_steps_config,
                 }),
             )
 
         # Commit so per-step sessions can see the FK
         await self.session.commit()
         self._current_run = run
+        mode = self._resolve_mode(run.steps_config)
+        run_start, run_end = self._resolve_step_window(
+            mode=mode,
+            requested_start=start_step,
+            requested_end=end_step,
+        )
 
         task_id = str(run.id)
         total_steps = len(
-            [step for step in range(start_step, end_step + 1) if step not in skip_steps]
+            [step for step in range(run_start, run_end + 1) if step not in skip_steps]
         )
         await self.task_manager.set_task_state(
             task_id=task_id,
             status="running",
             stage="Pipeline started",
             project_id=self.project_id,
-            current_step=start_step,
-            current_step_name=STEP_NAMES.get(start_step),
+            current_step=run_start,
+            current_step_name=STEP_NAMES.get(run_start),
             completed_steps=0,
             total_steps=total_steps,
             progress_percent=0.0,
             error_message=None,
         )
 
-        # Execute steps (each step gets its own DB session)
-        step_num = start_step
         try:
-            for step_num in range(start_step, end_step + 1):
-                if await self._should_skip_step(step_num, skip_steps):
-                    logger.info(
-                        "Skipping step",
-                        extra={
-                            "project_id": self.project_id,
-                            "step": step_num,
-                            "step_name": STEP_NAMES.get(step_num),
-                        },
-                    )
-                    await self._create_skipped_execution(run, step_num)
-                    await self._set_step_skipped_task_state(task_id, step_num)
-                    continue
-
-                logger.info(
-                    "Executing step",
-                    extra={
-                        "project_id": self.project_id,
-                        "step": step_num,
-                        "step_name": STEP_NAMES.get(step_num),
-                    },
+            if mode == "discovery_loop":
+                result = await self._run_discovery_loop(run)
+                await self._update_run_status(
+                    run.id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc),
+                    paused_at_step=None,
+                    error_message=None,
                 )
-                execution = await self._execute_step(run, step_num)
-
-                if execution.status == "completed":
-                    await self.task_manager.mark_step_completed(
-                        task_id=task_id,
-                        step_number=step_num,
-                        step_name=STEP_NAMES.get(step_num, f"step_{step_num}"),
+                run.status = "completed"
+                run.completed_at = datetime.now(timezone.utc)
+                await self.task_manager.set_task_state(
+                    task_id=task_id,
+                    status="completed",
+                    stage=(
+                        "Discovery loop completed "
+                        f"({result.accepted_count}/{result.target_count} accepted topics)"
+                    ),
+                    current_step=8,
+                    current_step_name=STEP_NAMES.get(8),
+                    progress_percent=100.0,
+                    error_message=None,
+                )
+                if result.success and self._discovery_auto_start_enabled(run.steps_config):
+                    await self._start_content_pipeline_from_discovery(
+                        accepted_topic_ids=result.accepted_topic_ids,
+                        content_config=result.content_config,
+                        base_steps_config=run.steps_config or {},
                     )
-                elif execution.status == "skipped":
-                    await self._set_step_skipped_task_state(task_id, step_num)
+                return run
+
+            await self._run_step_range(
+                run=run,
+                start_step=run_start,
+                end_step=run_end,
+                skip_steps=skip_steps,
+                task_id=task_id,
+            )
 
             await self._update_run_status(
                 run.id, status="completed", completed_at=datetime.now(timezone.utc)
@@ -251,14 +277,17 @@ class PipelineOrchestrator:
                 task_id=task_id,
                 status="completed",
                 stage="Pipeline completed",
-                current_step=end_step,
-                current_step_name=STEP_NAMES.get(end_step),
+                current_step=run_end,
+                current_step_name=STEP_NAMES.get(run_end),
                 completed_steps=total_steps,
                 progress_percent=100.0,
                 error_message=None,
             )
 
         except Exception as e:
+            step_num = run_start
+            if isinstance(e, RuntimeError) and run.paused_at_step:
+                step_num = run.paused_at_step
             try:
                 await self._update_run_status(
                     run.id, status="paused", error_message=str(e), paused_at_step=step_num
@@ -350,13 +379,23 @@ class PipelineOrchestrator:
         if not run:
             raise ValueError("No paused pipeline found")
 
+        mode = self._resolve_mode(run.steps_config)
+        if mode == "discovery_loop":
+            return await self.start_pipeline(
+                start_step=run.start_step or 2,
+                end_step=run.end_step or 8,
+                skip_steps=run.skip_steps or [],
+                run_id=run_id,
+                steps_config=run.steps_config,
+            )
+
         run.status = "running"
         self._current_run = run
 
         # Find last completed step and resume from next
         last_completed = await self._get_last_completed_step(run)
         start_step = last_completed + 1 if last_completed is not None else 0
-        end_step = run.end_step or 13
+        end_step = run.end_step or 14
         skip_steps = run.skip_steps or []
         logger.info(
             "Last completed step: %s",
@@ -489,6 +528,154 @@ class PipelineOrchestrator:
                 stage="Pipeline paused",
             )
 
+    async def _run_step_range(
+        self,
+        *,
+        run: PipelineRun,
+        start_step: int,
+        end_step: int,
+        skip_steps: list[int],
+        task_id: str,
+    ) -> None:
+        """Execute a contiguous step range and update task state."""
+        for step_num in range(start_step, end_step + 1):
+            if await self._should_skip_step(step_num, skip_steps):
+                logger.info(
+                    "Skipping step",
+                    extra={
+                        "project_id": self.project_id,
+                        "step": step_num,
+                        "step_name": STEP_NAMES.get(step_num),
+                    },
+                )
+                await self._create_skipped_execution(run, step_num)
+                await self._set_step_skipped_task_state(task_id, step_num)
+                continue
+
+            logger.info(
+                "Executing step",
+                extra={
+                    "project_id": self.project_id,
+                    "step": step_num,
+                    "step_name": STEP_NAMES.get(step_num),
+                },
+            )
+            execution = await self._execute_step(run, step_num)
+            run.paused_at_step = step_num
+
+            if execution.status == "completed":
+                await self.task_manager.mark_step_completed(
+                    task_id=task_id,
+                    step_number=step_num,
+                    step_name=STEP_NAMES.get(step_num, f"step_{step_num}"),
+                )
+            elif execution.status == "skipped":
+                await self._set_step_skipped_task_state(task_id, step_num)
+
+    async def _run_discovery_loop(self, run: PipelineRun) -> DiscoveryLoopResult:
+        """Execute adaptive discovery iterations until enough topics are accepted."""
+        supervisor = DiscoveryLoopSupervisor(
+            session=self.session,
+            project_id=self.project_id,
+            run=run,
+            task_manager=self.task_manager,
+        )
+        return await supervisor.run_loop(
+            execute_step=self._execute_step,
+            mark_step_completed=self.task_manager.mark_step_completed,
+        )
+
+    async def _start_content_pipeline_from_discovery(
+        self,
+        *,
+        accepted_topic_ids: list[str],
+        content_config: ContentPipelineConfig,
+        base_steps_config: dict[str, Any],
+    ) -> None:
+        """Auto-start content production with selected accepted topics."""
+        step_inputs = {
+            "12": {
+                "topic_ids": accepted_topic_ids,
+                "max_briefs": content_config.max_briefs,
+                "posts_per_week": content_config.posts_per_week,
+                "preferred_weekdays": content_config.preferred_weekdays,
+                "min_lead_days": content_config.min_lead_days,
+                "publication_start_date": content_config.publication_start_date,
+                "use_llm_timing_hints": content_config.use_llm_timing_hints,
+                "llm_timing_flex_days": content_config.llm_timing_flex_days,
+            }
+        }
+        chained_config = {
+            "mode": "content_production",
+            "strategy": base_steps_config.get("strategy"),
+            "content": content_config.model_dump(),
+            "discovery": base_steps_config.get("discovery"),
+            "iteration_index": base_steps_config.get("iteration_index", 0),
+            "selected_topic_ids": accepted_topic_ids,
+            "step_inputs": step_inputs,
+        }
+        logger.info(
+            "Auto-starting content production",
+            extra={
+                "project_id": self.project_id,
+                "accepted_topics": len(accepted_topic_ids),
+                "max_briefs": content_config.max_briefs,
+            },
+        )
+        await self.start_pipeline(
+            start_step=12,
+            end_step=14,
+            skip_steps=[],
+            steps_config=chained_config,
+        )
+
+    def _build_effective_steps_config(
+        self,
+        *,
+        start_step: int,
+        end_step: int,
+        skip_steps: list[int],
+        existing_config: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        config = dict(existing_config or {})
+        config["start"] = start_step
+        config["end"] = end_step
+        config["skip"] = skip_steps
+        config.setdefault("mode", "full")
+        config.setdefault("iteration_index", 0)
+        config.setdefault("selected_topic_ids", [])
+        config.setdefault("step_inputs", {})
+        return config
+
+    def _resolve_mode(self, steps_config: dict[str, Any] | None) -> PipelineMode:
+        if not steps_config:
+            return "full"
+        mode = steps_config.get("mode", "full")
+        if mode in {"full", "discovery_loop", "content_production"}:
+            return mode
+        return "full"
+
+    def _resolve_step_window(
+        self,
+        *,
+        mode: PipelineMode,
+        requested_start: int,
+        requested_end: int,
+    ) -> tuple[int, int]:
+        if mode == "discovery_loop":
+            return 2, 8
+        if mode == "content_production":
+            return 12, 14
+        return requested_start, requested_end
+
+    def _discovery_auto_start_enabled(self, steps_config: dict[str, Any] | None) -> bool:
+        if not steps_config:
+            return True
+        discovery_cfg = steps_config.get("discovery")
+        if not isinstance(discovery_cfg, dict):
+            return True
+        return bool(discovery_cfg.get("auto_start_content", True))
+
     async def _should_skip_step(self, step_number: int, skip_steps: list[int]) -> bool:
         """Check if a step should be skipped."""
         if step_number in skip_steps:
@@ -505,10 +692,6 @@ class PipelineOrchestrator:
             if step_number == 11:
                 # Skip linking if steps 9 and 10 were skipped
                 return 9 in skip_steps and 10 in skip_steps
-            if step_number == 14:
-                # Skip GSC if no OAuth tokens
-                return not await self._has_oauth_tokens()
-
         return False
 
     async def _verify_dependencies(self, step_number: int) -> None:
@@ -558,7 +741,11 @@ class PipelineOrchestrator:
                 execution.progress_message = "Step not implemented"
                 return execution
 
-            input_data = await self._get_step_input(step_number, step_session)
+            input_data = await self._get_step_input(
+                step_number,
+                pipeline_run_id=str(run.id),
+                session=step_session,
+            )
 
             logger.info("Running step %s: %s", step_number, STEP_NAMES[step_number])
             result = await service.run(input_data)
@@ -587,14 +774,14 @@ class PipelineOrchestrator:
             5: Step05IntentService,
             6: Step06ClusteringService,
             7: Step07PrioritizationService,
-            # Steps 8-11 are optional and not yet implemented
-            # 8: Step08SerpService,
+            8: Step08SerpValidationService,
+            # Steps 9-11 are optional and not yet implemented
             # 9: Step09InventoryService,
             # 10: Step10CannibalizationService,
             # 11: Step11LinkingService,
             12: Step12BriefService,
             13: Step13TemplatesService,
-            # 14: Step14GscService,  # Requires OAuth
+            14: Step14ArticleWriterService,
         }
 
         service_class = step_services.get(step_number)
@@ -607,7 +794,12 @@ class PipelineOrchestrator:
             execution=execution,
         )
 
-    async def _get_step_input(self, step_number: int, session: AsyncSession | None = None) -> Any:
+    async def _get_step_input(
+        self,
+        step_number: int,
+        pipeline_run_id: str,
+        session: AsyncSession | None = None,
+    ) -> Any:
         """Get input data for a step from previous step outputs."""
         _session = session or self.session
         # Load project
@@ -627,12 +819,45 @@ class PipelineOrchestrator:
             5: IntentInput(project_id=self.project_id),
             6: ClusteringInput(project_id=self.project_id),
             7: PrioritizationInput(project_id=self.project_id),
-            # Steps 8-11 would have their own input types
+            8: SerpValidationInput(project_id=self.project_id),
+            # Steps 9-11 would have their own input types
             12: BriefInput(project_id=self.project_id),
             13: TemplatesInput(project_id=self.project_id),
+            14: ArticleWriterInput(project_id=self.project_id),
         }
 
-        return step_inputs.get(step_number, {"project_id": self.project_id})
+        base_input = step_inputs.get(step_number, {"project_id": self.project_id})
+        run_result = await _session.execute(
+            select(PipelineRun).where(PipelineRun.id == pipeline_run_id)
+        )
+        run = run_result.scalar_one_or_none()
+        if not run or not isinstance(run.steps_config, dict):
+            return base_input
+
+        step_inputs_cfg = run.steps_config.get("step_inputs")
+        if not isinstance(step_inputs_cfg, dict):
+            return base_input
+
+        override = step_inputs_cfg.get(str(step_number)) or step_inputs_cfg.get(step_number)
+        if not isinstance(override, dict) or not override:
+            return base_input
+
+        if isinstance(base_input, dict):
+            return {**base_input, **override}
+
+        try:
+            merged = {**base_input.__dict__, **override}
+            return type(base_input)(**merged)
+        except Exception:
+            logger.warning(
+                "Invalid step input override ignored",
+                extra={
+                    "project_id": self.project_id,
+                    "step_number": step_number,
+                    "override_keys": sorted(override.keys()),
+                },
+            )
+            return base_input
 
     async def _update_run_status(self, run_id: Any, **updates: Any) -> None:
         """Update PipelineRun status using a fresh DB session."""
@@ -720,10 +945,5 @@ class PipelineOrchestrator:
 
     async def _has_existing_content(self) -> bool:
         """Check if the project has existing content to inventory."""
-        # TODO: Implement actual check
-        return False
-
-    async def _has_oauth_tokens(self) -> bool:
-        """Check if OAuth tokens are configured."""
         # TODO: Implement actual check
         return False

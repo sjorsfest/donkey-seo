@@ -16,14 +16,18 @@ from app.api.v1.pipeline.constants import (
     PIPELINE_ALREADY_RUNNING_DETAIL,
     PIPELINE_RUN_NOT_FOUND_DETAIL,
 )
+from app.api.v1.pipeline.openapi_docs import PIPELINE_START_OPENAPI_EXTRA
 from app.api.v1.pipeline.utils import (
     resume_pipeline_background,
     run_pipeline_background,
 )
 from app.dependencies import CurrentUser, DbSession
+from app.models.discovery_snapshot import DiscoveryTopicSnapshot
 from app.models.generated_dtos import PipelineRunCreateDTO
 from app.models.pipeline import PipelineRun
 from app.schemas.pipeline import (
+    ContentPipelineConfig,
+    DiscoveryTopicSnapshotResponse,
     PipelineProgressResponse,
     PipelineRunResponse,
     PipelineStartRequest,
@@ -39,6 +43,12 @@ router = APIRouter()
     "/{project_id}/start",
     response_model=PipelineRunResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Start pipeline run",
+    description=(
+        "Create a new pipeline run for a project and queue background execution for the "
+        "requested step range."
+    ),
+    openapi_extra=PIPELINE_START_OPENAPI_EXTRA,
 )
 async def start_pipeline(
     project_id: uuid.UUID,
@@ -51,12 +61,27 @@ async def start_pipeline(
     project = await get_user_project(project_id, current_user, session)
     project_id_str = str(project_id)
 
+    mode = request.mode
+    if mode == "discovery_loop":
+        start_step = 2
+        end_step = 8
+        skip_steps = []
+    elif mode == "content_production":
+        start_step = 12
+        end_step = 14
+        skip_steps = []
+    else:
+        start_step = request.start_step
+        end_step = request.end_step or 14
+        skip_steps = request.skip_steps or project.skip_steps or []
+
     logger.info(
         "Pipeline start requested",
         extra={
             "project_id": project_id_str,
-            "start_step": request.start_step,
-            "end_step": request.end_step,
+            "mode": mode,
+            "start_step": start_step,
+            "end_step": end_step,
             "has_strategy": request.strategy is not None,
         },
     )
@@ -75,25 +100,45 @@ async def start_pipeline(
             detail=PIPELINE_ALREADY_RUNNING_DETAIL,
         )
 
-    end_step = request.end_step or 13
-    skip_steps = request.skip_steps or project.skip_steps or []
-
     strategy_payload = request.strategy.model_dump() if request.strategy else None
+    discovery_payload = request.discovery.model_dump() if request.discovery else None
+    content_config = request.content
+    if content_config is None and mode in {"discovery_loop", "content_production"}:
+        content_config = ContentPipelineConfig()
+    content_payload = content_config.model_dump() if content_config else None
+    step_inputs_payload: dict[str, dict[str, object]] = {}
+    if content_payload:
+        step_inputs_payload["12"] = {
+            "max_briefs": content_payload.get("max_briefs", 20),
+            "posts_per_week": content_payload.get("posts_per_week", 1),
+            "preferred_weekdays": content_payload.get("preferred_weekdays", []),
+            "min_lead_days": content_payload.get("min_lead_days", 7),
+            "publication_start_date": content_payload.get("publication_start_date"),
+            "use_llm_timing_hints": content_payload.get("use_llm_timing_hints", True),
+            "llm_timing_flex_days": content_payload.get("llm_timing_flex_days", 14),
+        }
+    steps_config = {
+        "start": start_step,
+        "end": end_step,
+        "skip": skip_steps,
+        "strategy": strategy_payload,
+        "mode": mode,
+        "discovery": discovery_payload,
+        "content": content_payload,
+        "iteration_index": 0,
+        "selected_topic_ids": [],
+        "step_inputs": step_inputs_payload,
+    }
 
     pipeline_run = PipelineRun.create(
         session,
         PipelineRunCreateDTO(
             project_id=project_id_str,
             status="pending",
-            start_step=request.start_step,
+            start_step=start_step,
             end_step=end_step,
             skip_steps=skip_steps,
-            steps_config={
-                "start": request.start_step,
-                "end": end_step,
-                "skip": skip_steps,
-                "strategy": strategy_payload,
-            },
+            steps_config=steps_config,
         ),
     )
     await session.flush()
@@ -106,7 +151,7 @@ async def start_pipeline(
         run_pipeline_background,
         project_id=project_id_str,
         run_id=str(pipeline_run.id),
-        start_step=request.start_step,
+        start_step=start_step,
         end_step=end_step,
         skip_steps=skip_steps,
     )
@@ -114,7 +159,15 @@ async def start_pipeline(
     return pipeline_run
 
 
-@router.get("/{project_id}/runs", response_model=list[PipelineRunResponse])
+@router.get(
+    "/{project_id}/runs",
+    response_model=list[PipelineRunResponse],
+    summary="List pipeline runs",
+    description=(
+        "Return recent pipeline runs for a project, including step execution data, limited by "
+        "the provided count."
+    ),
+)
 async def list_pipeline_runs(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -135,7 +188,12 @@ async def list_pipeline_runs(
     return list(result.scalars().all())
 
 
-@router.get("/{project_id}/runs/{run_id}", response_model=PipelineRunResponse)
+@router.get(
+    "/{project_id}/runs/{run_id}",
+    response_model=PipelineRunResponse,
+    summary="Get pipeline run",
+    description="Return full details for a specific pipeline run in the project.",
+)
 async def get_pipeline_run(
     project_id: uuid.UUID,
     run_id: uuid.UUID,
@@ -161,7 +219,15 @@ async def get_pipeline_run(
     return pipeline_run
 
 
-@router.get("/{project_id}/runs/{run_id}/progress", response_model=PipelineProgressResponse)
+@router.get(
+    "/{project_id}/runs/{run_id}/progress",
+    response_model=PipelineProgressResponse,
+    summary="Get pipeline progress",
+    description=(
+        "Return real-time pipeline progress including run status, active step, and per-step "
+        "execution details."
+    ),
+)
 async def get_pipeline_progress(
     project_id: uuid.UUID,
     run_id: uuid.UUID,
@@ -204,7 +270,57 @@ async def get_pipeline_progress(
     )
 
 
-@router.post("/{project_id}/pause", status_code=status.HTTP_200_OK)
+@router.get(
+    "/{project_id}/runs/{run_id}/discovery-snapshots",
+    response_model=list[DiscoveryTopicSnapshotResponse],
+    summary="List discovery snapshots",
+    description=(
+        "Return per-iteration topic decision snapshots (accepted/rejected) "
+        "for a discovery-loop run."
+    ),
+)
+async def list_discovery_snapshots(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> list[DiscoveryTopicSnapshot]:
+    """List discovery snapshots for a pipeline run."""
+    await get_user_project(project_id, current_user, session)
+
+    run_result = await session.execute(
+        select(PipelineRun).where(
+            PipelineRun.id == run_id,
+            PipelineRun.project_id == project_id,
+        )
+    )
+    pipeline_run = run_result.scalar_one_or_none()
+    if not pipeline_run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=PIPELINE_RUN_NOT_FOUND_DETAIL,
+        )
+
+    result = await session.execute(
+        select(DiscoveryTopicSnapshot)
+        .where(
+            DiscoveryTopicSnapshot.project_id == project_id,
+            DiscoveryTopicSnapshot.pipeline_run_id == run_id,
+        )
+        .order_by(
+            DiscoveryTopicSnapshot.iteration_index.asc(),
+            DiscoveryTopicSnapshot.created_at.asc(),
+        )
+    )
+    return list(result.scalars().all())
+
+
+@router.post(
+    "/{project_id}/pause",
+    status_code=status.HTTP_200_OK,
+    summary="Pause running pipeline",
+    description="Pause the currently running pipeline run for the project.",
+)
 async def pause_pipeline(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -235,7 +351,12 @@ async def pause_pipeline(
     return {"message": "Pipeline paused"}
 
 
-@router.post("/{project_id}/resume/{run_id}", status_code=status.HTTP_200_OK)
+@router.post(
+    "/{project_id}/resume/{run_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Resume paused pipeline",
+    description="Queue background work to resume a paused pipeline run.",
+)
 async def resume_pipeline(
     project_id: uuid.UUID,
     run_id: uuid.UUID,
@@ -246,7 +367,10 @@ async def resume_pipeline(
     """Resume a paused pipeline run."""
     await get_user_project(project_id, current_user, session)
 
-    logger.info("Pipeline resume requested", extra={"project_id": str(project_id), "run_id": str(run_id)})
+    logger.info(
+        "Pipeline resume requested",
+        extra={"project_id": str(project_id), "run_id": str(run_id)},
+    )
 
     result = await session.execute(
         select(PipelineRun).where(

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from app.models.generated_dtos import (
+    DiscoveryTopicSnapshotCreateDTO,
+    DiscoveryTopicSnapshotPatchDTO,
     PipelineRunCreateDTO,
     PipelineRunPatchDTO,
     StepExecutionCreateDTO,
     StepExecutionPatchDTO,
 )
+from app.models.discovery_snapshot import DiscoveryTopicSnapshot
 from app.models.pipeline import PipelineRun, StepExecution
 from app.persistence.typed.adapters._base import BaseWriteAdapter
 
@@ -38,6 +41,21 @@ STEP_EXECUTION_PATCH_ALLOWLIST = {
     "checkpoint_data",
 }
 
+DISCOVERY_TOPIC_SNAPSHOT_PATCH_ALLOWLIST = {
+    "iteration_index",
+    "source_topic_id",
+    "topic_name",
+    "fit_tier",
+    "fit_score",
+    "keyword_difficulty",
+    "domain_diversity",
+    "validated_intent",
+    "validated_page_type",
+    "top_domains",
+    "decision",
+    "rejection_reasons",
+}
+
 _PIPELINE_RUN_ADAPTER = BaseWriteAdapter[
     PipelineRun,
     PipelineRunCreateDTO,
@@ -56,6 +74,15 @@ _STEP_EXECUTION_ADAPTER = BaseWriteAdapter[
     patch_allowlist=STEP_EXECUTION_PATCH_ALLOWLIST,
 )
 
+_DISCOVERY_TOPIC_SNAPSHOT_ADAPTER = BaseWriteAdapter[
+    DiscoveryTopicSnapshot,
+    DiscoveryTopicSnapshotCreateDTO,
+    DiscoveryTopicSnapshotPatchDTO,
+](
+    model_cls=DiscoveryTopicSnapshot,
+    patch_allowlist=DISCOVERY_TOPIC_SNAPSHOT_PATCH_ALLOWLIST,
+)
+
 
 def register() -> None:
     """Register pipeline adapters."""
@@ -63,3 +90,4 @@ def register() -> None:
 
     register_adapter(PipelineRun, _PIPELINE_RUN_ADAPTER)
     register_adapter(StepExecution, _STEP_EXECUTION_ADAPTER)
+    register_adapter(DiscoveryTopicSnapshot, _DISCOVERY_TOPIC_SNAPSHOT_ADAPTER)

@@ -7,7 +7,7 @@ Do not edit manually; regenerate instead.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, ClassVar
 
 
@@ -254,6 +254,226 @@ class BriefDeltaPatchDTO:
         }
 
 @dataclass(slots=True)
+class ContentArticleRow:
+    """Read DTO for `ContentArticle`."""
+
+    project_id: str
+    brief_id: str
+    title: str
+    slug: str
+    primary_keyword: str
+    modular_document: dict
+    rendered_html: str
+    qa_report: dict | None
+    status: str
+    current_version: int
+    generation_model: str | None
+    generation_temperature: float | None
+    generated_at: datetime
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "ContentArticleRow":
+        return cls(
+            project_id=model.project_id,
+            brief_id=model.brief_id,
+            title=model.title,
+            slug=model.slug,
+            primary_keyword=model.primary_keyword,
+            modular_document=model.modular_document,
+            rendered_html=model.rendered_html,
+            qa_report=model.qa_report,
+            status=model.status,
+            current_version=model.current_version,
+            generation_model=model.generation_model,
+            generation_temperature=model.generation_temperature,
+            generated_at=model.generated_at,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class ContentArticleCreateDTO:
+    """Create DTO for `ContentArticle`."""
+
+    project_id: str
+    brief_id: str
+    title: str
+    slug: str
+    primary_keyword: str
+    modular_document: dict
+    rendered_html: str
+    qa_report: dict | None = None
+    status: str | None = None
+    current_version: int | None = None
+    generation_model: str | None = None
+    generation_temperature: float | None = None
+    generated_at: datetime | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "status",
+        "current_version",
+        "generated_at",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class ContentArticlePatchDTO:
+    """Sparse patch DTO for `ContentArticle`."""
+
+    project_id: str | None = None
+    brief_id: str | None = None
+    title: str | None = None
+    slug: str | None = None
+    primary_keyword: str | None = None
+    modular_document: dict | None = None
+    rendered_html: str | None = None
+    qa_report: dict | None = None
+    status: str | None = None
+    current_version: int | None = None
+    generation_model: str | None = None
+    generation_temperature: float | None = None
+    generated_at: datetime | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "ContentArticlePatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
+class ContentArticleVersionRow:
+    """Read DTO for `ContentArticleVersion`."""
+
+    article_id: str
+    version_number: int
+    title: str
+    slug: str
+    primary_keyword: str
+    modular_document: dict
+    rendered_html: str
+    qa_report: dict | None
+    status: str
+    change_reason: str | None
+    generation_model: str | None
+    generation_temperature: float | None
+    created_by_regeneration: bool
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "ContentArticleVersionRow":
+        return cls(
+            article_id=model.article_id,
+            version_number=model.version_number,
+            title=model.title,
+            slug=model.slug,
+            primary_keyword=model.primary_keyword,
+            modular_document=model.modular_document,
+            rendered_html=model.rendered_html,
+            qa_report=model.qa_report,
+            status=model.status,
+            change_reason=model.change_reason,
+            generation_model=model.generation_model,
+            generation_temperature=model.generation_temperature,
+            created_by_regeneration=model.created_by_regeneration,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class ContentArticleVersionCreateDTO:
+    """Create DTO for `ContentArticleVersion`."""
+
+    article_id: str
+    version_number: int
+    title: str
+    slug: str
+    primary_keyword: str
+    modular_document: dict
+    rendered_html: str
+    status: str
+    qa_report: dict | None = None
+    change_reason: str | None = None
+    generation_model: str | None = None
+    generation_temperature: float | None = None
+    created_by_regeneration: bool | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "created_by_regeneration",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class ContentArticleVersionPatchDTO:
+    """Sparse patch DTO for `ContentArticleVersion`."""
+
+    article_id: str | None = None
+    version_number: int | None = None
+    title: str | None = None
+    slug: str | None = None
+    primary_keyword: str | None = None
+    modular_document: dict | None = None
+    rendered_html: str | None = None
+    qa_report: dict | None = None
+    status: str | None = None
+    change_reason: str | None = None
+    generation_model: str | None = None
+    generation_temperature: float | None = None
+    created_by_regeneration: bool | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "ContentArticleVersionPatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
 class ContentBriefRow:
     """Read DTO for `ContentBrief`."""
 
@@ -267,6 +487,7 @@ class ContentBriefRow:
     working_titles: list[str] | None
     target_audience: str | None
     reader_job_to_be_done: str | None
+    proposed_publication_date: date | None
     outline: list[dict] | None
     supporting_keywords: list[str] | None
     supporting_keywords_map: dict | None
@@ -300,6 +521,7 @@ class ContentBriefRow:
             working_titles=model.working_titles,
             target_audience=model.target_audience,
             reader_job_to_be_done=model.reader_job_to_be_done,
+            proposed_publication_date=model.proposed_publication_date,
             outline=model.outline,
             supporting_keywords=model.supporting_keywords,
             supporting_keywords_map=model.supporting_keywords_map,
@@ -335,6 +557,7 @@ class ContentBriefCreateDTO:
     working_titles: list[str] | None = None
     target_audience: str | None = None
     reader_job_to_be_done: str | None = None
+    proposed_publication_date: date | None = None
     outline: list[dict] | None = None
     supporting_keywords: list[str] | None = None
     supporting_keywords_map: dict | None = None
@@ -377,6 +600,7 @@ class ContentBriefPatchDTO:
     working_titles: list[str] | None = None
     target_audience: str | None = None
     reader_job_to_be_done: str | None = None
+    proposed_publication_date: date | None = None
     outline: list[dict] | None = None
     supporting_keywords: list[str] | None = None
     supporting_keywords_map: dict | None = None
@@ -401,6 +625,117 @@ class ContentBriefPatchDTO:
 
     @classmethod
     def from_partial(cls, payload: dict[str, Any]) -> "ContentBriefPatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
+class DiscoveryTopicSnapshotRow:
+    """Read DTO for `DiscoveryTopicSnapshot`."""
+
+    project_id: str
+    pipeline_run_id: str
+    iteration_index: int
+    source_topic_id: str | None
+    topic_name: str
+    fit_tier: str | None
+    fit_score: float | None
+    keyword_difficulty: float | None
+    domain_diversity: float | None
+    validated_intent: str | None
+    validated_page_type: str | None
+    top_domains: list[str] | None
+    decision: str
+    rejection_reasons: list[str] | None
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "DiscoveryTopicSnapshotRow":
+        return cls(
+            project_id=model.project_id,
+            pipeline_run_id=model.pipeline_run_id,
+            iteration_index=model.iteration_index,
+            source_topic_id=model.source_topic_id,
+            topic_name=model.topic_name,
+            fit_tier=model.fit_tier,
+            fit_score=model.fit_score,
+            keyword_difficulty=model.keyword_difficulty,
+            domain_diversity=model.domain_diversity,
+            validated_intent=model.validated_intent,
+            validated_page_type=model.validated_page_type,
+            top_domains=model.top_domains,
+            decision=model.decision,
+            rejection_reasons=model.rejection_reasons,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class DiscoveryTopicSnapshotCreateDTO:
+    """Create DTO for `DiscoveryTopicSnapshot`."""
+
+    project_id: str
+    pipeline_run_id: str
+    iteration_index: int
+    topic_name: str
+    decision: str
+    source_topic_id: str | None = None
+    fit_tier: str | None = None
+    fit_score: float | None = None
+    keyword_difficulty: float | None = None
+    domain_diversity: float | None = None
+    validated_intent: str | None = None
+    validated_page_type: str | None = None
+    top_domains: list[str] | None = None
+    rejection_reasons: list[str] | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = set()
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class DiscoveryTopicSnapshotPatchDTO:
+    """Sparse patch DTO for `DiscoveryTopicSnapshot`."""
+
+    project_id: str | None = None
+    pipeline_run_id: str | None = None
+    iteration_index: int | None = None
+    source_topic_id: str | None = None
+    topic_name: str | None = None
+    fit_tier: str | None = None
+    fit_score: float | None = None
+    keyword_difficulty: float | None = None
+    domain_diversity: float | None = None
+    validated_intent: str | None = None
+    validated_page_type: str | None = None
+    top_domains: list[str] | None = None
+    decision: str | None = None
+    rejection_reasons: list[str] | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "DiscoveryTopicSnapshotPatchDTO":
         obj = cls(**payload)
         obj._provided_fields = set(payload.keys())
         return obj
@@ -1598,9 +1933,18 @@ __all__ = [
     "BriefDeltaRow",
     "BriefDeltaCreateDTO",
     "BriefDeltaPatchDTO",
+    "ContentArticleRow",
+    "ContentArticleCreateDTO",
+    "ContentArticlePatchDTO",
+    "ContentArticleVersionRow",
+    "ContentArticleVersionCreateDTO",
+    "ContentArticleVersionPatchDTO",
     "ContentBriefRow",
     "ContentBriefCreateDTO",
     "ContentBriefPatchDTO",
+    "DiscoveryTopicSnapshotRow",
+    "DiscoveryTopicSnapshotCreateDTO",
+    "DiscoveryTopicSnapshotPatchDTO",
     "KeywordRow",
     "KeywordCreateDTO",
     "KeywordPatchDTO",

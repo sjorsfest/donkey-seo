@@ -113,3 +113,22 @@ def test_guardrail_scanner_finds_direct_constructor(tmp_path: Path) -> None:
     found_path, line, _ = violations[0]
     assert found_path == file_path
     assert line == 1
+
+
+def test_guardrail_scanner_includes_content_article_constructor(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app"
+    services_dir = app_dir / "services"
+    services_dir.mkdir(parents=True)
+
+    file_path = services_dir / "article.py"
+    file_path.write_text(
+        "article = ContentArticle(title='x', slug='y', primary_keyword='z')\n",
+        encoding="utf-8",
+    )
+
+    violations = find_violations([app_dir])
+
+    assert violations
+    found_path, line, _ = violations[0]
+    assert found_path == file_path
+    assert line == 1

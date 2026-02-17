@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from app.models.content import ContentBrief, WriterInstructions
+from app.models.content import (
+    ContentArticle,
+    ContentArticleVersion,
+    ContentBrief,
+    WriterInstructions,
+)
 from app.models.generated_dtos import (
     BriefDeltaCreateDTO,
     BriefDeltaPatchDTO,
+    ContentArticleCreateDTO,
+    ContentArticlePatchDTO,
+    ContentArticleVersionCreateDTO,
+    ContentArticleVersionPatchDTO,
     ContentBriefCreateDTO,
     ContentBriefPatchDTO,
     ProjectStyleGuideCreateDTO,
@@ -40,6 +49,7 @@ CONTENT_BRIEF_PATCH_ALLOWLIST = {
     "target_word_count_min",
     "target_word_count_max",
     "must_include_sections",
+    "proposed_publication_date",
     "status",
 }
 
@@ -85,6 +95,34 @@ BRIEF_DELTA_PATCH_ALLOWLIST = {
     "additional_qa_items",
 }
 
+CONTENT_ARTICLE_PATCH_ALLOWLIST = {
+    "title",
+    "slug",
+    "primary_keyword",
+    "modular_document",
+    "rendered_html",
+    "qa_report",
+    "status",
+    "current_version",
+    "generation_model",
+    "generation_temperature",
+    "generated_at",
+}
+
+CONTENT_ARTICLE_VERSION_PATCH_ALLOWLIST = {
+    "title",
+    "slug",
+    "primary_keyword",
+    "modular_document",
+    "rendered_html",
+    "qa_report",
+    "status",
+    "change_reason",
+    "generation_model",
+    "generation_temperature",
+    "created_by_regeneration",
+}
+
 _CONTENT_BRIEF_ADAPTER = BaseWriteAdapter[
     ContentBrief,
     ContentBriefCreateDTO,
@@ -121,6 +159,24 @@ _BRIEF_DELTA_ADAPTER = BaseWriteAdapter[
     patch_allowlist=BRIEF_DELTA_PATCH_ALLOWLIST,
 )
 
+_CONTENT_ARTICLE_ADAPTER = BaseWriteAdapter[
+    ContentArticle,
+    ContentArticleCreateDTO,
+    ContentArticlePatchDTO,
+](
+    model_cls=ContentArticle,
+    patch_allowlist=CONTENT_ARTICLE_PATCH_ALLOWLIST,
+)
+
+_CONTENT_ARTICLE_VERSION_ADAPTER = BaseWriteAdapter[
+    ContentArticleVersion,
+    ContentArticleVersionCreateDTO,
+    ContentArticleVersionPatchDTO,
+](
+    model_cls=ContentArticleVersion,
+    patch_allowlist=CONTENT_ARTICLE_VERSION_PATCH_ALLOWLIST,
+)
+
 
 def register() -> None:
     """Register content adapters."""
@@ -130,3 +186,5 @@ def register() -> None:
     register_adapter(WriterInstructions, _WRITER_INSTRUCTIONS_ADAPTER)
     register_adapter(ProjectStyleGuide, _PROJECT_STYLE_GUIDE_ADAPTER)
     register_adapter(BriefDelta, _BRIEF_DELTA_ADAPTER)
+    register_adapter(ContentArticle, _CONTENT_ARTICLE_ADAPTER)
+    register_adapter(ContentArticleVersion, _CONTENT_ARTICLE_VERSION_ADAPTER)

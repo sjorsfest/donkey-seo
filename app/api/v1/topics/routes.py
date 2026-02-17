@@ -35,7 +35,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/{project_id}", response_model=TopicListResponse)
+@router.get(
+    "/{project_id}",
+    response_model=TopicListResponse,
+    summary="List topics",
+    description=(
+        "Return paginated topics for a project, with optional eligibility filtering based on fit "
+        "tier."
+    ),
+)
 async def list_topics(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -72,7 +80,12 @@ async def list_topics(
     )
 
 
-@router.get("/{project_id}/ranked", response_model=list[TopicResponse])
+@router.get(
+    "/{project_id}/ranked",
+    response_model=list[TopicResponse],
+    summary="List ranked topics",
+    description="Return prioritized topics for a project ordered by priority rank.",
+)
 async def get_ranked_topics(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -92,7 +105,12 @@ async def get_ranked_topics(
     return list(result.scalars().all())
 
 
-@router.get("/{project_id}/hierarchy", response_model=list[TopicHierarchyResponse])
+@router.get(
+    "/{project_id}/hierarchy",
+    response_model=list[TopicHierarchyResponse],
+    summary="Get topic hierarchy",
+    description="Return the project topic tree with nested parent-child relationships.",
+)
 async def get_topic_hierarchy(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -121,7 +139,12 @@ async def get_topic_hierarchy(
     return [build_hierarchy(topic) for topic in root_topics]
 
 
-@router.get("/{project_id}/{topic_id}", response_model=TopicDetailResponse)
+@router.get(
+    "/{project_id}/{topic_id}",
+    response_model=TopicDetailResponse,
+    summary="Get topic",
+    description="Return detailed information for a single topic.",
+)
 async def get_topic(
     project_id: uuid.UUID,
     topic_id: uuid.UUID,
@@ -145,7 +168,13 @@ async def get_topic(
     return topic
 
 
-@router.post("/{project_id}", response_model=TopicResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{project_id}",
+    response_model=TopicResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create topic",
+    description="Create a topic within a project, optionally linked to a parent topic.",
+)
 async def create_topic(
     project_id: uuid.UUID,
     topic_data: TopicCreate,
@@ -170,7 +199,12 @@ async def create_topic(
     return topic
 
 
-@router.put("/{project_id}/{topic_id}", response_model=TopicResponse)
+@router.put(
+    "/{project_id}/{topic_id}",
+    response_model=TopicResponse,
+    summary="Update topic",
+    description="Apply partial updates to an existing topic.",
+)
 async def update_topic(
     project_id: uuid.UUID,
     topic_id: uuid.UUID,
@@ -204,7 +238,12 @@ async def update_topic(
     return topic
 
 
-@router.delete("/{project_id}/{topic_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}/{topic_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete topic",
+    description="Delete a topic from the project.",
+)
 async def delete_topic(
     project_id: uuid.UUID,
     topic_id: uuid.UUID,
@@ -228,7 +267,14 @@ async def delete_topic(
     await topic.delete(session)
 
 
-@router.post("/{project_id}/merge", response_model=TopicResponse)
+@router.post(
+    "/{project_id}/merge",
+    response_model=TopicResponse,
+    summary="Merge topics",
+    description=(
+        "Merge multiple source topics into a new target topic and reassign linked keywords to it."
+    ),
+)
 async def merge_topics(
     project_id: uuid.UUID,
     request: TopicMergeRequest,

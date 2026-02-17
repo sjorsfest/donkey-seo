@@ -11,8 +11,9 @@ import sys
 from pathlib import Path
 
 MODEL_CONSTRUCTOR_PATTERN = re.compile(
-    r"\b(BrandProfile|BriefDelta|ContentBrief|Keyword|OAuthAccount|PipelineRun|"
-    r"Project|ProjectStyleGuide|SeedTopic|StepExecution|Topic|User|WriterInstructions)\("
+    r"\b(BrandProfile|BriefDelta|ContentArticle|ContentArticleVersion|ContentBrief|Keyword|"
+    r"OAuthAccount|PipelineRun|Project|ProjectStyleGuide|SeedTopic|StepExecution|Topic|"
+    r"User|WriterInstructions)\("
 )
 
 DEFAULT_SCAN_ROOTS = ("app/services", "app/api")

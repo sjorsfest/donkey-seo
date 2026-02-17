@@ -286,7 +286,7 @@ def build_output() -> str:
         "from __future__ import annotations",
         "",
         "from dataclasses import asdict, dataclass, field",
-        "from datetime import datetime",
+        "from datetime import date, datetime",
         "from typing import Any, ClassVar",
         "",
         "",

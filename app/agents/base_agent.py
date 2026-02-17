@@ -3,10 +3,12 @@
 import logging
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar, cast
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
 
 from app.config import settings
 from app.services.model_selector.registry import get_agent_model
@@ -81,7 +83,7 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
                 Agent(
                     model=self._model,
                     output_type=self.output_type,
-                    system_prompt=self.system_prompt,
+                    system_prompt=self._build_system_prompt(),
                     retries=self.max_retries,
                 ),
             )
@@ -111,6 +113,20 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
                 return f"Processed: {arg}"
         """
         pass
+
+    def _build_system_prompt(self) -> str:
+        """Build a runtime-aware system prompt with current date context."""
+        now_utc = datetime.now(timezone.utc)
+        today_utc = now_utc.date().isoformat()
+        current_year = now_utc.year
+        runtime_date_context = (
+            "Runtime Date Context:\n"
+            f"- Today's date (UTC): {today_utc}\n"
+            f"- Current year: {current_year}\n"
+            "- For year-sensitive content, use this date context.\n"
+            "- Do not use outdated years for future-facing recommendations unless explicitly historical."
+        )
+        return f"{self.system_prompt}\n\n{runtime_date_context}"
 
     async def run(
         self,
@@ -147,7 +163,7 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
         )
 
         t0 = time.perf_counter()
-        result = await self.agent.run(prompt)
+        result = await self._run_with_fallback(prompt=prompt)
         elapsed = time.perf_counter() - t0
 
         usage = result.usage()
@@ -164,6 +180,32 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
         )
 
         return result.output
+
+    async def _run_with_fallback(self, prompt: str) -> Any:
+        """Run the agent and retry once on rate-limit with fallback model."""
+        try:
+            return await self.agent.run(prompt)
+        except ModelHTTPError as exc:
+            fallback_model = settings.model_selector_fallback_model
+            should_retry = (
+                exc.status_code == 429
+                and isinstance(fallback_model, str)
+                and bool(fallback_model)
+                and fallback_model != self._model
+            )
+            if not should_retry:
+                raise
+
+            logger.warning(
+                "Agent primary model rate-limited, retrying with fallback model",
+                extra={
+                    "agent": self.__class__.__name__,
+                    "primary_model": self._model,
+                    "fallback_model": fallback_model,
+                    "status_code": exc.status_code,
+                },
+            )
+            return await self.agent.run(prompt, model=fallback_model)
 
     @abstractmethod
     def _build_prompt(self, input_data: InputT) -> str:
@@ -201,6 +243,6 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
 
         prompt = "\n\n".join(prompt_parts)
 
-        result = await self.agent.run(prompt)
+        result = await self._run_with_fallback(prompt=prompt)
 
         return result.output

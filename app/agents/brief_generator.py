@@ -1,6 +1,7 @@
 """Brief generator agent for Step 12: Content Brief Generation."""
 
 import logging
+from datetime import date
 
 from pydantic import BaseModel, Field
 
@@ -58,6 +59,10 @@ class ContentBriefResult(BaseModel):
         default="Article",
         description="Schema.org type (Article, HowTo, FAQ, etc.)",
     )
+    proposed_publication_date: date | None = Field(
+        default=None,
+        description="Suggested publish date in YYYY-MM-DD format (near-future content calendar date)",
+    )
 
 
 class BriefGeneratorInput(BaseModel):
@@ -88,6 +93,10 @@ class BriefGeneratorInput(BaseModel):
     conversion_intents: list[str] = Field(
         default_factory=list,
         description="Project conversion intents to align CTAs and narrative",
+    )
+    recommended_publish_order: int | None = Field(
+        default=None,
+        description="Suggested publishing sequence from prioritization (1 = first)",
     )
 
 
@@ -138,7 +147,8 @@ Given a topic cluster and brand context, generate a comprehensive brief that a w
 - Include primary keyword naturally
 - Compelling and click-worthy
 - Match the search intent
-- Examples: "How to X in 2024", "X vs Y: Complete Comparison", "10 Best X for Y"
+- If a year is included in a title, it MUST be the current year or next year, never an outdated year
+- Avoid stale framing such as "best X of 2024" when the current year is later
 
 ### 2. Outline
 Create a detailed H2/H3 structure with:
@@ -168,6 +178,11 @@ Recommend appropriate schema:
 - Article: General informational content
 - Product: Product-focused landing pages
 - ItemList: Listicle content
+
+### 6. Proposed Publication Date
+- Provide a proposed publication date in YYYY-MM-DD format
+- Date must be in the near future (within roughly 1-4 months from today)
+- Align timing with funnel stage and recommended publish order when provided
 
 Be specific and actionable. The writer should know exactly what to create."""
 
@@ -202,6 +217,12 @@ Be specific and actionable. The writer should know exactly what to create."""
             ", ".join(input_data.conversion_intents[:8])
             if input_data.conversion_intents else "Not specified"
         )
+        recommended_publish_order = (
+            str(input_data.recommended_publish_order)
+            if input_data.recommended_publish_order is not None
+            else "Not specified"
+        )
+        today = date.today().isoformat()
 
         return f"""Generate a comprehensive content brief for this topic:
 
@@ -211,6 +232,7 @@ Be specific and actionable. The writer should know exactly what to create."""
 - **Search Intent**: {input_data.search_intent}
 - **Page Type**: {input_data.page_type}
 - **Funnel Stage**: {input_data.funnel_stage}
+- **Recommended Publish Order**: {recommended_publish_order}
 
 ## Supporting Keywords
 {supporting_kws}
@@ -228,6 +250,10 @@ Be specific and actionable. The writer should know exactly what to create."""
 ## Conversion Intents
 {conversion_intents}
 
+## Time Context
+- **Today's Date**: {today}
+- Use this date for year-sensitive framing and publication planning
+
 ---
 
 Create a detailed brief with:
@@ -237,4 +263,5 @@ Create a detailed brief with:
 4. Required examples and FAQs
 5. Meta title and description templates
 6. Appropriate word count range
-7. Recommended schema type"""
+7. Recommended schema type
+8. Proposed publication date (YYYY-MM-DD, near future)"""

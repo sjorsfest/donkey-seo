@@ -13,7 +13,8 @@ from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 
 if TYPE_CHECKING:
     from app.models.brand import BrandProfile
-    from app.models.content import ContentBrief
+    from app.models.content import ContentArticle, ContentBrief
+    from app.models.discovery_snapshot import DiscoveryTopicSnapshot
     from app.models.keyword import Keyword, SeedTopic
     from app.models.pipeline import PipelineRun
     from app.models.topic import Topic
@@ -98,8 +99,18 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
         back_populates="project",
         cascade="all, delete-orphan",
     )
+    content_articles: Mapped[list[ContentArticle]] = relationship(
+        "ContentArticle",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
     pipeline_runs: Mapped[list[PipelineRun]] = relationship(
         "PipelineRun",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    discovery_topic_snapshots: Mapped[list[DiscoveryTopicSnapshot]] = relationship(
+        "DiscoveryTopicSnapshot",
         back_populates="project",
         cascade="all, delete-orphan",
     )

@@ -5,11 +5,14 @@ Keyword research backend service with a 14-step pipeline for programmatic conten
 ## Features
 
 - **14-step keyword research pipeline** for systematic content strategy
+- **Split orchestration modes** for discovery loop and content production
 - **Brand profile extraction** from website scraping using LLM
 - **Keyword expansion** via DataForSEO API
 - **Intent classification** and page type recommendations
+- **SERP validation** to confirm intent/page type against live search results
 - **Topic clustering** with priority scoring
-- **Content brief generation** with writer instructions
+- **Content brief generation** enriched with SERP validation signals
+- **Publication date manager** with configurable cadence for content calendar planning
 - **JWT authentication** for secure API access
 - **Configurable LLM providers** (OpenAI & Anthropic)
 - **Dynamic per-agent model selector** with max-price guardrails
@@ -82,13 +85,39 @@ API docs available at: http://localhost:8000/docs
 | 5 | Intent Labeling | Classify search intent | Yes |
 | 6 | Clustering | Group keywords into topics | Yes |
 | 7 | Prioritization | Rank topic backlog | Yes |
-| 8 | SERP Validation | Validate with SERP data | Optional |
+| 8 | SERP Validation | Validate intent/page type with live SERP data | Optional |
 | 9 | Content Inventory | Index existing content | Optional |
 | 10 | Cannibalization | Detect content overlap | Optional |
 | 11 | Internal Linking | Plan internal links | Optional |
 | 12 | Content Brief | Generate writer briefs | Yes |
 | 13 | Writer Templates | Create QA checklists | Yes |
-| 14 | GSC/GA4 Audit | Import analytics data | Optional |
+| 14 | Article Generation | Generate modular SEO articles + HTML | Yes |
+
+## Pipeline Modes
+
+The pipeline start endpoint supports three modes:
+
+- `full`: Standard range execution (default behavior).
+- `discovery_loop`: Runs an adaptive loop for topic opportunity discovery.
+  - Executes Step `2 -> 8` repeatedly.
+  - If brand setup is missing, runs Step `0 -> 1` once before looping.
+  - Stops when enough topics pass fit + SERP gate, or pauses after max iterations.
+  - Can auto-start `content_production` with accepted topics.
+- `content_production`: Runs content generation only.
+  - Executes Step `12 -> 14`.
+  - Can use selected topic IDs + max briefs from discovery output.
+
+### Discovery Acceptance Gate
+
+In `discovery_loop`, a topic is accepted only when:
+
+- Step 7 fit tier is `primary` or `secondary`.
+- SERP gate passes for the primary keyword:
+  - `difficulty <= max_keyword_difficulty`
+  - `domain_diversity >= min_domain_diversity`
+  - No `intent_mismatch` (if `require_intent_match=true`)
+
+Per-topic accept/reject decisions are persisted per iteration as discovery snapshots.
 
 ## API Endpoints
 
@@ -108,9 +137,55 @@ API docs available at: http://localhost:8000/docs
 ### Pipeline
 - `POST /api/v1/pipeline/{project_id}/start` - Start pipeline
 - `POST /api/v1/pipeline/{project_id}/pause` - Pause pipeline
-- `POST /api/v1/pipeline/{project_id}/resume` - Resume pipeline
+- `POST /api/v1/pipeline/{project_id}/resume/{run_id}` - Resume pipeline
 - `GET /api/v1/pipeline/{project_id}/runs` - List runs
 - `GET /api/v1/pipeline/{project_id}/runs/{run_id}/progress` - Get progress
+- `GET /api/v1/pipeline/{project_id}/runs/{run_id}/discovery-snapshots` - Get discovery loop topic decisions
+
+### Pipeline Start Examples
+
+Start discovery loop with adaptive retries and auto-handoff:
+
+```json
+{
+  "mode": "discovery_loop",
+  "strategy": {
+    "fit_threshold_profile": "aggressive",
+    "scope_mode": "strict",
+    "include_topics": ["customer support automation"],
+    "exclude_topics": ["medical advice"]
+  },
+  "discovery": {
+    "max_iterations": 3,
+    "min_eligible_topics": 8,
+    "require_serp_gate": true,
+    "max_keyword_difficulty": 65,
+    "min_domain_diversity": 0.5,
+    "require_intent_match": true,
+    "auto_start_content": true
+  },
+  "content": {
+    "max_briefs": 20,
+    "posts_per_week": 3,
+    "preferred_weekdays": [0, 2, 4],
+    "min_lead_days": 7
+  }
+}
+```
+
+Start content-only pipeline:
+
+```json
+{
+  "mode": "content_production",
+  "content": {
+    "max_briefs": 15,
+    "posts_per_week": 2,
+    "preferred_weekdays": [1, 3],
+    "min_lead_days": 5
+  }
+}
+```
 
 ### Keywords
 - `GET /api/v1/keywords/{project_id}` - List keywords
@@ -130,6 +205,10 @@ API docs available at: http://localhost:8000/docs
 - `GET /api/v1/content/{project_id}/briefs/{brief_id}` - Get brief
 - `POST /api/v1/content/{project_id}/briefs` - Create brief
 - `GET /api/v1/content/{project_id}/briefs/{brief_id}/instructions` - Get writer instructions
+- `GET /api/v1/content/{project_id}/articles` - List generated articles
+- `GET /api/v1/content/{project_id}/briefs/{brief_id}/article` - Get canonical article for brief
+- `POST /api/v1/content/{project_id}/briefs/{brief_id}/article/regenerate` - Regenerate article version
+- `GET /api/v1/content/{project_id}/articles/{article_id}/versions/{version_number}` - Get article version
 
 ## Configuration
 

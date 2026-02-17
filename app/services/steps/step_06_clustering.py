@@ -11,6 +11,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 from sqlalchemy import select
 
 from app.agents.cluster_agent import ClusterAgent, ClusterAgentInput
@@ -68,6 +70,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
     MAX_CLUSTER_SIZE = 20
     MIN_CLUSTER_SIZE = 3
     LOW_COHERENCE_THRESHOLD = 0.7  # Triggers Step 8 SERP validation
+    NOISE_SIMILARITY_THRESHOLD = 0.3  # Min cosine sim to assign noise to nearest cluster
 
     async def _validate_preconditions(self, input_data: ClusteringInput) -> None:
         """Validate Step 5 is completed."""
@@ -117,26 +120,42 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                 unclustered_keywords=[kw.keyword for kw in all_keywords],
             )
 
-        await self._update_progress(10, "Stage 1: Coarse clustering by head term + intent...")
+        # Check for checkpoint to skip expensive stages
+        if self._checkpoint and self._checkpoint.get("stage") == "stage2_complete":
+            logger.info("Restoring refined clusters from checkpoint")
+            refined_clusters = self._deserialize_clusters(
+                self._checkpoint["refined_clusters"],
+                all_keywords,
+            )
+            await self._update_progress(70, f"Restored {len(refined_clusters)} clusters from checkpoint")
+        else:
+            await self._update_progress(10, "Stage 1: Coarse clustering by head term + intent...")
 
-        # Stage 1: Coarse clustering
-        coarse_clusters = self._stage1_coarse_cluster(all_keywords)
-        logger.info("Coarse clustering done", extra={"cluster_count": len(coarse_clusters)})
+            # Stage 1: Coarse clustering
+            coarse_clusters = self._stage1_coarse_cluster(all_keywords)
+            logger.info("Coarse clustering done", extra={"cluster_count": len(coarse_clusters)})
 
-        await self._update_progress(30, f"Created {len(coarse_clusters)} coarse clusters")
-        await self._update_progress(35, "Stage 2: Refining with embeddings...")
+            await self._update_progress(30, f"Created {len(coarse_clusters)} coarse clusters")
+            await self._update_progress(35, "Stage 2: Refining with embeddings...")
 
-        # Stage 2: Refine with embeddings
-        refined_clusters = await self._stage2_refine_with_embeddings(coarse_clusters)
-        logger.info("Refinement done", extra={"refined_count": len(refined_clusters)})
+            # Stage 2: Refine with embeddings
+            refined_clusters = await self._stage2_refine_with_embeddings(coarse_clusters)
+            logger.info("Refinement done", extra={"refined_count": len(refined_clusters)})
 
-        await self._update_progress(65, f"Refined to {len(refined_clusters)} clusters")
+            await self._update_progress(65, f"Refined to {len(refined_clusters)} clusters")
 
-        # Merge undersized clusters so they don't all get filtered out
-        refined_clusters = self._merge_small_clusters(refined_clusters)
-        logger.info("After merging small clusters", extra={"cluster_count": len(refined_clusters)})
+            # Merge undersized clusters so they don't all get filtered out
+            refined_clusters = self._merge_small_clusters(refined_clusters)
+            logger.info("After merging small clusters", extra={"cluster_count": len(refined_clusters)})
 
-        await self._update_progress(70, f"Merged to {len(refined_clusters)} clusters")
+            await self._update_progress(70, f"Merged to {len(refined_clusters)} clusters")
+
+            # Checkpoint after Stage 2 (embeddings are the expensive part)
+            await self._save_checkpoint({
+                "stage": "stage2_complete",
+                "refined_clusters": self._serialize_clusters(refined_clusters),
+            })
+
         await self._update_progress(75, "Validating and naming clusters...")
 
         # Validate and name clusters with LLM
@@ -144,6 +163,11 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             refined_clusters,
             brand_context,
         )
+
+        await self._update_progress(90, "Processing split/merge recommendations...")
+
+        # Act on agent split/merge recommendations
+        final_clusters = await self._process_agent_actions(final_clusters)
 
         await self._update_progress(95, "Finalizing clusters...")
 
@@ -207,7 +231,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
         """Stage 1: Coarse cluster by head term + intent.
 
         Groups keywords that share:
-        - Same 2-3 word head term
+        - Same 3-4 word head term
         - Same intent category
         """
         clusters: dict[str, list[Keyword]] = defaultdict(list)
@@ -224,23 +248,30 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
         return dict(clusters)
 
     def _extract_head_term(self, keyword: str) -> str:
-        """Extract the head term (main topic) from a keyword."""
-        # Remove common modifiers and stopwords
+        """Extract the head term (main topic) from a keyword.
+
+        Uses 3-4 significant words and preserves intent-carrying modifiers
+        like 'best' and 'top' which distinguish commercial from informational.
+        """
+        # True non-semantic words only -- NOT intent signals like best/top
         stopwords = {
             "how", "to", "what", "is", "are", "the", "a", "an", "for",
-            "in", "on", "with", "and", "or", "of", "best", "top",
+            "in", "on", "with", "and", "or", "of", "do", "does", "can",
+            "should", "will", "would", "much", "many", "get", "vs",
+            "versus", "you", "your", "their", "its", "this", "that",
+            "which", "where", "when", "why", "from", "about", "into",
         }
 
         words = keyword.lower().split()
-        significant_words = [w for w in words if w not in stopwords and len(w) > 2]
+        significant_words = [w for w in words if w not in stopwords and len(w) > 1]
 
-        # Return first 2-3 significant words as head term
-        if len(significant_words) >= 2:
-            return " ".join(significant_words[:3])
+        # Use 3-4 words to reduce false groupings
+        if len(significant_words) >= 3:
+            return " ".join(significant_words[:4])
         elif significant_words:
-            return significant_words[0]
+            return " ".join(significant_words)
         else:
-            return keyword.lower()[:20]  # Fallback
+            return keyword.lower()[:30]  # Fallback
 
     async def _stage2_refine_with_embeddings(
         self,
@@ -262,13 +293,30 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                     continue
 
                 if len(keywords) <= self.MAX_CLUSTER_SIZE:
-                    # Within size limits, no need to sub-cluster
+                    # Right-sized: compute embeddings + coherence but don't sub-cluster
                     intent = cluster_key.split("::")[0]
-                    refined_clusters.append({
-                        "keywords": keywords,
-                        "dominant_intent": intent,
-                        "head_term": cluster_key.split("::")[-1],
-                    })
+                    head_term = cluster_key.split("::")[-1]
+                    try:
+                        kw_texts = [kw.keyword for kw in keywords]
+                        embeddings = await embed_client.get_embeddings(kw_texts)
+                        coherence = embed_client.calculate_cluster_coherence(embeddings)
+                        refined_clusters.append({
+                            "keywords": keywords,
+                            "dominant_intent": intent,
+                            "head_term": head_term,
+                            "coherence": coherence,
+                            "embeddings": embeddings,
+                        })
+                    except Exception:
+                        logger.warning(
+                            "Embedding coherence failed for right-sized cluster",
+                            extra={"cluster_key": cluster_key, "keyword_count": len(keywords)},
+                        )
+                        refined_clusters.append({
+                            "keywords": keywords,
+                            "dominant_intent": intent,
+                            "head_term": head_term,
+                        })
                     continue
 
                 # Large cluster - use HDBSCAN to sub-divide
@@ -296,32 +344,63 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                     intent = cluster_key.split("::")[0]
                     head_term = cluster_key.split("::")[-1]
 
+                    # Separate noise from real sub-clusters
+                    noise_members = sub_clusters.pop(-1, [])
+                    real_sub: list[dict[str, Any]] = []
+
                     for label, members in sub_clusters.items():
-                        if label == -1:
-                            # Noise points - add individually or to closest cluster
-                            for kw, prob, emb in members:
+                        cluster_keywords = [m[0] for m in members]
+                        cluster_embeddings = [m[2] for m in members]
+                        coherence = embed_client.calculate_cluster_coherence(
+                            cluster_embeddings
+                        )
+                        real_sub.append({
+                            "keywords": cluster_keywords,
+                            "dominant_intent": intent,
+                            "head_term": head_term,
+                            "coherence": coherence,
+                            "embeddings": cluster_embeddings,
+                        })
+
+                    # Assign noise points to nearest sub-cluster by centroid similarity
+                    if noise_members and real_sub:
+                        centroids = [
+                            np.mean(sc["embeddings"], axis=0).tolist()
+                            for sc in real_sub
+                        ]
+                        for kw, prob, emb in noise_members:
+                            best_sim = -1.0
+                            best_idx = -1
+                            for idx, centroid in enumerate(centroids):
+                                sim = EmbeddingsClient.cosine_similarity(emb, centroid)
+                                if sim > best_sim:
+                                    best_sim = sim
+                                    best_idx = idx
+                            if best_sim >= self.NOISE_SIMILARITY_THRESHOLD and best_idx >= 0:
+                                real_sub[best_idx]["keywords"].append(kw)
+                                real_sub[best_idx]["embeddings"].append(emb)
+                            else:
                                 refined_clusters.append({
                                     "keywords": [kw],
                                     "dominant_intent": intent,
                                     "head_term": head_term,
                                     "is_noise": True,
                                 })
-                        else:
-                            cluster_keywords = [m[0] for m in members]
-                            cluster_embeddings = [m[2] for m in members]
-
-                            # Calculate coherence
-                            coherence = embed_client.calculate_cluster_coherence(
-                                cluster_embeddings
-                            )
-
+                    elif noise_members:
+                        for kw, prob, emb in noise_members:
                             refined_clusters.append({
-                                "keywords": cluster_keywords,
+                                "keywords": [kw],
                                 "dominant_intent": intent,
                                 "head_term": head_term,
-                                "coherence": coherence,
-                                "embeddings": cluster_embeddings,
+                                "is_noise": True,
                             })
+
+                    # Recalculate coherence for sub-clusters that absorbed noise
+                    for sc in real_sub:
+                        sc["coherence"] = embed_client.calculate_cluster_coherence(
+                            sc["embeddings"]
+                        )
+                        refined_clusters.append(sc)
 
                 except Exception:
                     logger.warning(
@@ -474,16 +553,34 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                             original = clusters[cluster_idx]
                             keywords = original.get("keywords", [])
 
-                            # Find primary keyword
-                            primary_kw = next(
-                                (
-                                    kw
+                            # Find primary keyword: prefer embedding-based
+                            # selection, fall back to LLM name match
+                            primary_kw = None
+                            cluster_embeddings = original.get("embeddings")
+
+                            if cluster_embeddings and len(cluster_embeddings) == len(keywords):
+                                items_for_scoring = [
+                                    {
+                                        "search_volume": kw.search_volume,
+                                        "difficulty": kw.difficulty,
+                                    }
                                     for kw in keywords
-                                    if kw.keyword.lower()
-                                    == validation.primary_keyword.lower()
-                                ),
-                                keywords[0] if keywords else None
-                            )
+                                ]
+                                best_idx = EmbeddingsClient.find_primary_in_cluster(
+                                    items_for_scoring,
+                                    cluster_embeddings,
+                                )
+                                primary_kw = keywords[best_idx]
+                            else:
+                                primary_kw = next(
+                                    (
+                                        kw
+                                        for kw in keywords
+                                        if kw.keyword.lower()
+                                        == validation.primary_keyword.lower()
+                                    ),
+                                    keywords[0] if keywords else None,
+                                )
 
                             results.append({
                                 "name": validation.name,
@@ -503,6 +600,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                                     sum(kw.difficulty or 0 for kw in keywords) / len(keywords)
                                     if keywords else 0
                                 ),
+                                "embeddings": cluster_embeddings,
                             })
                     logger.info(
                         "Cluster validation batch completed",
@@ -573,6 +671,151 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
 
         return validated
 
+    async def _process_agent_actions(
+        self,
+        clusters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Process split/merge actions recommended by ClusterAgent.
+
+        - split: Re-cluster by sub-intent
+        - merge: Flag as recommendation in cluster_notes for manual review
+        """
+        processed: list[dict[str, Any]] = []
+
+        for cluster in clusters:
+            action = cluster.get("action", "keep")
+
+            if action == "split" and len(cluster.get("keywords", [])) >= self.MIN_CLUSTER_SIZE * 2:
+                sub_clusters = self._split_cluster(cluster)
+                if len(sub_clusters) > 1:
+                    logger.info(
+                        "Split cluster per agent recommendation",
+                        extra={
+                            "original_name": cluster.get("name", ""),
+                            "original_size": len(cluster.get("keywords", [])),
+                            "sub_cluster_count": len(sub_clusters),
+                        },
+                    )
+                    processed.extend(sub_clusters)
+                    continue
+
+            if action == "merge":
+                notes = cluster.get("notes", "") or ""
+                cluster["notes"] = f"[merge_recommended] {notes}".strip()
+                logger.info(
+                    "Cluster flagged for merge review",
+                    extra={
+                        "name": cluster.get("name", ""),
+                        "size": len(cluster.get("keywords", [])),
+                    },
+                )
+
+            processed.append(cluster)
+
+        return processed
+
+    def _split_cluster(self, cluster: dict[str, Any]) -> list[dict[str, Any]]:
+        """Split a cluster by sub-intent grouping.
+
+        Groups keywords by their specific intent, then checks if splitting
+        produces at least 2 groups meeting MIN_CLUSTER_SIZE.
+        """
+        keywords = cluster.get("keywords", [])
+        embeddings = cluster.get("embeddings")
+
+        # Split by sub-intent (keywords have intent from Step 5)
+        sub_groups: dict[str, list[tuple[Any, list[float] | None]]] = defaultdict(list)
+        for i, kw in enumerate(keywords):
+            sub_key = kw.intent or "unknown"
+            emb = embeddings[i] if embeddings and i < len(embeddings) else None
+            sub_groups[sub_key].append((kw, emb))
+
+        if len(sub_groups) <= 1:
+            return [cluster]
+
+        result = []
+        for sub_intent, members in sub_groups.items():
+            sub_kws = [m[0] for m in members]
+            sub_embs = [m[1] for m in members if m[1] is not None]
+            coherence = cluster.get("coherence", 0.5)
+            if sub_embs and len(sub_embs) == len(sub_kws):
+                coherence = EmbeddingsClient.calculate_cluster_coherence(sub_embs)
+            result.append({
+                "name": cluster.get("name", "") + f" ({sub_intent})",
+                "description": cluster.get("description", ""),
+                "keywords": sub_kws,
+                "primary_keyword": sub_kws[0],
+                "dominant_intent": sub_intent,
+                "coherence": coherence,
+                "needs_serp_validation": True,
+                "action": "keep",
+                "notes": "Split from parent cluster by sub-intent",
+                "total_volume": sum(kw.search_volume or 0 for kw in sub_kws),
+                "avg_difficulty": (
+                    sum(kw.difficulty or 0 for kw in sub_kws) / len(sub_kws)
+                    if sub_kws else 0
+                ),
+                "embeddings": sub_embs if len(sub_embs) == len(sub_kws) else None,
+            })
+
+        # Only accept if at least 2 groups meet MIN_CLUSTER_SIZE
+        valid = [r for r in result if len(r["keywords"]) >= self.MIN_CLUSTER_SIZE]
+        if len(valid) >= 2:
+            return result
+        return [cluster]
+
+    def _serialize_clusters(self, clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Serialize clusters for checkpoint storage.
+
+        Converts Keyword ORM objects to their IDs for JSON serialization.
+        Drops embeddings to keep checkpoint size manageable.
+        """
+        serialized = []
+        for cluster in clusters:
+            sc: dict[str, Any] = {
+                "keyword_ids": [kw.id for kw in cluster.get("keywords", [])],
+                "dominant_intent": cluster.get("dominant_intent"),
+                "head_term": cluster.get("head_term"),
+                "coherence": cluster.get("coherence"),
+                "is_noise": cluster.get("is_noise", False),
+            }
+            serialized.append(sc)
+        return serialized
+
+    def _deserialize_clusters(
+        self,
+        serialized: list[dict[str, Any]],
+        all_keywords: list[Keyword],
+    ) -> list[dict[str, Any]]:
+        """Deserialize clusters from checkpoint, re-linking Keyword objects."""
+        kw_by_id = {kw.id: kw for kw in all_keywords}
+        clusters = []
+        for sc in serialized:
+            keywords = [kw_by_id[kid] for kid in sc["keyword_ids"] if kid in kw_by_id]
+            cluster: dict[str, Any] = {
+                "keywords": keywords,
+                "dominant_intent": sc.get("dominant_intent"),
+                "head_term": sc.get("head_term"),
+            }
+            if sc.get("coherence") is not None:
+                cluster["coherence"] = sc["coherence"]
+            if sc.get("is_noise"):
+                cluster["is_noise"] = True
+            clusters.append(cluster)
+        return clusters
+
+    def _resolve_pillar_seed(self, keywords: list[Keyword]) -> str | None:
+        """Find the most common seed_topic_id among the cluster's keywords."""
+        counts: dict[str, int] = {}
+        for kw in keywords:
+            sid = kw.seed_topic_id
+            if sid:
+                sid_str = str(sid)
+                counts[sid_str] = counts.get(sid_str, 0) + 1
+        if not counts:
+            return None
+        return max(counts, key=counts.get)  # type: ignore[arg-type]
+
     async def _persist_results(self, result: ClusteringOutput) -> None:
         """Save clusters to database as Topics."""
         # Delete existing topics for this project
@@ -590,11 +833,17 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             notes = cluster.get("notes") or ""
             if cluster.get("needs_serp_validation"):
                 notes = "[needs_serp_validation] " + notes if notes else "[needs_serp_validation]"
+
+            # Resolve pillar seed: pick the most common seed_topic_id
+            # among the cluster's keywords (provenance set in Step 3).
+            pillar_seed_id = self._resolve_pillar_seed(keywords)
+
             topic_data = TopicCreateDTO(
                 project_id=self.project_id,
                 name=cluster["name"],
                 description=cluster.get("description"),
                 primary_keyword_id=primary_kw.id if primary_kw else None,
+                pillar_seed_topic_id=pillar_seed_id,
                 cluster_method="two_stage_hdbscan_llm",
                 dominant_intent=cluster.get("dominant_intent"),
                 dominant_page_type=primary_kw.recommended_page_type if primary_kw else None,

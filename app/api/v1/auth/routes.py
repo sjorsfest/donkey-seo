@@ -51,7 +51,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register user",
+    description="Create a local user account and return the created user profile.",
+)
 async def register(user_data: UserCreate, session: DbSession) -> User:
     """Register a new user account."""
     logger.info("User registration attempt", extra={"email": user_data.email})
@@ -82,7 +88,12 @@ async def register(user_data: UserCreate, session: DbSession) -> User:
     return user
 
 
-@router.post("/login", response_model=Token)
+@router.post(
+    "/login",
+    response_model=Token,
+    summary="Login user",
+    description="Authenticate with email and password, then return access and refresh JWT tokens.",
+)
 async def login(credentials: UserLogin, session: DbSession) -> Token:
     """Login and get access/refresh tokens."""
     logger.info("Login attempt", extra={"email": credentials.email})
@@ -117,7 +128,12 @@ async def login(credentials: UserLogin, session: DbSession) -> Token:
     return Token(access_token=access_token, refresh_token=refresh_token)
 
 
-@router.post("/refresh", response_model=Token)
+@router.post(
+    "/refresh",
+    response_model=Token,
+    summary="Refresh tokens",
+    description="Validate a refresh token and issue a new access and refresh JWT token pair.",
+)
 async def refresh_token(token_data: TokenRefresh, session: DbSession) -> Token:
     """Refresh access token using refresh token."""
     try:
@@ -146,13 +162,25 @@ async def refresh_token(token_data: TokenRefresh, session: DbSession) -> Token:
     return Token(access_token=access_token, refresh_token=new_refresh_token)
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    summary="Get current user",
+    description="Return the authenticated user's profile derived from the bearer access token.",
+)
 async def get_current_user_info(current_user: CurrentUser) -> User:
     """Get current user information."""
     return current_user
 
 
-@router.get("/oauth/google/start")
+@router.get(
+    "/oauth/google/start",
+    summary="Start Google OAuth",
+    description=(
+        "Validate the frontend redirect URI and redirect the browser to Google's OAuth consent "
+        "screen."
+    ),
+)
 async def oauth_google_start(redirect_uri: str = Query(..., min_length=1)) -> RedirectResponse:
     """Start Google OAuth flow and redirect to provider consent screen."""
     require_google_oauth_config()
@@ -181,7 +209,14 @@ async def oauth_google_start(redirect_uri: str = Query(..., min_length=1)) -> Re
     return RedirectResponse(url=provider_url, status_code=status.HTTP_302_FOUND)
 
 
-@router.get("/oauth/twitter/start")
+@router.get(
+    "/oauth/twitter/start",
+    summary="Start Twitter OAuth",
+    description=(
+        "Validate the frontend redirect URI and redirect the browser to Twitter's OAuth consent "
+        "screen."
+    ),
+)
 async def oauth_twitter_start(redirect_uri: str = Query(..., min_length=1)) -> RedirectResponse:
     """Start Twitter OAuth flow and redirect to provider consent screen."""
     require_twitter_oauth_config()
@@ -215,7 +250,14 @@ async def oauth_twitter_start(redirect_uri: str = Query(..., min_length=1)) -> R
     return RedirectResponse(url=provider_url, status_code=status.HTTP_302_FOUND)
 
 
-@router.get("/oauth/google/callback")
+@router.get(
+    "/oauth/google/callback",
+    summary="Handle Google OAuth callback",
+    description=(
+        "Exchange the Google authorization code, sign in or create a local user, then redirect "
+        "to the frontend with issued JWT tokens."
+    ),
+)
 async def oauth_google_callback(
     session: DbSession,
     code: str | None = Query(default=None),
@@ -262,7 +304,14 @@ async def oauth_google_callback(
         return oauth_error_redirect("google", redirect_uri, "oauth_failed")
 
 
-@router.get("/oauth/twitter/callback")
+@router.get(
+    "/oauth/twitter/callback",
+    summary="Handle Twitter OAuth callback",
+    description=(
+        "Exchange the Twitter authorization code, sign in or create a local user, then redirect "
+        "to the frontend with issued JWT tokens."
+    ),
+)
 async def oauth_twitter_callback(
     session: DbSession,
     code: str | None = Query(default=None),

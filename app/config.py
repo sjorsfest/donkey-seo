@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     llm_calls_per_minute: int = 50
 
     # Pipeline Defaults
-    default_skip_steps: list[int] = [8, 9, 10, 11, 14]
+    default_skip_steps: list[int] = [8, 9, 10, 11]
     max_keywords_per_project: int = 50000
     batch_size_keyword_enrichment: int = 100
 

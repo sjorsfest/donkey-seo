@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
+from pydantic_ai.exceptions import ModelHTTPError
 
 from app.agents.base_agent import BaseAgent
 from app.config import settings
@@ -37,6 +39,20 @@ class DummyAgent(BaseAgent[DummyInput, DummyOutput]):
 
     def _build_prompt(self, input_data: DummyInput) -> str:
         return input_data.text
+
+
+class _FakeUsage:
+    request_tokens = 1
+    response_tokens = 1
+    total_tokens = 2
+
+
+class _FakeResult:
+    def __init__(self, output: DummyOutput) -> None:
+        self.output = output
+
+    def usage(self) -> _FakeUsage:
+        return _FakeUsage()
 
 
 def write_snapshot(path: Path, model: str) -> None:
@@ -183,3 +199,76 @@ def test_base_agent_falls_back_when_snapshot_is_invalid_json(tmp_path: Path) -> 
         settings.model_selector_snapshot_path = original_snapshot
         settings.dev_model_standard = original_dev_standard
         reset_snapshot_cache()
+
+
+def test_base_agent_system_prompt_includes_runtime_date_context() -> None:
+    agent = DummyAgent(model_override="openrouter:test/model")
+    prompt = agent._build_system_prompt()
+
+    assert "Runtime Date Context" in prompt
+    assert "Current year" in prompt
+    assert "outdated years" in prompt
+
+
+@pytest.mark.asyncio
+async def test_base_agent_retries_with_fallback_model_on_429() -> None:
+    """429 responses trigger a retry with configured fallback model."""
+
+    class FlakyAgent:
+        def __init__(self) -> None:
+            self.models_seen: list[str | None] = []
+
+        async def run(self, prompt: str, **kwargs: str) -> _FakeResult:
+            self.models_seen.append(kwargs.get("model"))
+            if len(self.models_seen) == 1:
+                raise ModelHTTPError(
+                    status_code=429,
+                    model_name="openrouter:primary/model",
+                    body={"message": "rate limited"},
+                )
+            return _FakeResult(DummyOutput(value=prompt))
+
+    original_fallback = settings.model_selector_fallback_model
+    try:
+        settings.model_selector_fallback_model = "openrouter:fallback/model"
+        agent = DummyAgent(model_override="openrouter:primary/model")
+        fake_agent = FlakyAgent()
+        agent._agent = fake_agent
+
+        output = await agent.run(DummyInput(text="ok"))
+
+        assert output.value == "ok"
+        assert fake_agent.models_seen == [None, "openrouter:fallback/model"]
+    finally:
+        settings.model_selector_fallback_model = original_fallback
+
+
+@pytest.mark.asyncio
+async def test_base_agent_does_not_retry_when_fallback_matches_primary() -> None:
+    """No fallback retry occurs when fallback model equals current model."""
+
+    class Always429Agent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, prompt: str, **kwargs: str) -> _FakeResult:
+            self.calls += 1
+            raise ModelHTTPError(
+                status_code=429,
+                model_name="openrouter:primary/model",
+                body={"message": "rate limited"},
+            )
+
+    original_fallback = settings.model_selector_fallback_model
+    try:
+        settings.model_selector_fallback_model = "openrouter:primary/model"
+        agent = DummyAgent(model_override="openrouter:primary/model")
+        fake_agent = Always429Agent()
+        agent._agent = fake_agent
+
+        with pytest.raises(ModelHTTPError):
+            await agent.run(DummyInput(text="ok"))
+
+        assert fake_agent.calls == 1
+    finally:
+        settings.model_selector_fallback_model = original_fallback

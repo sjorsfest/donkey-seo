@@ -38,3 +38,8 @@ agents:
     use_case: lightweight templating
     openrouter_category: marketing/seo
     arena_use_case_slug: tool_use
+
+  ArticleWriterAgent:
+    use_case: modular seo article writing
+    openrouter_category: marketing/seo
+    arena_use_case_slug: creative_writing

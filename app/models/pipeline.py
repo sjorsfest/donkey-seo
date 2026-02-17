@@ -18,6 +18,7 @@ from app.models.generated_dtos import (
 )
 
 if TYPE_CHECKING:
+    from app.models.discovery_snapshot import DiscoveryTopicSnapshot
     from app.models.project import Project
 
 
@@ -62,6 +63,11 @@ class PipelineRun(
         back_populates="pipeline_run",
         cascade="all, delete-orphan",
         order_by="StepExecution.step_number",
+    )
+    discovery_topic_snapshots: Mapped[list[DiscoveryTopicSnapshot]] = relationship(
+        "DiscoveryTopicSnapshot",
+        back_populates="pipeline_run",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

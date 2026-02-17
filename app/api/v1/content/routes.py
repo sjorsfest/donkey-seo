@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.api.v1.content.constants import (
+    CONTENT_ARTICLE_NOT_FOUND_DETAIL,
+    CONTENT_ARTICLE_VERSION_NOT_FOUND_DETAIL,
     CONTENT_BRIEF_NOT_FOUND_DETAIL,
     DEFAULT_PAGE,
     DEFAULT_PAGE_SIZE,
@@ -14,23 +16,140 @@ from app.api.v1.content.constants import (
 )
 from app.api.v1.dependencies import get_user_project
 from app.dependencies import CurrentUser, DbSession
-from app.models.content import ContentBrief, WriterInstructions
-from app.models.generated_dtos import ContentBriefCreateDTO, ContentBriefPatchDTO
+from app.models.brand import BrandProfile
+from app.models.content import (
+    ContentArticle,
+    ContentArticleVersion,
+    ContentBrief,
+    WriterInstructions,
+)
+from app.models.generated_dtos import (
+    ContentArticlePatchDTO,
+    ContentArticleVersionCreateDTO,
+    ContentBriefCreateDTO,
+    ContentBriefPatchDTO,
+)
+from app.models.style_guide import BriefDelta
 from app.schemas.content import (
+    ContentArticleDetailResponse,
+    ContentArticleListResponse,
+    ContentArticleResponse,
+    ContentArticleVersionResponse,
     ContentBriefCreate,
     ContentBriefDetailResponse,
     ContentBriefListResponse,
     ContentBriefResponse,
     ContentBriefUpdate,
+    RegenerateArticleRequest,
     WriterInstructionsResponse,
 )
+from app.services.article_generation import ArticleGenerationService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-@router.get("/{project_id}/briefs", response_model=ContentBriefListResponse)
+def _brief_payload(brief: ContentBrief) -> dict:
+    return {
+        "id": str(brief.id),
+        "primary_keyword": brief.primary_keyword,
+        "search_intent": brief.search_intent,
+        "page_type": brief.page_type,
+        "funnel_stage": brief.funnel_stage,
+        "working_titles": brief.working_titles or [],
+        "target_audience": brief.target_audience or "",
+        "proposed_publication_date": (
+            brief.proposed_publication_date.isoformat()
+            if brief.proposed_publication_date is not None
+            else None
+        ),
+        "reader_job_to_be_done": brief.reader_job_to_be_done or "",
+        "outline": brief.outline or [],
+        "supporting_keywords": brief.supporting_keywords or [],
+        "examples_required": brief.examples_required or [],
+        "faq_questions": brief.faq_questions or [],
+        "recommended_schema_type": brief.recommended_schema_type or "Article",
+        "internal_links_out": brief.internal_links_out or [],
+        "money_page_links": brief.money_page_links or [],
+        "meta_title_guidelines": brief.meta_title_guidelines or "",
+        "meta_description_guidelines": brief.meta_description_guidelines or "",
+        "target_word_count_min": brief.target_word_count_min,
+        "target_word_count_max": brief.target_word_count_max,
+        "must_include_sections": brief.must_include_sections or [],
+    }
+
+
+def _writer_instructions_payload(instructions: WriterInstructions | None) -> dict:
+    if not instructions:
+        return {}
+    return {
+        "voice_tone_constraints": instructions.voice_tone_constraints or {},
+        "forbidden_claims": instructions.forbidden_claims or [],
+        "compliance_notes": instructions.compliance_notes or [],
+        "formatting_requirements": instructions.formatting_requirements or {},
+        "h1_h2_usage": instructions.h1_h2_usage or {},
+        "internal_linking_minimums": instructions.internal_linking_minimums or {},
+        "schema_guidance": instructions.schema_guidance or "",
+        "qa_checklist": instructions.qa_checklist or [],
+        "common_failure_modes": instructions.common_failure_modes or [],
+    }
+
+
+def _brief_delta_payload(delta: BriefDelta | None) -> dict:
+    if not delta:
+        return {}
+    return {
+        "page_type_rules": delta.page_type_rules or {},
+        "must_include_sections": delta.must_include_sections or [],
+        "h1_h2_usage": delta.h1_h2_usage or {},
+        "schema_type": delta.schema_type or "Article",
+        "additional_qa_items": delta.additional_qa_items or [],
+    }
+
+
+def _build_brand_context(brand: BrandProfile | None) -> str:
+    if not brand:
+        return ""
+
+    parts: list[str] = []
+    if brand.company_name:
+        parts.append(f"Company: {brand.company_name}")
+    if brand.tagline:
+        parts.append(f"Tagline: {brand.tagline}")
+    if brand.products_services:
+        for product in brand.products_services[:5]:
+            if not isinstance(product, dict):
+                continue
+            if product.get("name"):
+                parts.append(f"Product: {product['name']}")
+            if product.get("description"):
+                parts.append(f"Description: {product['description']}")
+    if brand.unique_value_props:
+        parts.append(f"UVPs: {', '.join(brand.unique_value_props[:6])}")
+    if brand.differentiators:
+        parts.append(f"Differentiators: {', '.join(brand.differentiators[:6])}")
+    if brand.target_roles:
+        parts.append(f"Target Roles: {', '.join(brand.target_roles[:6])}")
+    if brand.target_industries:
+        parts.append(f"Target Industries: {', '.join(brand.target_industries[:6])}")
+    if brand.primary_pains:
+        parts.append(f"Primary Pains: {', '.join(brand.primary_pains[:6])}")
+    if brand.allowed_claims:
+        parts.append(f"Allowed Claims: {', '.join(brand.allowed_claims[:6])}")
+    if brand.restricted_claims:
+        parts.append(f"Restricted Claims: {', '.join(brand.restricted_claims[:6])}")
+    return "\n".join(parts)
+
+
+@router.get(
+    "/{project_id}/briefs",
+    response_model=ContentBriefListResponse,
+    summary="List content briefs",
+    description=(
+        "Return paginated content briefs for a project with optional status filtering."
+    ),
+)
 async def list_briefs(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -63,7 +182,12 @@ async def list_briefs(
     )
 
 
-@router.get("/{project_id}/briefs/{brief_id}", response_model=ContentBriefDetailResponse)
+@router.get(
+    "/{project_id}/briefs/{brief_id}",
+    response_model=ContentBriefDetailResponse,
+    summary="Get content brief",
+    description="Return detailed information for a specific content brief.",
+)
 async def get_brief(
     project_id: uuid.UUID,
     brief_id: uuid.UUID,
@@ -94,6 +218,8 @@ async def get_brief(
     "/{project_id}/briefs",
     response_model=ContentBriefResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Create content brief",
+    description="Create a new content brief for a project topic and primary keyword.",
 )
 async def create_brief(
     project_id: uuid.UUID,
@@ -113,6 +239,7 @@ async def create_brief(
             working_titles=brief_data.working_titles,
             target_word_count_min=brief_data.target_word_count_min,
             target_word_count_max=brief_data.target_word_count_max,
+            proposed_publication_date=brief_data.proposed_publication_date,
         ),
     )
     await session.flush()
@@ -130,7 +257,12 @@ async def create_brief(
     return brief
 
 
-@router.put("/{project_id}/briefs/{brief_id}", response_model=ContentBriefResponse)
+@router.put(
+    "/{project_id}/briefs/{brief_id}",
+    response_model=ContentBriefResponse,
+    summary="Update content brief",
+    description="Apply partial updates to an existing content brief.",
+)
 async def update_brief(
     project_id: uuid.UUID,
     brief_id: uuid.UUID,
@@ -167,7 +299,12 @@ async def update_brief(
     return brief
 
 
-@router.delete("/{project_id}/briefs/{brief_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}/briefs/{brief_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete content brief",
+    description="Delete a content brief from the project.",
+)
 async def delete_brief(
     project_id: uuid.UUID,
     brief_id: uuid.UUID,
@@ -197,6 +334,10 @@ async def delete_brief(
 @router.get(
     "/{project_id}/briefs/{brief_id}/instructions",
     response_model=WriterInstructionsResponse | None,
+    summary="Get writer instructions",
+    description=(
+        "Return the generated writer instructions attached to a content brief, if available."
+    ),
 )
 async def get_writer_instructions(
     project_id: uuid.UUID,
@@ -226,3 +367,229 @@ async def get_writer_instructions(
     )
 
     return result.scalar_one_or_none()
+
+
+@router.get(
+    "/{project_id}/articles",
+    response_model=ContentArticleListResponse,
+    summary="List generated articles",
+    description="Return paginated generated article artifacts for a project.",
+)
+async def list_articles(
+    project_id: uuid.UUID,
+    current_user: CurrentUser,
+    session: DbSession,
+    page: int = Query(DEFAULT_PAGE, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    status_filter: str | None = Query(None, alias="status"),
+) -> ContentArticleListResponse:
+    """List generated content articles for a project."""
+    await get_user_project(project_id, current_user, session)
+
+    query = select(ContentArticle).where(ContentArticle.project_id == project_id)
+    if status_filter:
+        query = query.where(ContentArticle.status == status_filter)
+
+    total = await session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    offset = (page - 1) * page_size
+    result = await session.execute(
+        query.order_by(ContentArticle.created_at.desc()).offset(offset).limit(page_size)
+    )
+    items = result.scalars().all()
+
+    return ContentArticleListResponse(
+        items=[ContentArticleResponse.model_validate(item) for item in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get(
+    "/{project_id}/briefs/{brief_id}/article",
+    response_model=ContentArticleDetailResponse,
+    summary="Get article by brief",
+    description="Return the canonical generated article for a brief.",
+)
+async def get_article_for_brief(
+    project_id: uuid.UUID,
+    brief_id: uuid.UUID,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> ContentArticle:
+    """Get canonical generated article for a brief."""
+    await get_user_project(project_id, current_user, session)
+
+    article_result = await session.execute(
+        select(ContentArticle).where(
+            ContentArticle.project_id == project_id,
+            ContentArticle.brief_id == brief_id,
+        )
+    )
+    article = article_result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CONTENT_ARTICLE_NOT_FOUND_DETAIL,
+        )
+
+    return article
+
+
+@router.post(
+    "/{project_id}/briefs/{brief_id}/article/regenerate",
+    response_model=ContentArticleDetailResponse,
+    summary="Regenerate article",
+    description="Regenerate article content for a brief and increment article version.",
+)
+async def regenerate_article(
+    project_id: uuid.UUID,
+    brief_id: uuid.UUID,
+    payload: RegenerateArticleRequest,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> ContentArticle:
+    """Regenerate canonical article and store an immutable version snapshot."""
+    project = await get_user_project(project_id, current_user, session)
+
+    brief_result = await session.execute(
+        select(ContentBrief).where(
+            ContentBrief.id == brief_id,
+            ContentBrief.project_id == project_id,
+        )
+    )
+    brief = brief_result.scalar_one_or_none()
+    if not brief:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CONTENT_BRIEF_NOT_FOUND_DETAIL,
+        )
+
+    article_result = await session.execute(
+        select(ContentArticle).where(
+            ContentArticle.project_id == project_id,
+            ContentArticle.brief_id == brief_id,
+        )
+    )
+    article = article_result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CONTENT_ARTICLE_NOT_FOUND_DETAIL,
+        )
+
+    instructions_result = await session.execute(
+        select(WriterInstructions).where(WriterInstructions.brief_id == brief_id)
+    )
+    instructions = instructions_result.scalar_one_or_none()
+
+    if not instructions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Writer instructions are required to regenerate article content",
+        )
+
+    delta_result = await session.execute(select(BriefDelta).where(BriefDelta.brief_id == brief_id))
+    delta = delta_result.scalar_one_or_none()
+
+    brand_result = await session.execute(
+        select(BrandProfile).where(BrandProfile.project_id == project_id)
+    )
+    brand = brand_result.scalar_one_or_none()
+
+    conversion_intents = [project.primary_goal] if project.primary_goal else []
+    generator = ArticleGenerationService(project.domain)
+    artifact = await generator.generate_with_repair(
+        brief=_brief_payload(brief),
+        writer_instructions=_writer_instructions_payload(instructions),
+        brief_delta=_brief_delta_payload(delta),
+        brand_context=_build_brand_context(brand),
+        conversion_intents=conversion_intents,
+    )
+
+    next_version = article.current_version + 1
+    article.patch(
+        session,
+        ContentArticlePatchDTO.from_partial(
+            {
+                "title": artifact.title,
+                "slug": artifact.slug,
+                "primary_keyword": artifact.primary_keyword,
+                "modular_document": artifact.modular_document,
+                "rendered_html": artifact.rendered_html,
+                "qa_report": artifact.qa_report,
+                "status": artifact.status,
+                "current_version": next_version,
+                "generation_model": artifact.generation_model,
+                "generation_temperature": artifact.generation_temperature,
+            }
+        ),
+    )
+
+    ContentArticleVersion.create(
+        session,
+        ContentArticleVersionCreateDTO(
+            article_id=str(article.id),
+            version_number=next_version,
+            title=artifact.title,
+            slug=artifact.slug,
+            primary_keyword=artifact.primary_keyword,
+            modular_document=artifact.modular_document,
+            rendered_html=artifact.rendered_html,
+            qa_report=artifact.qa_report,
+            status=artifact.status,
+            change_reason=payload.reason or "manual_regeneration",
+            generation_model=artifact.generation_model,
+            generation_temperature=artifact.generation_temperature,
+            created_by_regeneration=True,
+        ),
+    )
+
+    await session.flush()
+    await session.refresh(article)
+    return article
+
+
+@router.get(
+    "/{project_id}/articles/{article_id}/versions/{version_number}",
+    response_model=ContentArticleVersionResponse,
+    summary="Get article version",
+    description="Fetch an immutable article version snapshot by version number.",
+)
+async def get_article_version(
+    project_id: uuid.UUID,
+    article_id: uuid.UUID,
+    version_number: int,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> ContentArticleVersion:
+    """Get a specific article version snapshot."""
+    await get_user_project(project_id, current_user, session)
+
+    article_result = await session.execute(
+        select(ContentArticle).where(
+            ContentArticle.id == article_id,
+            ContentArticle.project_id == project_id,
+        )
+    )
+    article = article_result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CONTENT_ARTICLE_NOT_FOUND_DETAIL,
+        )
+
+    version_result = await session.execute(
+        select(ContentArticleVersion).where(
+            ContentArticleVersion.article_id == article_id,
+            ContentArticleVersion.version_number == version_number,
+        )
+    )
+    version = version_result.scalar_one_or_none()
+    if not version:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CONTENT_ARTICLE_VERSION_NOT_FOUND_DETAIL,
+        )
+
+    return version

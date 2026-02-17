@@ -10,7 +10,12 @@ from app.services.task_manager import TaskManager
 router = APIRouter()
 
 
-@router.get("/{task_id}", response_model=TaskStatusResponse)
+@router.get(
+    "/{task_id}",
+    response_model=TaskStatusResponse,
+    summary="Get task status",
+    description="Return asynchronous task status and payload from Redis by task ID.",
+)
 async def get_task_status(task_id: str, _current_user: CurrentUser) -> TaskStatusResponse:
     """Get task status from Redis."""
     task_manager = TaskManager()

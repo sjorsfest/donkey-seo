@@ -2,14 +2,30 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
 from app.models.generated_dtos import (
+    ContentArticleCreateDTO,
+    ContentArticlePatchDTO,
+    ContentArticleVersionCreateDTO,
+    ContentArticleVersionPatchDTO,
     ContentBriefCreateDTO,
     ContentBriefPatchDTO,
     WriterInstructionsCreateDTO,
@@ -17,8 +33,8 @@ from app.models.generated_dtos import (
 )
 
 if TYPE_CHECKING:
-    from app.models.keyword import Keyword
     from app.models.project import Project
+    from app.models.keyword import Keyword
     from app.models.topic import Topic
 
 
@@ -58,6 +74,7 @@ class ContentBrief(
     working_titles: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     target_audience: Mapped[str | None] = mapped_column(Text, nullable=True)
     reader_job_to_be_done: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposed_publication_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # Content requirements
     outline: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
@@ -89,6 +106,12 @@ class ContentBrief(
     target_keyword: Mapped[Keyword | None] = relationship("Keyword")
     writer_instructions: Mapped[WriterInstructions | None] = relationship(
         "WriterInstructions",
+        back_populates="brief",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    content_article: Mapped[ContentArticle | None] = relationship(
+        "ContentArticle",
         back_populates="brief",
         uselist=False,
         cascade="all, delete-orphan",
@@ -142,3 +165,106 @@ class WriterInstructions(
 
     def __repr__(self) -> str:
         return f"<WriterInstructions for brief {self.brief_id}>"
+
+
+class ContentArticle(
+    TypedModelMixin[ContentArticleCreateDTO, ContentArticlePatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
+    """Canonical article artifact generated from a content brief."""
+
+    __tablename__ = "content_articles"
+
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    brief_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_briefs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    slug: Mapped[str] = mapped_column(String(500), nullable=False)
+    primary_keyword: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    modular_document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    rendered_html: Mapped[str] = mapped_column(Text, nullable=False)
+    qa_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False, index=True)
+    current_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    generation_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generation_temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship("Project", back_populates="content_articles")
+    brief: Mapped[ContentBrief] = relationship("ContentBrief", back_populates="content_article")
+    versions: Mapped[list[ContentArticleVersion]] = relationship(
+        "ContentArticleVersion",
+        back_populates="article",
+        cascade="all, delete-orphan",
+        order_by="ContentArticleVersion.version_number",
+    )
+
+    def __repr__(self) -> str:
+        return f"<ContentArticle brief={self.brief_id} version={self.current_version}>"
+
+
+class ContentArticleVersion(
+    TypedModelMixin[ContentArticleVersionCreateDTO, ContentArticleVersionPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
+    """Immutable version snapshots for content articles."""
+
+    __tablename__ = "content_article_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "version_number",
+            name="uq_content_article_versions_article_version",
+        ),
+    )
+
+    article_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_articles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    slug: Mapped[str] = mapped_column(String(500), nullable=False)
+    primary_keyword: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    modular_document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    rendered_html: Mapped[str] = mapped_column(Text, nullable=False)
+    qa_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+
+    change_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generation_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generation_temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_by_regeneration: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    article: Mapped[ContentArticle] = relationship("ContentArticle", back_populates="versions")
+
+    def __repr__(self) -> str:
+        return (
+            f"<ContentArticleVersion article={self.article_id} "
+            f"version={self.version_number}>"
+        )

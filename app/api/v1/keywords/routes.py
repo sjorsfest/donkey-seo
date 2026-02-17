@@ -30,7 +30,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/{project_id}", response_model=KeywordListResponse)
+@router.get(
+    "/{project_id}",
+    response_model=KeywordListResponse,
+    summary="List keywords",
+    description=(
+        "Return paginated keywords for a project with optional filters for intent, status, topic, "
+        "volume, difficulty, and text search."
+    ),
+)
 async def list_keywords(
     project_id: uuid.UUID,
     current_user: CurrentUser,
@@ -82,7 +90,12 @@ async def list_keywords(
     )
 
 
-@router.get("/{project_id}/{keyword_id}", response_model=KeywordDetailResponse)
+@router.get(
+    "/{project_id}/{keyword_id}",
+    response_model=KeywordDetailResponse,
+    summary="Get keyword",
+    description="Return detailed information for a single keyword in the project.",
+)
 async def get_keyword(
     project_id: uuid.UUID,
     keyword_id: uuid.UUID,
@@ -106,7 +119,13 @@ async def get_keyword(
     return keyword
 
 
-@router.post("/{project_id}", response_model=KeywordResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{project_id}",
+    response_model=KeywordResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create keyword",
+    description="Add a new keyword manually to the project.",
+)
 async def create_keyword(
     project_id: uuid.UUID,
     keyword_data: KeywordCreate,
@@ -133,7 +152,12 @@ async def create_keyword(
     return keyword
 
 
-@router.put("/{project_id}/{keyword_id}", response_model=KeywordResponse)
+@router.put(
+    "/{project_id}/{keyword_id}",
+    response_model=KeywordResponse,
+    summary="Update keyword",
+    description="Apply partial updates to an existing keyword in the project.",
+)
 async def update_keyword(
     project_id: uuid.UUID,
     keyword_id: uuid.UUID,
@@ -167,7 +191,12 @@ async def update_keyword(
     return keyword
 
 
-@router.delete("/{project_id}/{keyword_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}/{keyword_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Exclude keyword",
+    description="Soft-delete a keyword by marking its status as excluded.",
+)
 async def delete_keyword(
     project_id: uuid.UUID,
     keyword_id: uuid.UUID,
@@ -195,7 +224,12 @@ async def delete_keyword(
     await session.flush()
 
 
-@router.post("/{project_id}/bulk-update", response_model=dict[str, int])
+@router.post(
+    "/{project_id}/bulk-update",
+    response_model=dict[str, int],
+    summary="Bulk update keywords",
+    description="Update status, intent, or topic assignment for multiple keywords in one request.",
+)
 async def bulk_update_keywords(
     project_id: uuid.UUID,
     request: KeywordBulkUpdateRequest,

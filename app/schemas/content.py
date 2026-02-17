@@ -1,8 +1,9 @@
 """Content brief schemas."""
 
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OutlineSection(BaseModel):
@@ -32,6 +33,7 @@ class ContentBriefCreate(BaseModel):
     working_titles: list[str] | None = None
     target_word_count_min: int | None = None
     target_word_count_max: int | None = None
+    proposed_publication_date: date | None = None
 
 
 class ContentBriefUpdate(BaseModel):
@@ -43,6 +45,7 @@ class ContentBriefUpdate(BaseModel):
     faq_questions: list[str] | None = None
     target_word_count_min: int | None = None
     target_word_count_max: int | None = None
+    proposed_publication_date: date | None = None
     status: str | None = None
 
 
@@ -58,6 +61,7 @@ class ContentBriefResponse(BaseModel):
     funnel_stage: str | None
     working_titles: list[str] | None
     target_audience: str | None
+    proposed_publication_date: date | None
     target_word_count_min: int | None
     target_word_count_max: int | None
     status: str
@@ -111,3 +115,121 @@ class WriterInstructionsResponse(BaseModel):
     pass_fail_thresholds: dict | None
 
     model_config = {"from_attributes": True}
+
+
+ArticleBlockType = Literal[
+    "hero",
+    "summary",
+    "section",
+    "list",
+    "comparison_table",
+    "steps",
+    "faq",
+    "cta",
+    "conclusion",
+    "sources",
+]
+ArticleBlockSemanticTag = Literal["header", "section", "aside", "footer", "table"]
+
+
+class ArticleLink(BaseModel):
+    """Link metadata for block-level link placement."""
+
+    anchor: str
+    href: str
+
+
+class ArticleFAQItem(BaseModel):
+    """FAQ item for FAQ blocks."""
+
+    question: str
+    answer: str
+
+
+class ArticleCTA(BaseModel):
+    """CTA payload for CTA blocks."""
+
+    label: str
+    href: str
+
+
+class ArticleBlock(BaseModel):
+    """CMS-agnostic semantic block."""
+
+    block_type: ArticleBlockType
+    semantic_tag: ArticleBlockSemanticTag
+    heading: str | None = None
+    level: int | None = Field(default=None, ge=2, le=4)
+    body: str | None = None
+    items: list[str] = Field(default_factory=list)
+    ordered: bool = False
+    table_columns: list[str] = Field(default_factory=list)
+    table_rows: list[list[str]] = Field(default_factory=list)
+    faq_items: list[ArticleFAQItem] = Field(default_factory=list)
+    cta: ArticleCTA | None = None
+    links: list[ArticleLink] = Field(default_factory=list)
+
+
+class RegenerateArticleRequest(BaseModel):
+    """Request payload for article regeneration."""
+
+    reason: str | None = None
+
+
+class ContentArticleResponse(BaseModel):
+    """Canonical content article summary."""
+
+    id: str
+    project_id: str
+    brief_id: str
+    title: str
+    slug: str
+    primary_keyword: str
+    status: str
+    current_version: int
+    generation_model: str | None
+    generated_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ContentArticleDetailResponse(ContentArticleResponse):
+    """Full content article contract."""
+
+    modular_document: dict
+    rendered_html: str
+    qa_report: dict | None
+
+
+class ContentArticleVersionResponse(BaseModel):
+    """Immutable article version response."""
+
+    id: str
+    article_id: str
+    version_number: int
+    title: str
+    slug: str
+    primary_keyword: str
+    modular_document: dict
+    rendered_html: str
+    qa_report: dict | None
+    status: str
+    change_reason: str | None
+    generation_model: str | None
+    generation_temperature: float | None
+    created_by_regeneration: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ContentArticleListResponse(BaseModel):
+    """Paginated article list."""
+
+    items: list[ContentArticleResponse]
+    total: int
+    page: int
+    page_size: int
