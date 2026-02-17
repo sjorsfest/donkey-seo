@@ -33,7 +33,10 @@ class TopicGeneratorInput(BaseModel):
 
     company_name: str
     products_services: list[dict]
+    offer_categories: list[str] = Field(default_factory=list)
     target_audience: dict
+    buyer_jobs: list[str] = Field(default_factory=list)
+    conversion_intents: list[str] = Field(default_factory=list)
     unique_value_props: list[str]
     in_scope_topics: list[str]
     out_of_scope_topics: list[str]
@@ -62,7 +65,7 @@ class TopicGeneratorAgent(BaseAgent[TopicGeneratorInput, TopicGeneratorOutput]):
 
     @property
     def system_prompt(self) -> str:
-        return """You are an SEO keyword researcher. Your job is to generate SEED KEYWORDS — the broad starter terms that get plugged into keyword research tools (like DataForSEO, Ahrefs, SEMrush) to discover hundreds of longer, more specific keyword ideas.
+        return """You are an SEO keyword researcher. Your job is to generate SEED KEYWORDS — broad starter terms that can be expanded by keyword tools into many relevant opportunities.
 
 ## WHAT SEED KEYWORDS ARE
 
@@ -133,6 +136,8 @@ Organize seeds into these buckets (use only the ones that apply):
             extra={
                 "company": input_data.company_name,
                 "products_count": len(input_data.products_services),
+                "offer_categories_count": len(input_data.offer_categories),
+                "buyer_jobs_count": len(input_data.buyer_jobs),
                 "in_scope_count": len(input_data.in_scope_topics),
                 "out_of_scope_count": len(input_data.out_of_scope_topics),
             },
@@ -149,13 +154,26 @@ Pain Points: {', '.join(input_data.target_audience.get('primary_pains', []))}
 Desired Outcomes: {', '.join(input_data.target_audience.get('desired_outcomes', []))}
 """
 
+        offer_categories = ", ".join(input_data.offer_categories) or "Not specified"
+        buyer_jobs = ", ".join(input_data.buyer_jobs) or "Not specified"
+        conversion_intents = ", ".join(input_data.conversion_intents) or "Not specified"
+
         return f"""Generate seed keywords for {input_data.company_name}.
 
 ## Products/Services
 {products_text}
 
+## Offer Categories
+{offer_categories}
+
 ## Target Audience
 {audience_text}
+
+## Buyer Jobs
+{buyer_jobs}
+
+## Conversion Intents
+{conversion_intents}
 
 ## Value Propositions
 {chr(10).join(f'- {v}' for v in input_data.unique_value_props)}

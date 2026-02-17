@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 
 from app.config import settings
+from app.services.model_selector.registry import get_agent_model
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +40,25 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
         Model resolution priority:
         1. model_override parameter (explicit runtime override)
         2. model class attribute (if set by subclass)
-        3. settings.get_model(self.model_tier) (environment-aware)
+        3. model selector snapshot for this agent (if enabled)
+        4. settings.get_model(self.model_tier) (environment-aware tier fallback)
         """
+        model_source = "tier_default"
         if model_override:
             self._model = model_override
+            model_source = "runtime_override"
         elif self.model:
             self._model = self.model
+            model_source = "class_override"
         else:
-            self._model = settings.get_model(self.model_tier)
+            selected_model: str | None = None
+            if settings.model_selector_enabled:
+                selected_model = get_agent_model(settings.environment, self.__class__.__name__)
+            if selected_model:
+                self._model = selected_model
+                model_source = "model_selector"
+            else:
+                self._model = settings.get_model(self.model_tier)
         self._agent: Agent[None, OutputT] | None = None
 
         logger.info(
@@ -55,6 +67,7 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
                 "agent": self.__class__.__name__,
                 "model": self._model,
                 "model_tier": self.model_tier,
+                "model_source": model_source,
                 "temperature": self.temperature,
             },
         )

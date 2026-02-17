@@ -5,6 +5,7 @@ Includes budget control to prevent API cost explosion.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +16,7 @@ from app.models.brand import BrandProfile
 from app.models.generated_dtos import KeywordCreateDTO
 from app.models.keyword import Keyword, SeedTopic
 from app.models.project import Project
+from app.services.run_strategy import RunStrategy
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class ExpansionOutput:
     budget_remaining: int
     seeds_processed: int
     seeds_skipped: int
+    keywords_excluded: int
     keywords: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -59,6 +62,14 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
     DEFAULT_EXPANSION_BUDGET = 500
     DEFAULT_SEEDS_PER_PILLAR = 5
     DEFAULT_API_CALLS_PER_STEP = 50
+    COMPARISON_MODIFIERS = (
+        " vs ",
+        " versus ",
+        " alternative",
+        " alternatives",
+        " comparison",
+        " compare ",
+    )
 
     async def _validate_preconditions(self, input_data: ExpansionInput) -> None:
         """Validate Step 2 is completed."""
@@ -93,6 +104,7 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         brand = brand_result.scalar_one_or_none()
+        strategy = await self.get_run_strategy()
 
         # Get budget settings from project
         settings = project.api_budget_caps or {}
@@ -138,9 +150,8 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
         await self._update_progress(10, f"Selected {len(selected_seeds)} seeds for expansion...")
 
         # Prepare exclusion filters
-        out_of_scope = set()
-        if brand:
-            out_of_scope = set(t.lower() for t in (brand.out_of_scope_topics or []))
+        out_of_scope: set[str] = set(t.lower() for t in strategy.exclude_topics)
+        own_brand_terms, competitor_terms = self._extract_brand_terms(brand)
 
         # Collect all seed phrases for batched API calls
         seed_phrases = [seed.name for seed in selected_seeds]
@@ -148,6 +159,7 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
         all_keywords: list[dict[str, Any]] = []
         seen_keywords: set[str] = set()
         api_calls_made = 0
+        excluded_count = 0
 
         async with DataForSEOClient() as client:
             # Batch keyword suggestions (1 API call for all seeds)
@@ -164,25 +176,40 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
                 for kw in suggestions:
                     kw_text = kw.get("keyword", "")
                     kw_normalized = kw_text.lower().strip()
+                    include, exclusion_reason = self._evaluate_keyword_policy(
+                        keyword_normalized=kw_normalized,
+                        seen=seen_keywords,
+                        out_of_scope=out_of_scope,
+                        strategy=strategy,
+                        own_brand_terms=own_brand_terms,
+                        competitor_terms=competitor_terms,
+                    )
+                    if kw_normalized in seen_keywords:
+                        continue
 
-                    if self._should_include_keyword(kw_normalized, seen_keywords, out_of_scope):
-                        seen_keywords.add(kw_normalized)
-                        all_keywords.append({
-                            "keyword_text": kw_text,
-                            "keyword_normalized": kw_normalized,
-                            "source_seed_topic": None,
-                            "seed_topic_id": None,
-                            "source_method": "suggestion",
-                            "search_volume": kw.get("search_volume"),
-                            "cpc": kw.get("cpc"),
-                            "competition": kw.get("competition"),
-                            "exclusion_flags": [],
-                        })
+                    seen_keywords.add(kw_normalized)
+                    seed_topic = self._pick_seed_topic(kw_normalized, selected_seeds)
+                    if not include:
+                        excluded_count += 1
+
+                    all_keywords.append({
+                        "keyword_text": kw_text,
+                        "keyword_normalized": kw_normalized,
+                        "source_seed_topic": seed_topic.name if seed_topic else None,
+                        "seed_topic_id": str(seed_topic.id) if seed_topic else None,
+                        "source_method": "suggestion",
+                        "search_volume": kw.get("search_volume"),
+                        "cpc": kw.get("cpc"),
+                        "competition": kw.get("competition"),
+                        "exclusion_flags": [] if include else ["policy_filtered"],
+                        "status": "active" if include else "excluded",
+                        "exclusion_reason": exclusion_reason,
+                    })
             except Exception:
                 logger.warning("Keyword suggestion API error", extra={"seeds": len(seed_phrases), "method": "suggestion"})
 
             # Batch question keywords (1 API call for all seeds)
-            if len(all_keywords) < expansion_budget:
+            if sum(1 for kw in all_keywords if kw.get("status") == "active") < expansion_budget:
                 await self._update_progress(60, f"Fetching question keywords for {len(seed_phrases)} seeds...")
                 try:
                     questions = await client.get_keyword_questions(
@@ -196,36 +223,61 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
                     for kw in questions:
                         kw_text = kw.get("keyword", "")
                         kw_normalized = kw_text.lower().strip()
+                        include, exclusion_reason = self._evaluate_keyword_policy(
+                            keyword_normalized=kw_normalized,
+                            seen=seen_keywords,
+                            out_of_scope=out_of_scope,
+                            strategy=strategy,
+                            own_brand_terms=own_brand_terms,
+                            competitor_terms=competitor_terms,
+                        )
+                        if kw_normalized in seen_keywords:
+                            continue
 
-                        if self._should_include_keyword(kw_normalized, seen_keywords, out_of_scope):
-                            seen_keywords.add(kw_normalized)
-                            all_keywords.append({
-                                "keyword_text": kw_text,
-                                "keyword_normalized": kw_normalized,
-                                "source_seed_topic": None,
-                                "seed_topic_id": None,
-                                "source_method": "questions",
-                                "search_volume": kw.get("search_volume"),
-                                "cpc": kw.get("cpc"),
-                                "competition": None,
-                                "exclusion_flags": [],
-                            })
+                        seen_keywords.add(kw_normalized)
+                        seed_topic = self._pick_seed_topic(kw_normalized, selected_seeds)
+                        if not include:
+                            excluded_count += 1
+
+                        all_keywords.append({
+                            "keyword_text": kw_text,
+                            "keyword_normalized": kw_normalized,
+                            "source_seed_topic": seed_topic.name if seed_topic else None,
+                            "seed_topic_id": str(seed_topic.id) if seed_topic else None,
+                            "source_method": "questions",
+                            "search_volume": kw.get("search_volume"),
+                            "cpc": kw.get("cpc"),
+                            "competition": None,
+                            "exclusion_flags": [] if include else ["policy_filtered"],
+                            "status": "active" if include else "excluded",
+                            "exclusion_reason": exclusion_reason,
+                        })
                 except Exception:
                     logger.warning("Question keywords API error", extra={"seeds": len(seed_phrases), "method": "questions"})
 
         await self._update_progress(95, f"Processed {len(all_keywords)} keywords...")
 
-        budget_remaining = max(0, expansion_budget - len(all_keywords))
-        logger.info("Keyword expansion complete", extra={"keywords_generated": len(all_keywords), "api_calls_made": api_calls_made, "budget_remaining": budget_remaining})
+        active_keywords = sum(1 for kw in all_keywords if kw["status"] == "active")
+        budget_remaining = max(0, expansion_budget - active_keywords)
+        logger.info(
+            "Keyword expansion complete",
+            extra={
+                "keywords_generated": active_keywords,
+                "keywords_excluded": excluded_count,
+                "api_calls_made": api_calls_made,
+                "budget_remaining": budget_remaining,
+            },
+        )
 
         await self._update_progress(100, "Keyword expansion complete")
 
         return ExpansionOutput(
-            keywords_generated=len(all_keywords),
+            keywords_generated=active_keywords,
             api_calls_made=api_calls_made,
             budget_remaining=budget_remaining,
             seeds_processed=len(selected_seeds),
             seeds_skipped=seeds_skipped,
+            keywords_excluded=excluded_count,
             keywords=all_keywords,
         )
 
@@ -241,25 +293,34 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
                 "Step 3 generated 0 keywords. Step 4 requires at least one active keyword."
             )
 
-    def _should_include_keyword(
+    def _evaluate_keyword_policy(
         self,
         keyword_normalized: str,
         seen: set[str],
         out_of_scope: set[str],
-    ) -> bool:
-        """Check if keyword should be included."""
+        strategy: RunStrategy,
+        own_brand_terms: set[str],
+        competitor_terms: set[str],
+    ) -> tuple[bool, str | None]:
+        """Check if keyword should be included and return exclusion reason when blocked."""
         # Skip if already seen
         if keyword_normalized in seen:
-            return False
+            return False, "duplicate_keyword"
 
         # Skip if empty
         if not keyword_normalized or len(keyword_normalized) < 2:
-            return False
+            return False, "empty_or_too_short"
+
+        words = [w for w in keyword_normalized.split() if w]
+        if len(words) > 12 or keyword_normalized.count("?") > 1:
+            return False, "low_relevance_pattern"
+        if re.search(r"\b(lorem ipsum|test keyword|dummy)\b", keyword_normalized):
+            return False, "low_relevance_pattern"
 
         # Skip if out of scope
         for exclusion in out_of_scope:
             if exclusion in keyword_normalized:
-                return False
+                return False, f"out_of_scope:{exclusion}"
 
         # Skip obvious spam/adult content patterns
         spam_patterns = [
@@ -268,9 +329,78 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
         ]
         for pattern in spam_patterns:
             if pattern in keyword_normalized:
-                return False
+                return False, f"spam_pattern:{pattern}"
 
-        return True
+        has_own_brand = self._contains_any_term(keyword_normalized, own_brand_terms)
+        has_competitor_brand = self._contains_any_term(keyword_normalized, competitor_terms)
+        is_comparison_query = any(marker in f" {keyword_normalized} " for marker in self.COMPARISON_MODIFIERS)
+
+        if has_competitor_brand and not has_own_brand:
+            if strategy.branded_keyword_mode == "exclude_all":
+                return False, "competitor_branded"
+            if strategy.branded_keyword_mode == "comparisons_only" and not is_comparison_query:
+                return False, "competitor_branded_non_comparison"
+
+        return True, None
+
+    def _extract_brand_terms(self, brand: BrandProfile | None) -> tuple[set[str], set[str]]:
+        """Extract own-brand and competitor-brand terms for policy filtering."""
+        own_brand_terms: set[str] = set()
+        competitor_terms: set[str] = set()
+
+        if not brand:
+            return own_brand_terms, competitor_terms
+
+        if brand.company_name:
+            own_brand_terms.add(brand.company_name.lower())
+        for product in brand.products_services or []:
+            name = (product.get("name") or "").strip().lower()
+            if name:
+                own_brand_terms.add(name)
+
+        for competitor in brand.competitor_positioning or []:
+            name = (competitor.get("name") or competitor.get("brand") or "").strip().lower()
+            if name:
+                competitor_terms.add(name)
+
+        return own_brand_terms, competitor_terms
+
+    def _contains_any_term(self, keyword: str, terms: set[str]) -> bool:
+        """Return True when a keyword contains any configured term."""
+        for term in terms:
+            if len(term) < 3:
+                continue
+            if term in keyword:
+                return True
+        return False
+
+    def _pick_seed_topic(self, keyword_normalized: str, seeds: list[SeedTopic]) -> SeedTopic | None:
+        """Assign keyword provenance to the most similar seed topic."""
+        keyword_tokens = self._tokenize(keyword_normalized)
+        if not keyword_tokens:
+            return None
+
+        best_seed: SeedTopic | None = None
+        best_score = 0.0
+
+        for seed in seeds:
+            seed_tokens = self._tokenize(seed.name.lower())
+            if not seed_tokens:
+                continue
+            overlap = len(keyword_tokens & seed_tokens)
+            score = overlap / len(seed_tokens)
+            if score > best_score:
+                best_score = score
+                best_seed = seed
+            elif score == best_score and best_seed is not None:
+                if (seed.relevance_score or 0) > (best_seed.relevance_score or 0):
+                    best_seed = seed
+
+        return best_seed
+
+    def _tokenize(self, text: str) -> set[str]:
+        """Tokenize text into comparable terms."""
+        return {t for t in re.split(r"[^a-z0-9]+", text.lower()) if len(t) > 2}
 
     async def _persist_results(self, result: ExpansionOutput) -> None:
         """Save expanded keywords to database."""
@@ -294,10 +424,13 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
                     keyword_normalized=kw_data["keyword_normalized"],
                     source="expansion",
                     seed_topic_id=kw_data.get("seed_topic_id"),
+                    source_method=kw_data.get("source_method"),
                     search_volume=kw_data.get("search_volume"),
                     cpc=kw_data.get("cpc"),
                     competition=kw_data.get("competition"),
-                    status="active",
+                    exclusion_flags=kw_data.get("exclusion_flags"),
+                    status=kw_data.get("status", "active"),
+                    exclusion_reason=kw_data.get("exclusion_reason"),
                 ),
             )
 
@@ -315,6 +448,7 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
             "budget_remaining": result.budget_remaining,
             "seeds_processed": result.seeds_processed,
             "seeds_skipped": result.seeds_skipped,
+            "keywords_excluded": result.keywords_excluded,
         })
 
         await self.session.commit()

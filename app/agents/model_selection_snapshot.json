@@ -1,0 +1,951 @@
+{
+  "environments": {
+    "development": {
+      "agents": {
+        "BrandExtractorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "BriefDeltaGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "tool_use"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "BriefGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "creative_writing"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "ClusterAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "IntentClassifierAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "classification"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "PrioritizationAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "StyleGuideGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "tool_use"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "TopicGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "creative_writing"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        }
+      },
+      "max_price": 0.0,
+      "source_health": {
+        "arena_sitemap": {
+          "discovery_method": "direct_slug_mode",
+          "ok": true,
+          "source": "arena",
+          "use_case_count": 0,
+          "warning": {
+            "https://arena.ai/sitemap.xml": "sitemap_returned_no_use_cases",
+            "https://arena.ai/sitemap.xml/0.xml": "Server error '500 Internal Server Error' for url 'https://arena.ai/sitemap.xml/0.xml'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+            "https://arena.ai/sitemap_index.xml": "Client error '404 Not Found' for url 'https://arena.ai/sitemap_index.xml'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+            "leaderboard_fallback": "leaderboard_returned_no_use_cases"
+          }
+        }
+      }
+    },
+    "production": {
+      "agents": {
+        "BrandExtractorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "BriefDeltaGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "tool_use"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "BriefGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "creative_writing"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "ClusterAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "IntentClassifierAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "classification"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "PrioritizationAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "StyleGuideGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "tool_use"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "TopicGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "creative_writing"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        }
+      },
+      "max_price": 0.0,
+      "source_health": {
+        "arena_sitemap": {
+          "discovery_method": "direct_slug_mode",
+          "ok": true,
+          "source": "arena",
+          "use_case_count": 0,
+          "warning": {
+            "https://arena.ai/sitemap.xml": "sitemap_returned_no_use_cases",
+            "https://arena.ai/sitemap.xml/0.xml": "Server error '500 Internal Server Error' for url 'https://arena.ai/sitemap.xml/0.xml'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+            "https://arena.ai/sitemap_index.xml": "Client error '404 Not Found' for url 'https://arena.ai/sitemap_index.xml'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+            "leaderboard_fallback": "leaderboard_returned_no_use_cases"
+          }
+        }
+      }
+    },
+    "staging": {
+      "agents": {
+        "BrandExtractorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "BriefDeltaGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "tool_use"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "BriefGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "creative_writing"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "ClusterAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "IntentClassifierAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "classification"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "PrioritizationAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "reasoning"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "StyleGuideGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "tool_use"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        },
+        "TopicGeneratorAgent": {
+          "fallback_used": false,
+          "max_price": 0.0,
+          "model": "openrouter:openai/gpt-oss-120b:free",
+          "score_breakdown": {
+            "arena_score": 1.0,
+            "final_score": 0.289474,
+            "openrouter_rank_score": 0.052632
+          },
+          "source_metadata": {
+            "arena": {
+              "ok": true,
+              "rows_parsed": 383,
+              "scores_kept": 317,
+              "source": "arena",
+              "use_case": "creative_writing"
+            },
+            "arena_matches": 2,
+            "arena_unmatched": 315,
+            "openrouter": {
+              "category": "marketing/seo",
+              "category_error": null,
+              "category_fallback_used": false,
+              "fetched": 20,
+              "kept": 3,
+              "ok": true,
+              "order": "top-weekly",
+              "source": "openrouter"
+            },
+            "selected_candidate": {
+              "model": "openrouter:openai/gpt-oss-120b:free",
+              "openrouter_rank": 19,
+              "price_per_million": 0.0,
+              "raw_model_id": "openai/gpt-oss-120b:free"
+            }
+          }
+        }
+      },
+      "max_price": 0.0,
+      "source_health": {
+        "arena_sitemap": {
+          "discovery_method": "direct_slug_mode",
+          "ok": true,
+          "source": "arena",
+          "use_case_count": 0,
+          "warning": {
+            "https://arena.ai/sitemap.xml": "sitemap_returned_no_use_cases",
+            "https://arena.ai/sitemap.xml/0.xml": "Server error '500 Internal Server Error' for url 'https://arena.ai/sitemap.xml/0.xml'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
+            "https://arena.ai/sitemap_index.xml": "Client error '404 Not Found' for url 'https://arena.ai/sitemap_index.xml'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+            "leaderboard_fallback": "leaderboard_returned_no_use_cases"
+          }
+        }
+      }
+    }
+  },
+  "generated_at": "2026-02-17T10:26:34.861484+00:00",
+  "version": "1"
+}

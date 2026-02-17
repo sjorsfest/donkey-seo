@@ -157,6 +157,10 @@ class PipelineOrchestrator:
             if run is None:
                 raise ValueError(f"Pipeline run not found: {run_id}")
 
+            existing_strategy = None
+            if run.steps_config and isinstance(run.steps_config, dict):
+                existing_strategy = run.steps_config.get("strategy")
+
             run.patch(
                 self.session,
                 PipelineRunPatchDTO.from_partial({
@@ -172,6 +176,7 @@ class PipelineOrchestrator:
                         "start": start_step,
                         "end": end_step,
                         "skip": skip_steps,
+                        "strategy": existing_strategy,
                     },
                 }),
             )

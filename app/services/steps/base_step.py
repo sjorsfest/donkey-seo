@@ -6,9 +6,13 @@ from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
 import traceback
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.pipeline import StepExecution
+from app.models.brand import BrandProfile
+from app.models.pipeline import PipelineRun, StepExecution
+from app.models.project import Project
+from app.services.run_strategy import RunStrategy, resolve_run_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,7 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
         self.execution = execution
         self._checkpoint: dict[str, Any] | None = None
         self._should_stop: bool = False
+        self._run_strategy: RunStrategy | None = None
 
     async def run(self, input_data: InputT) -> StepResult[OutputT]:
         """Main execution method with error handling and progress tracking."""
@@ -183,3 +188,34 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
     def set_result_summary(self, summary: dict[str, Any]) -> None:
         """Set the result summary for the execution."""
         self.execution.result_summary = summary
+
+    async def get_run_strategy(self) -> RunStrategy:
+        """Resolve run-scoped strategy for the current pipeline execution."""
+        if self._run_strategy is not None:
+            return self._run_strategy
+
+        run_strategy_payload: dict[str, Any] | None = None
+        if self.execution.pipeline_run_id:
+            run_result = await self.session.execute(
+                select(PipelineRun).where(PipelineRun.id == self.execution.pipeline_run_id)
+            )
+            run = run_result.scalar_one_or_none()
+            if run and run.steps_config:
+                run_strategy_payload = run.steps_config.get("strategy")
+
+        brand_result = await self.session.execute(
+            select(BrandProfile).where(BrandProfile.project_id == self.project_id)
+        )
+        brand = brand_result.scalar_one_or_none()
+
+        project_result = await self.session.execute(
+            select(Project).where(Project.id == self.project_id)
+        )
+        project = project_result.scalar_one_or_none()
+
+        self._run_strategy = resolve_run_strategy(
+            strategy_payload=run_strategy_payload,
+            brand=brand,
+            primary_goal=project.primary_goal if project else None,
+        )
+        return self._run_strategy

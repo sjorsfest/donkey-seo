@@ -59,6 +59,16 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
     llm_timeout_seconds: int = 60
 
+    # Dynamic model selector (OpenRouter/Arena-driven)
+    model_selector_enabled: bool = False
+    model_selector_snapshot_path: str = "app/agents/model_selection_snapshot.json"
+    model_selector_max_price_dev: float = 0.0
+    model_selector_max_price_staging: float = 0.0
+    model_selector_max_price_prod: float = 0.0
+    model_selector_arena_weight: float = 0.25
+    model_selector_openrouter_weight: float = 0.75
+    model_selector_fallback_model: str = "openrouter:google/gemma-3-27b-it:free"
+
     # Per-tier model overrides (optional — override the built-in defaults below)
     dev_model_reasoning: str | None = None
     dev_model_standard: str | None = None
@@ -100,6 +110,15 @@ class Settings(BaseSettings):
         if isinstance(resolved, str):
             return resolved
         return self.default_llm_model
+
+    def get_model_selector_max_price(self, environment: str | None = None) -> float:
+        """Resolve model-selector max price for a target environment."""
+        target_environment = environment or self.environment
+        if target_environment == "development":
+            return self.model_selector_max_price_dev
+        if target_environment == "staging":
+            return self.model_selector_max_price_staging
+        return self.model_selector_max_price_prod
 
     # DataForSEO
     dataforseo_login: str | None = None

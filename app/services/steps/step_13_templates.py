@@ -4,6 +4,7 @@ Creates project-level style guide (once) + per-brief deltas (smaller).
 This approach reduces storage by ~80% and ensures consistency.
 """
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -163,107 +164,130 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 project_style_guide=style_guide_data,
             )
 
-        await self._update_progress(35, f"Generating deltas for {len(briefs)} briefs...")
+        # Step 3: Filter out briefs that already have deltas
+        existing_deltas_result = await self.session.execute(
+            select(BriefDelta.brief_id).where(
+                BriefDelta.brief_id.in_([b.id for b in briefs])
+            )
+        )
+        existing_brief_ids = set(existing_deltas_result.scalars())
+        briefs_to_process = [b for b in briefs if b.id not in existing_brief_ids]
 
-        # Step 3: Generate BriefDeltas for each brief
+        if not briefs_to_process:
+            logger.info("All briefs already have deltas, skipping LLM calls")
+            return TemplatesOutput(
+                style_guide_created=style_guide_created,
+                briefs_processed=len(briefs),
+                deltas_created=0,
+                project_style_guide=style_guide_data,
+            )
+
+        await self._update_progress(
+            35, f"Generating deltas for {len(briefs_to_process)} briefs in parallel..."
+        )
+
+        # Step 4: Run all LLM calls in parallel, then persist results
         delta_agent = BriefDeltaGeneratorAgent()
-        output_deltas = []
-        deltas_created = 0
 
-        for i, brief in enumerate(briefs):
-            progress = 35 + int((i / len(briefs)) * 60)
-            await self._update_progress(
-                progress,
-                f"Processing brief {i + 1}/{len(briefs)}: {brief.primary_keyword}"
+        async def _generate_delta(brief: ContentBrief) -> dict[str, Any]:
+            """Run a single LLM call for a brief delta."""
+            delta_input = BriefDeltaGeneratorInput(
+                brief_summary={
+                    "primary_keyword": brief.primary_keyword,
+                    "topic_name": brief.primary_keyword,
+                    "working_titles": brief.working_titles or [],
+                },
+                page_type=brief.page_type or "guide",
+                search_intent=brief.search_intent or "informational",
+                funnel_stage=brief.funnel_stage or "tofu",
             )
+            delta_output = await delta_agent.run(delta_input)
+            delta_result = delta_output.delta
+            return {
+                "brief_id": str(brief.id),
+                "page_type_rules": delta_result.page_type_rules,
+                "must_include_sections": delta_result.must_include_sections,
+                "h1_h2_usage": delta_result.h1_h2_usage,
+                "schema_type": delta_result.schema_type,
+                "additional_qa_items": [
+                    {"item": qa.item, "required": qa.required, "threshold": qa.threshold}
+                    for qa in delta_result.additional_qa_items
+                ],
+            }
 
-            # Check if delta already exists
-            existing_delta = await self.session.execute(
-                select(BriefDelta).where(BriefDelta.brief_id == brief.id)
-            )
-            if existing_delta.scalar_one_or_none():
-                continue  # Skip, already has delta
-
+        async def _generate_delta_safe(brief: ContentBrief) -> dict[str, Any]:
+            """Wrapper that returns a fallback on failure."""
             try:
-                # Generate delta with LLM
-                delta_input = BriefDeltaGeneratorInput(
-                    brief_summary={
-                        "primary_keyword": brief.primary_keyword,
-                        "topic_name": brief.primary_keyword,  # Use keyword as fallback
-                        "working_titles": brief.working_titles or [],
-                    },
-                    page_type=brief.page_type or "guide",
-                    search_intent=brief.search_intent or "informational",
-                    funnel_stage=brief.funnel_stage or "tofu",
-                )
-
-                delta_output = await delta_agent.run(delta_input)
-                delta_result = delta_output.delta
-
-                delta_data = {
-                    "brief_id": str(brief.id),
-                    "page_type_rules": delta_result.page_type_rules,
-                    "must_include_sections": delta_result.must_include_sections,
-                    "h1_h2_usage": delta_result.h1_h2_usage,
-                    "schema_type": delta_result.schema_type,
-                    "additional_qa_items": [
-                        {"item": qa.item, "required": qa.required, "threshold": qa.threshold}
-                        for qa in delta_result.additional_qa_items
-                    ],
-                }
-
-                output_deltas.append(delta_data)
-                deltas_created += 1
-
-                # Create BriefDelta record
-                BriefDelta.create(
-                    self.session,
-                    BriefDeltaCreateDTO(
-                        style_guide_id=style_guide.id,
-                        brief_id=brief.id,
-                        page_type_rules=delta_data["page_type_rules"],
-                        must_include_sections=delta_data["must_include_sections"],
-                        h1_h2_usage=delta_data["h1_h2_usage"],
-                        schema_type=delta_data["schema_type"],
-                        additional_qa_items=delta_data["additional_qa_items"],
-                    ),
-                )
-
-                # Also create WriterInstructions (legacy model)
-                WriterInstructions.create(
-                    self.session,
-                    WriterInstructionsCreateDTO(
-                        brief_id=brief.id,
-                        voice_tone_constraints=style_guide.voice_tone_constraints,
-                        forbidden_claims=style_guide.forbidden_claims,
-                        compliance_notes=style_guide.compliance_notes,
-                        formatting_requirements=style_guide.formatting_requirements,
-                        h1_h2_usage=delta_data["h1_h2_usage"],
-                        internal_linking_minimums={
-                            "min_internal": style_guide.default_internal_linking_min or 3,
-                            "min_external": style_guide.default_external_linking_min or 2,
-                        },
-                        schema_guidance=f"Use {delta_data['schema_type']} schema",
-                        qa_checklist=style_guide.base_qa_checklist,
-                        common_failure_modes=[
-                            {"mode": fm, "severity": "warning"}
-                            for fm in (style_guide.common_failure_modes or [])
-                        ],
-                    ),
-                )
-
+                return await _generate_delta(brief)
             except Exception:
-                logger.warning("Brief delta generation failed", extra={"brief_id": str(brief.id), "keyword": brief.primary_keyword})
-                # Fallback: create minimal delta
-                delta_data = {
+                logger.warning(
+                    "Brief delta generation failed",
+                    extra={"brief_id": str(brief.id), "keyword": brief.primary_keyword},
+                )
+                return {
                     "brief_id": str(brief.id),
                     "page_type_rules": {},
                     "must_include_sections": self._infer_sections(brief.page_type),
                     "h1_h2_usage": {"h1": "One per page", "h2": "Main sections"},
                     "schema_type": self._infer_schema(brief.page_type),
                     "additional_qa_items": [],
+                    "_fallback": True,
                 }
-                output_deltas.append(delta_data)
+
+        # Fire all LLM calls concurrently
+        delta_results = await asyncio.gather(
+            *[_generate_delta_safe(brief) for brief in briefs_to_process]
+        )
+
+        await self._update_progress(85, "Saving delta records...")
+
+        # Persist all results sequentially on the session
+        output_deltas = []
+        deltas_created = 0
+        brief_by_id = {str(b.id): b for b in briefs_to_process}
+
+        for delta_data in delta_results:
+            output_deltas.append(delta_data)
+            is_fallback = delta_data.pop("_fallback", False)
+            if not is_fallback:
+                deltas_created += 1
+
+            brief = brief_by_id[delta_data["brief_id"]]
+
+            BriefDelta.create(
+                self.session,
+                BriefDeltaCreateDTO(
+                    style_guide_id=style_guide.id,
+                    brief_id=brief.id,
+                    page_type_rules=delta_data["page_type_rules"],
+                    must_include_sections=delta_data["must_include_sections"],
+                    h1_h2_usage=delta_data["h1_h2_usage"],
+                    schema_type=delta_data["schema_type"],
+                    additional_qa_items=delta_data["additional_qa_items"],
+                ),
+            )
+
+            WriterInstructions.create(
+                self.session,
+                WriterInstructionsCreateDTO(
+                    brief_id=brief.id,
+                    voice_tone_constraints=style_guide.voice_tone_constraints,
+                    forbidden_claims=style_guide.forbidden_claims,
+                    compliance_notes=style_guide.compliance_notes,
+                    formatting_requirements=style_guide.formatting_requirements,
+                    h1_h2_usage=delta_data["h1_h2_usage"],
+                    internal_linking_minimums={
+                        "min_internal": style_guide.default_internal_linking_min or 3,
+                        "min_external": style_guide.default_external_linking_min or 2,
+                    },
+                    schema_guidance=f"Use {delta_data['schema_type']} schema",
+                    qa_checklist=style_guide.base_qa_checklist,
+                    common_failure_modes=[
+                        {"mode": fm, "severity": "warning"}
+                        for fm in (style_guide.common_failure_modes or [])
+                    ],
+                ),
+            )
 
         logger.info("Template generation complete", extra={"style_guide_created": style_guide_created, "briefs_processed": len(briefs), "deltas_created": deltas_created})
 

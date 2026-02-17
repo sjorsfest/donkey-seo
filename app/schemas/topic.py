@@ -49,6 +49,10 @@ class TopicResponse(BaseModel):
     priority_rank: int | None
     priority_score: float | None
     expected_role: str | None
+    fit_score: float | None
+    fit_tier: str | None
+    fit_reasons: list[str] | None
+    fit_threshold_used: float | None
 
     created_at: datetime
     updated_at: datetime

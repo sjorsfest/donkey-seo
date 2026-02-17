@@ -12,6 +12,7 @@ Keyword research backend service with a 14-step pipeline for programmatic conten
 - **Content brief generation** with writer instructions
 - **JWT authentication** for secure API access
 - **Configurable LLM providers** (OpenAI & Anthropic)
+- **Dynamic per-agent model selector** with max-price guardrails
 
 ## Tech Stack
 
@@ -146,10 +147,50 @@ DEFAULT_LLM_MODEL=openai:gpt-4-turbo
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 
+# Dynamic model selector (optional)
+MODEL_SELECTOR_ENABLED=false
+MODEL_SELECTOR_SNAPSHOT_PATH=app/agents/model_selection_snapshot.json
+# USD per 1M tokens
+MODEL_SELECTOR_MAX_PRICE_DEV=0
+MODEL_SELECTOR_MAX_PRICE_STAGING=0
+MODEL_SELECTOR_MAX_PRICE_PROD=0
+MODEL_SELECTOR_OPENROUTER_WEIGHT=0.75
+MODEL_SELECTOR_ARENA_WEIGHT=0.25
+MODEL_SELECTOR_FALLBACK_MODEL=openrouter:google/gemma-3-27b-it:free
+
 # DataForSEO
 DATAFORSEO_LOGIN=your-login
 DATAFORSEO_PASSWORD=your-password
 ```
+
+### Dynamic Model Selector
+
+Model selection is refreshed from OpenRouter rankings (primary) and Arena leaderboard signals (secondary bonus), then persisted to:
+
+- `app/agents/model_selection_snapshot.json` (durable snapshot)
+- Redis keys:
+  - `model_selector:snapshot:latest`
+  - `model_selector:selected:<environment>:<AgentClassName>`
+
+Run refresh manually:
+
+```bash
+uv run python scripts/refresh_model_selection.py --env development --env staging --env production
+```
+
+Mirror to Redis in the same run:
+
+```bash
+uv run python scripts/refresh_model_selection.py --env development --env staging --env production --write-redis
+```
+
+Dry run (fetch + score only):
+
+```bash
+uv run python scripts/refresh_model_selection.py --dry-run
+```
+
+Recommended operations setup: run `refresh_model_selection.py` daily (for example via CI scheduler or cron) and keep `MODEL_SELECTOR_ENABLED=false` until the snapshot quality looks good in development.
 
 ## Development
 
@@ -165,6 +206,9 @@ ty check app
 
 # Typed write guardrails (warning mode)
 python scripts/check_typed_writes.py
+
+# Refresh per-agent model selections
+make refresh-models
 
 # Linting
 ruff check app

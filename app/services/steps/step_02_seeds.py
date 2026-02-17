@@ -75,23 +75,36 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         brand = result.scalar_one()
+        strategy = await self.get_run_strategy()
         logger.info("Generating seed keywords", extra={"project_id": input_data.project_id, "company": brand.company_name})
 
         await self._update_progress(10, "Preparing brand context for seed keyword generation...")
+
+        in_scope_topics = self._dedupe_topics(
+            list(brand.in_scope_topics or []) + strategy.include_topics
+        )
+        out_of_scope_topics = self._dedupe_topics(
+            list(brand.out_of_scope_topics or []) + strategy.exclude_topics
+        )
+        offer_categories = self._extract_offer_categories(brand.products_services or [])
+        buyer_jobs = self._extract_buyer_jobs(brand)
 
         # Prepare agent input
         agent_input = TopicGeneratorInput(
             company_name=brand.company_name or "Company",
             products_services=brand.products_services or [],
+            offer_categories=offer_categories,
             target_audience={
-                "target_roles": brand.target_roles or [],
-                "target_industries": brand.target_industries or [],
-                "primary_pains": brand.primary_pains or [],
+                "target_roles": strategy.icp_roles or brand.target_roles or [],
+                "target_industries": strategy.icp_industries or brand.target_industries or [],
+                "primary_pains": strategy.icp_pains or brand.primary_pains or [],
                 "desired_outcomes": brand.desired_outcomes or [],
             },
+            buyer_jobs=buyer_jobs,
+            conversion_intents=strategy.conversion_intents,
             unique_value_props=brand.unique_value_props or [],
-            in_scope_topics=brand.in_scope_topics or [],
-            out_of_scope_topics=brand.out_of_scope_topics or [],
+            in_scope_topics=in_scope_topics,
+            out_of_scope_topics=out_of_scope_topics,
         )
 
         await self._update_progress(30, "Generating seed keywords...")
@@ -132,6 +145,38 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             seeds=seeds,
             known_gaps=output.known_gaps,
         )
+
+    def _dedupe_topics(self, topics: list[str]) -> list[str]:
+        """Deduplicate topic names case-insensitively."""
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for topic in topics:
+            cleaned = topic.strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(cleaned)
+        return deduped
+
+    def _extract_offer_categories(self, products_services: list[dict[str, Any]]) -> list[str]:
+        """Extract a compact set of offer categories from product/service records."""
+        categories: list[str] = []
+        for product in products_services:
+            category = (product.get("category") or "").strip()
+            if category:
+                categories.append(category)
+        return self._dedupe_topics(categories)
+
+    def _extract_buyer_jobs(self, brand: BrandProfile) -> list[str]:
+        """Build buyer jobs from pains/outcomes when explicit jobs are unavailable."""
+        jobs: list[str] = []
+        for pain in brand.primary_pains or []:
+            jobs.append(f"solve {pain}")
+        jobs.extend(brand.desired_outcomes or [])
+        return self._dedupe_topics(jobs)
 
     async def _validate_output(self, result: SeedsOutput, input_data: SeedsInput) -> None:
         """Ensure output can be consumed by Step 3."""

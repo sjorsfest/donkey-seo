@@ -1,8 +1,29 @@
 """Pipeline schemas."""
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+ScopeMode = Literal["strict", "balanced_adjacent", "broad_education"]
+BrandedKeywordMode = Literal["comparisons_only", "exclude_all", "allow_all"]
+FitThresholdProfile = Literal["aggressive", "moderate", "lenient"]
+
+
+class PipelineRunStrategy(BaseModel):
+    """Run-scoped strategy overrides for product/ICP fit."""
+
+    conversion_intents: list[str] = Field(default_factory=list)
+    scope_mode: ScopeMode = "balanced_adjacent"
+    branded_keyword_mode: BrandedKeywordMode = "comparisons_only"
+    fit_threshold_profile: FitThresholdProfile = "aggressive"
+    include_topics: list[str] = Field(default_factory=list)
+    exclude_topics: list[str] = Field(default_factory=list)
+    icp_roles: list[str] = Field(default_factory=list)
+    icp_industries: list[str] = Field(default_factory=list)
+    icp_pains: list[str] = Field(default_factory=list)
+    min_eligible_target: int | None = Field(default=None, ge=1, le=100)
 
 
 class PipelineStartRequest(BaseModel):
@@ -11,6 +32,7 @@ class PipelineStartRequest(BaseModel):
     start_step: int = 0
     end_step: int | None = None
     skip_steps: list[int] | None = None
+    strategy: PipelineRunStrategy | None = None
 
 
 class StepExecutionResponse(BaseModel):

@@ -13,20 +13,43 @@ class TopicPrioritization(BaseModel):
     """Prioritization result for a single topic."""
 
     topic_index: int
+
+    # Qualitative scores from LLM (0-1 scale)
+    llm_business_alignment: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Semantic business relevance: how well this topic relates to the brand's products, services, and goals (0.0-1.0)",
+    )
+    llm_business_alignment_rationale: str = Field(
+        description="Short explanation of why this business alignment score was given",
+    )
+    llm_authority_value: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Authority building value: how well this topic contributes to topical authority in context of the full cluster (0.0-1.0)",
+    )
+    llm_authority_value_rationale: str = Field(
+        description="Short explanation of why this authority value score was given",
+    )
+
+    # Role and content type
     expected_role: str = Field(
         description="quick_win, authority_builder, or revenue_driver"
     )
     recommended_url_type: str = Field(
         description="blog, comparison, landing, resource, or tool"
     )
+    recommended_publish_order: int = Field(
+        description="Suggested publishing sequence (1=first) for optimal authority building",
+    )
+
+    # Linking
     target_money_pages: list[str] = Field(
         default_factory=list,
         description="Money pages this topic should link to",
     )
-    score_adjustments: dict = Field(
-        default_factory=dict,
-        description="Suggested adjustments to calculated scores with reasons",
-    )
+
+    # Notes
     validation_notes: str = Field(
         default="",
         description="Any concerns about the scoring or prioritization",
@@ -56,10 +79,10 @@ class PrioritizationAgent(BaseAgent[PrioritizationAgentInput, PrioritizationAgen
     """Agent for validating and enhancing topic prioritization.
 
     Used in Step 7 after initial scoring to:
-    - Validate that scoring makes sense for the brand's goals
+    - Evaluate qualitative factors (business alignment, authority value)
     - Assign expected roles (quick_win, authority_builder, revenue_driver)
     - Recommend money page linking targets
-    - Flag topics that need SERP validation
+    - Suggest optimal publishing order for authority building
     """
 
     model_tier = "standard"
@@ -67,36 +90,46 @@ class PrioritizationAgent(BaseAgent[PrioritizationAgentInput, PrioritizationAgen
 
     @property
     def system_prompt(self) -> str:
-        return """You are a content prioritization strategist. Given scored topic clusters:
+        return """You are a content prioritization strategist. Given scored topic clusters, evaluate each topic and provide qualitative assessments.
 
-1. **Assign Expected Roles**:
+1. **Score Business Alignment (llm_business_alignment)**: 0.0-1.0
+   - Assess how semantically relevant this topic is to the brand's products, services, and goals
+   - Go beyond keyword matching — understand conceptual relevance
+   - Consider: Does this topic naturally lead to the brand's solutions? Would searchers be good customers?
+   - Consider the brand's positioning, value props, and target audience
+   - Provide a short rationale explaining your score
+
+2. **Score Authority Building Value (llm_authority_value)**: 0.0-1.0
+   - Assess how well this topic contributes to topical authority in context of the full cluster
+   - Consider: Is this foundational content that establishes expertise? Does it connect sub-topics (hub value)? Does it demonstrate depth? Is it unique vs overlapping?
+   - Provide a short rationale explaining your score
+
+3. **Assign Expected Roles**:
    - quick_win: Low difficulty (<35), decent volume (>200/mo), can rank within 2-3 months
    - authority_builder: Foundational content for topical authority, may not drive traffic directly
    - revenue_driver: High commercial intent, directly ties to conversion/money pages
 
-2. **Recommend URL Types**:
+4. **Recommend URL Types**:
    - blog: Informational content, how-to guides, educational pieces
    - comparison: X vs Y comparisons, alternatives, reviews
    - landing: Product/service pages, commercial intent
    - resource: Tools, templates, calculators, downloadables
    - tool: Interactive tools, calculators
 
-3. **Money Page Linking**:
-   - Identify which money pages (pricing, product, demo) each topic should link to
-   - Consider the funnel stage and reader intent
-   - TOFU content → awareness pages, resources
-   - MOFU content → comparison, pricing pages
-   - BOFU content → demo, pricing, product pages
+5. **Suggest Publishing Order (recommended_publish_order)**:
+   - Assign a sequence (1, 2, 3, ...) considering authority building:
+     * Foundational/broad topics first (establish expertise)
+     * Specific/detailed topics later (reference foundational content)
+     * Quick wins can be sprinkled throughout
+   - This is about optimal sequencing, not priority score
 
-4. **Score Validation**:
-   - Flag if calculated scores seem misaligned with business goals
-   - Suggest adjustments if priority seems off
-   - Consider: Is a high-volume TOFU keyword more valuable than a low-volume BOFU keyword?
+6. **Money Page Linking**:
+   - Match topics to money pages based on funnel stage and intent:
+     * TOFU → awareness pages, resources
+     * MOFU → comparison, pricing pages
+     * BOFU → demo, pricing, product pages
 
-5. **Strategy Notes**:
-   - Provide high-level recommendations
-   - Identify any gaps in the topic backlog
-   - Flag potential quick wins that could be prioritized
+7. **Validation Notes**: Flag any concerns about the prioritization
 
 Be practical and actionable. Focus on business impact, not just SEO metrics."""
 
@@ -154,11 +187,13 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
 Topics (sorted by calculated priority score):
 {chr(10).join(topics_text)}
 
-For each topic, provide:
-1. Expected role (quick_win / authority_builder / revenue_driver)
-2. Recommended URL type (blog / comparison / landing / resource / tool)
-3. Target money pages to link to
-4. Any score adjustments with reasons
-5. Validation notes if the prioritization seems off
+For EACH topic, provide:
+1. llm_business_alignment (0.0-1.0) + rationale
+2. llm_authority_value (0.0-1.0) + rationale
+3. Expected role (quick_win / authority_builder / revenue_driver)
+4. Recommended URL type (blog / comparison / landing / resource / tool)
+5. Recommended publish order (1, 2, 3, ... for authority building sequence)
+6. Target money pages to link to
+7. Validation notes if the prioritization seems off
 
-Also provide overall strategy notes for the content backlog."""
+Also provide overall_strategy_notes for the content backlog."""

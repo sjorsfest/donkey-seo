@@ -85,6 +85,10 @@ class BriefGeneratorInput(BaseModel):
         default_factory=list,
         description="Money page URLs to link to",
     )
+    conversion_intents: list[str] = Field(
+        default_factory=list,
+        description="Project conversion intents to align CTAs and narrative",
+    )
 
 
 class BriefGeneratorOutput(BaseModel):
@@ -114,6 +118,20 @@ class BriefGeneratorAgent(BaseAgent[BriefGeneratorInput, BriefGeneratorOutput]):
 
 Given a topic cluster and brand context, generate a comprehensive brief that a writer can execute without additional research.
 
+## Brand Alignment Rules (CRITICAL)
+
+1. **Only reference real capabilities.** Only mention integrations, features, and capabilities that are explicitly described in the Brand Context. Never invent, assume, or imply integrations or features that are not listed. If the brand context says the product integrates with Slack, Discord, and Telegram — those are the ONLY integrations you may reference.
+
+2. **Write for the brand's ICP.** The target audience in your brief must align with the roles, industries, company sizes, and pain points described in the Brand Context. If the topic's natural audience differs from the ICP, angle the content to connect with the ICP rather than the generic audience.
+
+3. **Respect topic boundaries.** If the topic is outside the brand's in-scope topics or overlaps with out-of-scope topics, position the content as educational/thought-leadership. Do NOT force a product connection or claim the brand solves problems it doesn't address.
+
+4. **Never make restricted claims.** If the Brand Context lists restricted claims, do not include them in titles, outlines, examples, or any part of the brief.
+
+5. **Use the brand's differentiators.** When positioning the brand against alternatives or competitors, emphasize the specific differentiators listed in the Brand Context.
+
+6. **Handle weak-fit topics gracefully.** If a topic has low relevance to the brand's actual product, create genuinely useful educational content for the target audience. Mention the brand only where a natural, honest connection exists — e.g., as one option in a comparison, or in a CTA at the end.
+
 ## Brief Requirements
 
 ### 1. Title Options (3-5)
@@ -130,7 +148,7 @@ Create a detailed H2/H3 structure with:
 - Logical flow that matches reader expectations
 
 ### 3. Content Specifications
-- Target audience description
+- Target audience description (must align with the ICP from Brand Context)
 - Reader's job to be done (what they want to accomplish)
 - Specific examples/case studies needed
 - FAQ questions (from People Also Ask or inferred)
@@ -165,6 +183,7 @@ Be specific and actionable. The writer should know exactly what to create."""
                 "primary_keyword": input_data.primary_keyword,
                 "page_type": input_data.page_type,
                 "funnel_stage": input_data.funnel_stage,
+                "conversion_intents_count": len(input_data.conversion_intents),
                 "supporting_keywords_count": len(input_data.supporting_keywords),
             },
         )
@@ -179,6 +198,10 @@ Be specific and actionable. The writer should know exactly what to create."""
 
         # Format money pages
         money_pages = "\n".join(f"  - {mp}" for mp in input_data.money_pages[:5]) if input_data.money_pages else "  None specified"
+        conversion_intents = (
+            ", ".join(input_data.conversion_intents[:8])
+            if input_data.conversion_intents else "Not specified"
+        )
 
         return f"""Generate a comprehensive content brief for this topic:
 
@@ -201,6 +224,9 @@ Be specific and actionable. The writer should know exactly what to create."""
 
 ## Money Pages to Link To
 {money_pages}
+
+## Conversion Intents
+{conversion_intents}
 
 ---
 

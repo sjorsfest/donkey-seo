@@ -21,3 +21,6 @@ generate-dtos:
 
 check-typed-writes:
 	@uv run python scripts/check_typed_writes.py
+
+refresh-models:
+	@uv run python scripts/refresh_model_selection.py --env development --env staging --env production

@@ -89,7 +89,8 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         brand = brand_result.scalar_one_or_none()
-        brand_context = (brand.company_name or "") if brand else ""
+        strategy = await self.get_run_strategy()
+        brand_context = self._build_clustering_context(brand, strategy)
 
         await self._update_progress(5, "Loading keywords with intent...")
 
@@ -168,6 +169,29 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             clusters=valid_clusters,
             unclustered_keywords=[kw.keyword for kw in unclustered],
         )
+
+    def _build_clustering_context(self, brand: BrandProfile | None, strategy: Any) -> str:
+        """Build richer context so cluster naming stays aligned with project strategy."""
+        parts: list[str] = []
+        if brand and brand.company_name:
+            parts.append(f"Company: {brand.company_name}")
+        if brand and brand.products_services:
+            products = [p.get("name", "") for p in brand.products_services[:5] if p.get("name")]
+            if products:
+                parts.append(f"Products/Services: {', '.join(products)}")
+        if strategy.icp_roles:
+            parts.append(f"ICP Roles: {', '.join(strategy.icp_roles[:8])}")
+        if strategy.icp_industries:
+            parts.append(f"ICP Industries: {', '.join(strategy.icp_industries[:8])}")
+        if strategy.icp_pains:
+            parts.append(f"ICP Pains: {', '.join(strategy.icp_pains[:8])}")
+        if strategy.include_topics:
+            parts.append(f"In Scope Topics: {', '.join(strategy.include_topics[:12])}")
+        if strategy.exclude_topics:
+            parts.append(f"Out of Scope Topics: {', '.join(strategy.exclude_topics[:12])}")
+        if strategy.conversion_intents:
+            parts.append(f"Conversion Intents: {', '.join(strategy.conversion_intents[:8])}")
+        return "\n".join(parts)
 
     async def _validate_output(self, result: ClusteringOutput, input_data: ClusteringInput) -> None:
         """Ensure output can be consumed by Step 7."""
@@ -583,6 +607,9 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                 cluster_notes=notes or None,
             )
             topic = Topic.create(self.session, topic_data)
+            # `Topic.id` is generated on flush; flush before FK assignment so
+            # keyword -> topic links are persisted correctly.
+            await self.session.flush()
 
             # Update keywords to reference this topic
             for kw in keywords:

@@ -103,3 +103,43 @@ class Topic(TypedModelMixin[TopicCreateDTO, TopicPatchDTO], Base, UUIDMixin, Tim
 
     def __repr__(self) -> str:
         return f"<Topic {self.name}>"
+
+    @property
+    def fit_score(self) -> float | None:
+        """Convenience accessor for fit score stored in priority_factors."""
+        if not self.priority_factors:
+            return None
+        value = self.priority_factors.get("fit_score")
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def fit_tier(self) -> str | None:
+        """Convenience accessor for fit tier stored in priority_factors."""
+        if not self.priority_factors:
+            return None
+        value = self.priority_factors.get("fit_tier")
+        return value if isinstance(value, str) else None
+
+    @property
+    def fit_reasons(self) -> list[str] | None:
+        """Convenience accessor for fit reasons stored in priority_factors."""
+        if not self.priority_factors:
+            return None
+        value = self.priority_factors.get("fit_reasons")
+        if isinstance(value, list):
+            return [str(v) for v in value]
+        return None
+
+    @property
+    def fit_threshold_used(self) -> float | None:
+        """Convenience accessor for the threshold applied during fit gating."""
+        if not self.priority_factors:
+            return None
+        value = self.priority_factors.get("fit_threshold_used")
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None

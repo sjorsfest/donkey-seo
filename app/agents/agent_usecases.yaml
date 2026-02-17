@@ -1,0 +1,40 @@
+agents:
+  BrandExtractorAgent:
+    use_case: reasoning / extraction / analysis
+    openrouter_category: marketing/seo
+    arena_use_case_slug: reasoning
+
+  TopicGeneratorAgent:
+    use_case: brainstorming / SEO ideation
+    openrouter_category: marketing/seo
+    arena_use_case_slug: creative_writing
+
+  IntentClassifierAgent:
+    use_case: classification
+    openrouter_category: marketing/seo
+    arena_use_case_slug: classification
+
+  ClusterAgent:
+    use_case: clustering validation / reasoning-lite
+    openrouter_category: marketing/seo
+    arena_use_case_slug: reasoning
+
+  PrioritizationAgent:
+    use_case: ranking / prioritization reasoning
+    openrouter_category: marketing/seo
+    arena_use_case_slug: reasoning
+
+  BriefGeneratorAgent:
+    use_case: long-form content planning
+    openrouter_category: marketing/seo
+    arena_use_case_slug: creative_writing
+
+  StyleGuideGeneratorAgent:
+    use_case: policy / instruction generation
+    openrouter_category: marketing/seo
+    arena_use_case_slug: tool_use
+
+  BriefDeltaGeneratorAgent:
+    use_case: lightweight templating
+    openrouter_category: marketing/seo
+    arena_use_case_slug: tool_use

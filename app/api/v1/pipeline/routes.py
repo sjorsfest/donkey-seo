@@ -57,6 +57,7 @@ async def start_pipeline(
             "project_id": project_id_str,
             "start_step": request.start_step,
             "end_step": request.end_step,
+            "has_strategy": request.strategy is not None,
         },
     )
 
@@ -77,6 +78,8 @@ async def start_pipeline(
     end_step = request.end_step or 13
     skip_steps = request.skip_steps or project.skip_steps or []
 
+    strategy_payload = request.strategy.model_dump() if request.strategy else None
+
     pipeline_run = PipelineRun.create(
         session,
         PipelineRunCreateDTO(
@@ -89,6 +92,7 @@ async def start_pipeline(
                 "start": request.start_step,
                 "end": end_step,
                 "skip": skip_steps,
+                "strategy": strategy_payload,
             },
         ),
     )
@@ -231,20 +235,22 @@ async def pause_pipeline(
     return {"message": "Pipeline paused"}
 
 
-@router.post("/{project_id}/resume", status_code=status.HTTP_200_OK)
+@router.post("/{project_id}/resume/{run_id}", status_code=status.HTTP_200_OK)
 async def resume_pipeline(
     project_id: uuid.UUID,
+    run_id: uuid.UUID,
     current_user: CurrentUser,
     session: DbSession,
     background_tasks: BackgroundTasks,
 ) -> dict[str, str]:
-    """Resume a paused pipeline."""
+    """Resume a paused pipeline run."""
     await get_user_project(project_id, current_user, session)
 
-    logger.info("Pipeline resume requested", extra={"project_id": str(project_id)})
+    logger.info("Pipeline resume requested", extra={"project_id": str(project_id), "run_id": str(run_id)})
 
     result = await session.execute(
         select(PipelineRun).where(
+            PipelineRun.id == run_id,
             PipelineRun.project_id == project_id,
             PipelineRun.status == "paused",
         )
@@ -257,11 +263,8 @@ async def resume_pipeline(
             detail=NO_PAUSED_PIPELINE_DETAIL,
         )
 
-    pipeline_run.status = "running"
-    await session.flush()
-    # Commit before launching long-running background work so the request
-    # session does not hold an open transaction for the entire pipeline run.
-    await session.commit()
+    # Don't change status here — the orchestrator handles the paused→running
+    # transition in its own session to avoid a race condition.
 
     background_tasks.add_task(
         resume_pipeline_background,

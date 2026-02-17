@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from sqlalchemy.exc import InterfaceError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -41,6 +42,10 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+        except InterfaceError:
+            # Connection closed server-side (e.g. during long background tasks).
+            # If the caller already committed, this is harmless.
+            logger.debug("Session connection already closed during cleanup, ignoring")
         except Exception as e:
             logger.warning(f"Database session error: {repr(e)}, rolling back")
             try:
@@ -57,6 +62,8 @@ async def get_session_context() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+        except InterfaceError:
+            logger.debug("Session connection already closed during cleanup, ignoring")
         except Exception as e:
             logger.warning(f"Database session error: {repr(e)}, rolling back")
             try:

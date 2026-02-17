@@ -2,9 +2,10 @@
 
 import logging
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.dependencies import get_user_project
@@ -41,21 +42,25 @@ async def list_topics(
     session: DbSession,
     page: int = Query(DEFAULT_PAGE, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    eligibility: Literal["all", "primary", "secondary", "excluded"] = Query("all"),
 ) -> TopicListResponse:
     """List topics for a project."""
     await get_user_project(project_id, current_user, session)
 
-    count_query = select(func.count()).select_from(Topic).where(Topic.project_id == project_id)
+    fit_tier_expr = Topic.priority_factors["fit_tier"].astext
+    query = select(Topic).where(Topic.project_id == project_id)
+    if eligibility == "primary":
+        query = query.where(fit_tier_expr == "primary")
+    elif eligibility == "secondary":
+        query = query.where(fit_tier_expr == "secondary")
+    elif eligibility == "excluded":
+        query = query.where(or_(fit_tier_expr == "excluded", Topic.priority_rank.is_(None)))
+
+    count_query = select(func.count()).select_from(query.subquery())
     total = await session.scalar(count_query) or 0
 
     offset = (page - 1) * page_size
-    query = (
-        select(Topic)
-        .where(Topic.project_id == project_id)
-        .order_by(Topic.priority_rank.asc().nulls_last())
-        .offset(offset)
-        .limit(page_size)
-    )
+    query = query.order_by(Topic.priority_rank.asc().nulls_last()).offset(offset).limit(page_size)
     result = await session.execute(query)
     topics = result.scalars().all()
 

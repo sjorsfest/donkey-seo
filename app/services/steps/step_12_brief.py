@@ -92,6 +92,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             select(Project).where(Project.id == input_data.project_id)
         )
         project = result.scalar_one()
+        strategy = await self.get_run_strategy()
 
         brand_result = await self.session.execute(
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
@@ -119,9 +120,19 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             )
 
         all_topics = list(topics_result.scalars())[:input_data.max_briefs]
-        logger.info("Brief generation starting", extra={"project_id": input_data.project_id, "topic_count": len(all_topics)})
+        eligible_topics = [topic for topic in all_topics if self._is_topic_eligible(topic)]
+        skipped_ineligible = len(all_topics) - len(eligible_topics)
+        logger.info(
+            "Brief generation starting",
+            extra={
+                "project_id": input_data.project_id,
+                "topic_count": len(all_topics),
+                "eligible_topics": len(eligible_topics),
+                "skipped_ineligible": skipped_ineligible,
+            },
+        )
 
-        if not all_topics:
+        if not eligible_topics:
             return BriefOutput(
                 briefs_generated=0,
                 briefs_with_warnings=0,
@@ -137,18 +148,18 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         # Load existing URLs for collision check (if Step 9 ran)
         existing_urls = await self._load_existing_urls(input_data.project_id)
 
-        await self._update_progress(10, f"Generating {len(all_topics)} briefs...")
+        await self._update_progress(10, f"Generating {len(eligible_topics)} briefs...")
 
         # Generate briefs
         agent = BriefGeneratorAgent()
         output_briefs = []
         briefs_with_warnings = 0
 
-        for i, topic in enumerate(all_topics):
-            progress = 10 + int((i / len(all_topics)) * 85)
+        for i, topic in enumerate(eligible_topics):
+            progress = 10 + int((i / len(eligible_topics)) * 85)
             await self._update_progress(
                 progress,
-                f"Generating brief {i + 1}/{len(all_topics)}: {topic.name}"
+                f"Generating brief {i + 1}/{len(eligible_topics)}: {topic.name}"
             )
 
             # Load keywords for this topic
@@ -205,6 +216,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     funnel_stage=topic.funnel_stage or "tofu",
                     brand_context=brand_context,
                     money_pages=topic.target_money_pages or money_pages[:3],
+                    conversion_intents=strategy.conversion_intents,
                 )
 
                 output = await agent.run(agent_input)
@@ -288,7 +300,14 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 })
                 briefs_with_warnings += 1
 
-        logger.info("Brief generation complete", extra={"briefs_generated": len(output_briefs), "with_warnings": briefs_with_warnings})
+        logger.info(
+            "Brief generation complete",
+            extra={
+                "briefs_generated": len(output_briefs),
+                "with_warnings": briefs_with_warnings,
+                "skipped_ineligible_topics": skipped_ineligible,
+            },
+        )
 
         await self._update_progress(100, "Brief generation complete")
 
@@ -297,6 +316,14 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             briefs_with_warnings=briefs_with_warnings,
             briefs=output_briefs,
         )
+
+    def _is_topic_eligible(self, topic: Topic) -> bool:
+        """Only generate briefs for primary/secondary fit tiers."""
+        factors = topic.priority_factors or {}
+        fit_tier = factors.get("fit_tier")
+        if fit_tier is None:
+            return topic.priority_rank is not None
+        return fit_tier in {"primary", "secondary"}
 
     async def _validate_output(self, result: BriefOutput, input_data: BriefInput) -> None:
         """Ensure output can be consumed by Step 13."""
@@ -315,13 +342,50 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             parts.append(f"Company: {brand.company_name}")
         if brand.tagline:
             parts.append(f"Tagline: {brand.tagline}")
+
+        # Full product details so the LLM knows what the brand actually does
         if brand.products_services:
-            products = [p.get("name", "") for p in brand.products_services[:5]]
-            parts.append(f"Products/Services: {', '.join(products)}")
+            for p in brand.products_services[:5]:
+                name = p.get("name", "")
+                desc = p.get("description", "")
+                benefits = p.get("core_benefits", [])
+                audience = p.get("target_audience", "")
+                product_parts = [f"  - Name: {name}"]
+                if desc:
+                    product_parts.append(f"    Description: {desc}")
+                if benefits:
+                    product_parts.append(f"    Core Benefits: {', '.join(benefits[:6])}")
+                if audience:
+                    product_parts.append(f"    Target Audience: {audience}")
+                parts.append("Product:\n" + "\n".join(product_parts))
+
         if brand.unique_value_props:
-            parts.append(f"Value Props: {', '.join(brand.unique_value_props[:3])}")
+            parts.append(f"Value Props: {', '.join(brand.unique_value_props[:5])}")
+        if brand.differentiators:
+            parts.append(f"Differentiators: {', '.join(brand.differentiators[:5])}")
+
+        # ICP data so briefs target the right audience
+        if brand.target_roles:
+            parts.append(f"Target Roles: {', '.join(brand.target_roles[:5])}")
+        if brand.target_industries:
+            parts.append(f"Target Industries: {', '.join(brand.target_industries[:5])}")
+        if brand.company_sizes:
+            parts.append(f"Company Sizes: {', '.join(brand.company_sizes[:5])}")
+        if brand.primary_pains:
+            parts.append(f"Primary Pains: {', '.join(brand.primary_pains[:5])}")
+
+        # Topic boundaries
+        if brand.in_scope_topics:
+            parts.append(f"In-Scope Topics: {', '.join(brand.in_scope_topics[:10])}")
+        if brand.out_of_scope_topics:
+            parts.append(f"Out-of-Scope Topics: {', '.join(brand.out_of_scope_topics[:10])}")
+
+        # Claim guardrails
+        if brand.restricted_claims:
+            parts.append(f"Restricted Claims (DO NOT make these): {', '.join(brand.restricted_claims[:5])}")
+
         if brand.tone_attributes:
-            parts.append(f"Tone: {', '.join(brand.tone_attributes[:3])}")
+            parts.append(f"Tone: {', '.join(brand.tone_attributes[:5])}")
 
         return "\n".join(parts)
 
