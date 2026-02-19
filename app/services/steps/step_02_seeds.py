@@ -3,7 +3,9 @@
 Generates 20-50 seed keywords organized into buckets based on brand profile.
 """
 
+import itertools
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +16,11 @@ from app.models.brand import BrandProfile
 from app.models.generated_dtos import SeedTopicCreateDTO
 from app.models.keyword import SeedTopic
 from app.models.project import Project
+from app.services.market_diagnosis import (
+    collect_known_entities,
+    diagnose_market_mode,
+)
+from app.services.discovery_capabilities import CAPABILITY_SEED_GENERATION
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -35,6 +42,7 @@ class SeedsOutput:
     buckets: list[dict[str, Any]]
     seeds: list[dict[str, Any]]
     known_gaps: list[str]
+    market_mode: str
 
 
 class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
@@ -46,7 +54,27 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
 
     step_number = 2
     step_name = "seed_keywords"
+    capability_key = CAPABILITY_SEED_GENERATION
     is_optional = False
+    MAX_SEED_WORDS = 4
+    MAX_WORKFLOW_ENTITIES = 4
+    MAX_WORKFLOW_SYNTHETIC_SEEDS = 24
+    WORKFLOW_ENTITY_STOPWORDS = {
+        "best",
+        "cheap",
+        "affordable",
+        "free",
+        "support",
+        "customer",
+        "service",
+        "services",
+        "software",
+        "tool",
+        "tools",
+        "platform",
+        "system",
+        "systems",
+    }
 
     async def _validate_preconditions(self, input_data: SeedsInput) -> None:
         """Validate Step 1 is completed."""
@@ -88,6 +116,17 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
         )
         offer_categories = self._extract_offer_categories(brand.products_services or [])
         buyer_jobs = self._extract_buyer_jobs(brand)
+        diagnosis = diagnose_market_mode(
+            source="step2_initial",
+            override=getattr(strategy, "market_mode_override", "auto"),
+            seed_terms=in_scope_topics + offer_categories + buyer_jobs,
+        )
+        await self.set_market_diagnosis(diagnosis.to_dict())
+        market_mode = diagnosis.mode
+        learning_context = await self.build_learning_context(
+            self.capability_key,
+            "TopicGeneratorAgent",
+        )
 
         # Prepare agent input
         agent_input = TopicGeneratorInput(
@@ -105,6 +144,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             unique_value_props=brand.unique_value_props or [],
             in_scope_topics=in_scope_topics,
             out_of_scope_topics=out_of_scope_topics,
+            learning_context=learning_context,
         )
 
         await self._update_progress(30, "Generating seed keywords...")
@@ -135,6 +175,24 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             }
             for s in output.seed_keywords
         ]
+        seeds = self._sanitize_seed_candidates(
+            seeds=seeds,
+            out_of_scope_topics=out_of_scope_topics,
+        )
+
+        # Add workflow expansion only for explicitly fragmented markets.
+        # Mixed markets are already broad and tend to drift when synthetic combinations dominate.
+        if market_mode == "fragmented_workflow":
+            buckets, seeds = self._union_workflow_seed_expansion(
+                brand=brand,
+                strategy=strategy,
+                buckets=buckets,
+                seeds=seeds,
+            )
+            seeds = self._sanitize_seed_candidates(
+                seeds=seeds,
+                out_of_scope_topics=out_of_scope_topics,
+            )
 
         await self._update_progress(100, "Seed keyword generation complete")
 
@@ -144,6 +202,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             buckets=buckets,
             seeds=seeds,
             known_gaps=output.known_gaps,
+            market_mode=market_mode,
         )
 
     def _dedupe_topics(self, topics: list[str]) -> list[str]:
@@ -227,6 +286,176 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             "seeds_created": result.seeds_created,
             "known_gaps_count": len(result.known_gaps),
             "bucket_names": [b["name"] for b in result.buckets],
+            "market_mode": result.market_mode,
         })
 
         await self.session.commit()
+
+    def _union_workflow_seed_expansion(
+        self,
+        *,
+        brand: BrandProfile,
+        strategy: Any,
+        buckets: list[dict[str, Any]],
+        seeds: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Union workflow/integration/replacement seed patterns without removing existing seeds."""
+        workflow_bucket_name = "Workflow Integrations"
+        if workflow_bucket_name not in {bucket.get("name") for bucket in buckets}:
+            buckets.append({
+                "name": workflow_bucket_name,
+                "description": "Integration, automation, workflow, and replacement intent seeds",
+                "icp_relevance": "Captures fragmented workflow demand and conversion-ready queries",
+                "product_tie_in": "Bridges product capabilities to real implementation workflows",
+            })
+
+        known_entities = self._workflow_entities(
+            brand=brand,
+            include_topics=list(getattr(strategy, "include_topics", [])),
+        )
+        incumbents = self._extract_incumbents(brand)
+        generated_keywords: list[str] = []
+
+        # Verb/workflow seeds.
+        for verb in [
+            "connect",
+            "integrate",
+            "sync",
+            "send",
+            "forward",
+            "route",
+            "webhook",
+            "automate",
+            "notify",
+            "import",
+            "export",
+        ]:
+            if known_entities:
+                for entity in known_entities[: self.MAX_WORKFLOW_ENTITIES]:
+                    generated_keywords.append(f"{verb} {entity}")
+            else:
+                generated_keywords.append(verb)
+
+        # Entity-pair seeds.
+        for entity_a, entity_b in itertools.combinations(known_entities[: self.MAX_WORKFLOW_ENTITIES], 2):
+            generated_keywords.extend([
+                f"{entity_a} to {entity_b}",
+                f"{entity_a} integration {entity_b}",
+            ])
+
+        # Replacement and comparison seeds.
+        for incumbent in incumbents[:6]:
+            generated_keywords.extend([
+                f"{incumbent} alternative",
+                f"replace {incumbent}",
+                f"{incumbent} without code",
+                f"{incumbent} without agents",
+            ])
+
+        # Adjacent automation seeds.
+        generated_keywords.extend([
+            "notification automation",
+            "workflow automation",
+            "api integration",
+            "webhook automation",
+            "integration bot",
+        ])
+
+        existing_keywords = {str(seed.get("keyword", "")).strip().lower() for seed in seeds}
+        added_count = 0
+        for keyword in generated_keywords:
+            cleaned = re.sub(r"\s+", " ", keyword.strip())
+            normalized = cleaned.lower()
+            if (
+                not cleaned
+                or normalized in existing_keywords
+                or not self._is_seed_keyword_shape(cleaned)
+            ):
+                continue
+            existing_keywords.add(normalized)
+            seeds.append({
+                "keyword": cleaned,
+                "bucket_name": workflow_bucket_name,
+                "relevance_score": 0.62,
+            })
+            added_count += 1
+            if added_count >= self.MAX_WORKFLOW_SYNTHETIC_SEEDS:
+                break
+
+        return buckets, seeds
+
+    def _extract_incumbents(self, brand: BrandProfile) -> list[str]:
+        """Extract incumbent competitor terms for replacement seeds."""
+        incumbents: list[str] = []
+        for competitor in brand.competitor_positioning or []:
+            name = (competitor.get("name") or competitor.get("brand") or "").strip().lower()
+            if name:
+                incumbents.append(name)
+        return self._dedupe_topics(incumbents)
+
+    def _sanitize_seed_candidates(
+        self,
+        *,
+        seeds: list[dict[str, Any]],
+        out_of_scope_topics: list[str],
+    ) -> list[dict[str, Any]]:
+        """Enforce deterministic seed quality and remove obvious drift seeds."""
+        sanitized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        out_of_scope = {
+            re.sub(r"\s+", " ", topic.strip().lower())
+            for topic in out_of_scope_topics
+            if topic and topic.strip()
+        }
+
+        for seed in seeds:
+            keyword = re.sub(r"\s+", " ", str(seed.get("keyword") or "").strip())
+            normalized = keyword.lower()
+            if (
+                not keyword
+                or normalized in seen
+                or not self._is_seed_keyword_shape(keyword)
+            ):
+                continue
+            if any(exclusion in normalized for exclusion in out_of_scope):
+                continue
+            seen.add(normalized)
+            sanitized.append({
+                "keyword": keyword,
+                "bucket_name": str(seed.get("bucket_name") or "General"),
+                "relevance_score": float(seed.get("relevance_score") or 0.5),
+            })
+        return sanitized
+
+    def _is_seed_keyword_shape(self, keyword: str) -> bool:
+        """Return True when a seed keyword matches shape constraints."""
+        words = [w for w in keyword.split() if w]
+        if not words or len(words) > self.MAX_SEED_WORDS:
+            return False
+        if keyword.count("?") > 0:
+            return False
+        if re.search(r"\b(lorem ipsum|test keyword|dummy)\b", keyword.lower()):
+            return False
+        return True
+
+    def _workflow_entities(
+        self,
+        *,
+        brand: BrandProfile,
+        include_topics: list[str],
+    ) -> list[str]:
+        """Collect compact entities for workflow seed generation."""
+        entities = collect_known_entities(
+            brand=brand,
+            seed_terms=include_topics,
+        )
+        compact: list[str] = []
+        for entity in sorted(entities):
+            cleaned = re.sub(r"\s+", " ", entity.strip().lower())
+            words = [word for word in cleaned.split() if word]
+            if not words or len(words) > 3:
+                continue
+            if all(word in self.WORKFLOW_ENTITY_STOPWORDS for word in words):
+                continue
+            compact.append(cleaned)
+        return compact

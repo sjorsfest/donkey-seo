@@ -21,7 +21,12 @@ from app.models.pipeline import PipelineRun, StepExecution
 from app.models.project import Project
 from app.models.topic import Topic
 from app.schemas.pipeline import ContentPipelineConfig, DiscoveryLoopConfig
-from app.services.run_strategy import resolve_run_strategy
+from app.services.run_strategy import (
+    build_goal_intent_profile,
+    classify_intent_alignment,
+    resolve_run_strategy,
+)
+from app.services.discovery_learning import DiscoveryLearningService
 from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -131,6 +136,7 @@ class DiscoveryLoopSupervisor:
         iterations_completed = 0
         for iteration in range(1, discovery.max_iterations + 1):
             iterations_completed = iteration
+            iteration_step_summaries: dict[int, dict[str, Any]] = {}
             strategy_payload = self._build_iteration_strategy_payload(
                 base_strategy_payload=base_strategy_payload,
                 iteration=iteration,
@@ -155,16 +161,26 @@ class DiscoveryLoopSupervisor:
                 self.run.paused_at_step = step_num
                 if execution.status == "completed":
                     await mark_step_completed(
-                        task_id=task_id,
-                        step_number=step_num,
-                        step_name=str(execution.step_name or f"step_{step_num}"),
+                        task_id,
+                        step_num,
+                        str(execution.step_name or f"step_{step_num}"),
                     )
+                iteration_step_summaries = self._collect_iteration_step_summaries(
+                    iteration_step_summaries,
+                    step_num=step_num,
+                    execution=execution,
+                )
 
             decisions = await self._evaluate_topic_decisions(
                 iteration_index=iteration,
                 discovery=discovery,
             )
             await self._persist_snapshots(iteration, decisions)
+            await self._persist_iteration_learnings(
+                iteration_index=iteration,
+                decisions=decisions,
+                step_summaries=iteration_step_summaries,
+            )
 
             accepted_topics_by_key = self._merge_accepted_topics(
                 current_pool=accepted_topics_by_key,
@@ -243,9 +259,9 @@ class DiscoveryLoopSupervisor:
             execution = await execute_step(self.run, step_num)
             if execution.status == "completed":
                 await mark_step_completed(
-                    task_id=task_id,
-                    step_number=step_num,
-                    step_name=str(execution.step_name or f"step_{step_num}"),
+                    task_id,
+                    step_num,
+                    str(execution.step_name or f"step_{step_num}"),
                 )
 
     async def _load_project(self) -> Project:
@@ -313,6 +329,34 @@ class DiscoveryLoopSupervisor:
         )
         await self.session.commit()
 
+    async def _persist_iteration_learnings(
+        self,
+        *,
+        iteration_index: int,
+        decisions: list[TopicDecision],
+        step_summaries: dict[int, dict[str, Any]],
+    ) -> None:
+        service = DiscoveryLearningService(self.session)
+        await service.synthesize_and_persist(
+            project_id=self.project_id,
+            pipeline_run_id=str(self.run.id),
+            iteration_index=iteration_index,
+            decisions=decisions,
+            step_summaries=step_summaries,
+        )
+
+    def _collect_iteration_step_summaries(
+        self,
+        existing: dict[int, dict[str, Any]] | None,
+        *,
+        step_num: int,
+        execution: StepExecution,
+    ) -> dict[int, dict[str, Any]]:
+        summaries = dict(existing or {})
+        raw_summary = execution.result_summary if isinstance(execution.result_summary, dict) else {}
+        summaries[step_num] = dict(raw_summary)
+        return summaries
+
     async def _update_steps_config_selected_topics(
         self,
         *,
@@ -338,6 +382,25 @@ class DiscoveryLoopSupervisor:
         iteration_index: int,
         discovery: DiscoveryLoopConfig,
     ) -> list[TopicDecision]:
+        steps_config_raw = getattr(self.run, "steps_config", None)
+        steps_config = steps_config_raw if isinstance(steps_config_raw, dict) else {}
+        strategy_payload = (
+            steps_config.get("strategy")
+            if isinstance(steps_config.get("strategy"), dict)
+            else None
+        )
+        primary_goal = (
+            steps_config.get("primary_goal")
+            if isinstance(steps_config.get("primary_goal"), str)
+            else None
+        )
+        run_strategy = resolve_run_strategy(
+            strategy_payload=strategy_payload,
+            brand=None,
+            primary_goal=primary_goal,
+        )
+        goal_intent_profile = build_goal_intent_profile(run_strategy.conversion_intents)
+
         topic_result = await self.session.execute(
             select(Topic).where(Topic.project_id == self.project_id)
         )
@@ -351,21 +414,47 @@ class DiscoveryLoopSupervisor:
             return []
 
         primary_ids = [topic.primary_keyword_id for topic in candidates if topic.primary_keyword_id]
+        evidence_ids = [
+            factors.get("serp_evidence_keyword_id")
+            for topic in candidates
+            for factors in [topic.priority_factors or {}]
+            if factors.get("serp_evidence_keyword_id")
+        ]
+        keyword_ids = list({
+            str(keyword_id)
+            for keyword_id in [*primary_ids, *evidence_ids]
+            if keyword_id
+        })
         keyword_by_id: dict[str, Keyword] = {}
-        if primary_ids:
+        if keyword_ids:
             keyword_result = await self.session.execute(
-                select(Keyword).where(Keyword.id.in_(primary_ids))
+                select(Keyword).where(
+                    Keyword.id.in_([keyword_id for keyword_id in keyword_ids]),
+                )
             )
             keyword_by_id = {str(keyword.id): keyword for keyword in keyword_result.scalars()}
 
         decisions: list[TopicDecision] = []
         for topic in candidates:
             factors = topic.priority_factors or {}
-            keyword = (
+            primary_keyword = (
                 keyword_by_id.get(str(topic.primary_keyword_id))
                 if topic.primary_keyword_id
                 else None
             )
+            evidence_keyword_id = factors.get("serp_evidence_keyword_id")
+            evidence_keyword = (
+                keyword_by_id.get(str(evidence_keyword_id))
+                if evidence_keyword_id
+                else None
+            )
+            keyword = primary_keyword
+            if not (
+                keyword
+                and isinstance(keyword.serp_top_results, list)
+                and len(keyword.serp_top_results) > 0
+            ):
+                keyword = evidence_keyword
             top_results = (
                 list(keyword.serp_top_results or [])[:10]
                 if keyword and isinstance(keyword.serp_top_results, list)
@@ -378,37 +467,102 @@ class DiscoveryLoopSupervisor:
                 if top10_count > 0
                 else 0.0
             )
+            keyword_difficulty = (
+                primary_keyword.difficulty
+                if primary_keyword and primary_keyword.difficulty is not None
+                else topic.avg_difficulty
+            )
+            topic_market_mode = (
+                topic.market_mode
+                or factors.get("effective_market_mode")
+                or "established_category"
+            )
+            is_workflow_topic = topic_market_mode == "fragmented_workflow"
 
             rejection_reasons: list[str] = []
             if discovery.require_serp_gate:
-                if keyword is None:
-                    rejection_reasons.append("missing_primary_keyword")
-                if not top_results:
-                    rejection_reasons.append("missing_serp_results")
-                if keyword and keyword.difficulty is None:
-                    rejection_reasons.append("missing_keyword_difficulty")
-                if (
-                    keyword
-                    and keyword.difficulty is not None
-                    and keyword.difficulty > discovery.max_keyword_difficulty
-                ):
-                    rejection_reasons.append(
-                        "keyword_difficulty_above_threshold:"
-                        f"{keyword.difficulty:.2f}>{discovery.max_keyword_difficulty:.2f}"
+                if is_workflow_topic:
+                    servedness = topic.serp_servedness_score
+                    competitor_density = topic.serp_competitor_density
+                    serp_intent_confidence = (
+                        self._to_float(factors.get("serp_intent_confidence")) or 0.0
                     )
-                if domain_diversity < discovery.min_domain_diversity:
-                    rejection_reasons.append(
-                        "domain_diversity_below_threshold:"
-                        f"{domain_diversity:.2f}<{discovery.min_domain_diversity:.2f}"
-                    )
+                    if servedness is None or competitor_density is None:
+                        rejection_reasons.append("missing_cluster_serp_evidence")
+                    if keyword_difficulty is None:
+                        rejection_reasons.append("missing_keyword_difficulty")
+                    if (
+                        keyword_difficulty is not None
+                        and keyword_difficulty > discovery.max_keyword_difficulty
+                    ):
+                        rejection_reasons.append(
+                            "keyword_difficulty_above_threshold:"
+                            f"{keyword_difficulty:.2f}>{discovery.max_keyword_difficulty:.2f}"
+                        )
+                    if (
+                        servedness is not None
+                        and competitor_density is not None
+                        and servedness >= discovery.max_serp_servedness
+                        and competitor_density >= discovery.max_serp_competitor_density
+                    ):
+                        rejection_reasons.append(
+                            "workflow_serp_saturated:"
+                            f"servedness={servedness:.2f},density={competitor_density:.2f}"
+                        )
+                    if (
+                        discovery.require_intent_match
+                        and serp_intent_confidence < discovery.min_serp_intent_confidence
+                    ):
+                        rejection_reasons.append(
+                            "serp_intent_confidence_below_threshold:"
+                            f"{serp_intent_confidence:.2f}<{discovery.min_serp_intent_confidence:.2f}"
+                        )
+                else:
+                    if keyword is None:
+                        rejection_reasons.append("missing_primary_keyword")
+                    if not top_results:
+                        rejection_reasons.append("missing_serp_results")
+                    if keyword_difficulty is None:
+                        rejection_reasons.append("missing_keyword_difficulty")
+                    if (
+                        keyword_difficulty is not None
+                        and keyword_difficulty > discovery.max_keyword_difficulty
+                    ):
+                        rejection_reasons.append(
+                            "keyword_difficulty_above_threshold:"
+                            f"{keyword_difficulty:.2f}>{discovery.max_keyword_difficulty:.2f}"
+                        )
+                    if domain_diversity < discovery.min_domain_diversity:
+                        rejection_reasons.append(
+                            "domain_diversity_below_threshold:"
+                            f"{domain_diversity:.2f}<{discovery.min_domain_diversity:.2f}"
+                        )
 
             if (
+                not is_workflow_topic
+                and
                 discovery.require_intent_match
                 and keyword
                 and isinstance(keyword.serp_mismatch_flags, list)
-                and "intent_mismatch" in keyword.serp_mismatch_flags
             ):
-                rejection_reasons.append("intent_mismatch")
+                observed_intent = keyword.validated_intent or topic.dominant_intent
+                alignment = classify_intent_alignment(observed_intent, goal_intent_profile)
+                fit_tier = str(factors.get("fit_tier") or "").lower()
+                fit_score = self._to_float(factors.get("fit_score")) or 0.0
+                intent_mismatch_flag = "intent_mismatch" in keyword.serp_mismatch_flags
+                should_hard_reject = (
+                    alignment == "off_goal"
+                    and fit_tier != "primary"
+                    and fit_score < 0.75
+                )
+                if should_hard_reject:
+                    rejection_reasons.append(
+                        "goal_intent_mismatch:"
+                        f"{(observed_intent or 'unknown').lower()}"
+                        f" not aligned with {goal_intent_profile.profile_name}"
+                    )
+                elif intent_mismatch_flag and alignment == "off_goal" and fit_tier != "primary":
+                    rejection_reasons.append("intent_mismatch_off_goal")
 
             fit_reasons = [
                 str(item)
@@ -427,7 +581,7 @@ class DiscoveryLoopSupervisor:
                 topic_name=topic.name,
                 fit_tier=factors.get("fit_tier"),
                 fit_score=self._to_float(factors.get("fit_score")),
-                keyword_difficulty=keyword.difficulty if keyword else None,
+                keyword_difficulty=keyword_difficulty,
                 domain_diversity=round(domain_diversity, 4),
                 validated_intent=keyword.validated_intent if keyword else None,
                 validated_page_type=keyword.validated_page_type if keyword else None,

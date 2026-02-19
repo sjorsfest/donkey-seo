@@ -8,6 +8,12 @@ from pydantic import BaseModel, Field, field_validator
 ScopeMode = Literal["strict", "balanced_adjacent", "broad_education"]
 BrandedKeywordMode = Literal["comparisons_only", "exclude_all", "allow_all"]
 FitThresholdProfile = Literal["aggressive", "moderate", "lenient"]
+MarketModeOverride = Literal[
+    "auto",
+    "established_category",
+    "fragmented_workflow",
+    "mixed",
+]
 PipelineMode = Literal["full", "discovery_loop", "content_production"]
 
 
@@ -24,6 +30,7 @@ class PipelineRunStrategy(BaseModel):
     icp_industries: list[str] = Field(default_factory=list)
     icp_pains: list[str] = Field(default_factory=list)
     min_eligible_target: int | None = Field(default=None, ge=1, le=100)
+    market_mode_override: MarketModeOverride = "auto"
 
 
 class DiscoveryLoopConfig(BaseModel):
@@ -60,6 +67,29 @@ class DiscoveryLoopConfig(BaseModel):
     require_intent_match: bool = Field(
         default=True,
         description="Reject topics with SERP intent mismatch on primary keyword.",
+    )
+    max_serp_servedness: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "In workflow markets, reject a topic when SERP servedness is above this level "
+            "and competitor density is also high."
+        ),
+    )
+    max_serp_competitor_density: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description="Maximum allowed vendor/competitor density for workflow-cluster acceptance.",
+    )
+    min_serp_intent_confidence: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum cluster-level SERP intent confidence when intent matching is required."
+        ),
     )
     auto_start_content: bool = Field(
         default=True,
@@ -105,6 +135,28 @@ class ContentPipelineConfig(BaseModel):
         ge=0,
         le=90,
         description="Maximum day distance for snapping to an LLM timing hint.",
+    )
+    include_zero_data_topics: bool = Field(
+        default=True,
+        description=(
+            "Reserve part of Step 12 capacity for high-fit topics whose primary keyword has "
+            "missing demand metrics."
+        ),
+    )
+    zero_data_topic_share: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=0.5,
+        description=(
+            "Max share of Step 12 brief slots reserved for high-fit zero-data topics "
+            "(0.0-0.5)."
+        ),
+    )
+    zero_data_fit_score_min: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description="Minimum fit_score required for zero-data topic inclusion.",
     )
 
     @field_validator("preferred_weekdays")
@@ -156,6 +208,7 @@ class PipelineStartRequest(BaseModel):
                     "strategy": {
                         "scope_mode": "strict",
                         "fit_threshold_profile": "aggressive",
+                        "market_mode_override": "auto",
                         "include_topics": ["customer support automation"],
                         "exclude_topics": ["medical advice"],
                     },
@@ -166,6 +219,9 @@ class PipelineStartRequest(BaseModel):
                         "max_keyword_difficulty": 65.0,
                         "min_domain_diversity": 0.5,
                         "require_intent_match": True,
+                        "max_serp_servedness": 0.75,
+                        "max_serp_competitor_density": 0.70,
+                        "min_serp_intent_confidence": 0.35,
                         "auto_start_content": True,
                     },
                     "content": {

@@ -20,6 +20,7 @@ from app.models.brand import BrandProfile
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
+from app.services.discovery_capabilities import CAPABILITY_PRIORITIZATION
 from app.services.run_strategy import RunStrategy
 from app.services.steps.base_step import BaseStepService
 
@@ -38,21 +39,30 @@ class PrioritizationOutput:
     """Output from Step 7."""
 
     topics_ranked: int
-    weights_used: dict[str, float]
+    weights_used: dict[str, Any]
     topics: list[dict[str, Any]] = field(default_factory=list)
     strategy_notes: str = ""
     quality_warnings: list[str] = field(default_factory=list)
 
 
-DEFAULT_PRIORITY_WEIGHTS = {
-    "demand": 0.30,
-    "achievability": 0.25,
-    "business_alignment": 0.30,
-    "authority": 0.15,
+WORKFLOW_PRIORITY_WEIGHTS = {
+    "mean_intent_score": 0.45,
+    "difficulty_ease": 0.20,
+    "adjusted_volume_norm": 0.15,
+    "strategic_fit": 0.10,
+    "serp_opportunity_signal": 0.10,
+}
+ESTABLISHED_PRIORITY_WEIGHTS = {
+    "raw_volume_norm": 0.40,
+    "difficulty_ease": 0.25,
+    "mean_intent_score": 0.20,
+    "serp_signal": 0.15,
 }
 
 LOW_COHERENCE_THRESHOLD = 0.7
 LLM_BLEND_WEIGHT = 0.70
+DFI_WORKFLOW_THRESHOLD = 0.10
+EXTREME_DIFFICULTY_THRESHOLD = 90.0
 
 
 class Step07PrioritizationService(BaseStepService[PrioritizationInput, PrioritizationOutput]):
@@ -60,6 +70,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
 
     step_number = 7
     step_name = "prioritization"
+    capability_key = CAPABILITY_PRIORITIZATION
     is_optional = False
 
     DIFFICULTY_MAX = 100.0
@@ -106,30 +117,47 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             .options(selectinload(Topic.keywords))
         )
         all_topics = list(topics_result.scalars())
+        base_market_mode = await self.get_market_mode(default="mixed")
 
-        weights = self._get_priority_weights(project)
+        weights_used: dict[str, Any] = {
+            "fragmented_workflow": WORKFLOW_PRIORITY_WEIGHTS,
+            "established_category": ESTABLISHED_PRIORITY_WEIGHTS,
+            "mixed_dfi_threshold": DFI_WORKFLOW_THRESHOLD,
+        }
         logger.info(
             "Prioritization starting",
             extra={
                 "project_id": input_data.project_id,
                 "topic_count": len(all_topics),
-                "weights": weights,
+                "weights": weights_used,
                 "fit_profile": strategy.fit_threshold_profile,
+                "market_mode": base_market_mode,
             },
         )
 
         if not all_topics:
             return PrioritizationOutput(
                 topics_ranked=0,
-                weights_used=DEFAULT_PRIORITY_WEIGHTS,
+                weights_used=weights_used,
             )
 
         await self._update_progress(10, f"Scoring {len(all_topics)} topics...")
 
         brand_context = self._build_brand_context(brand, strategy)
+        learning_context = await self.build_learning_context(
+            self.capability_key,
+            "PrioritizationAgent",
+        )
+        if learning_context:
+            brand_context = (
+                f"{brand_context}\n\n{learning_context}"
+                if brand_context
+                else learning_context
+            )
         money_pages = self._extract_money_pages(brand)
         primary_goal = project.primary_goal or ""
-        volume_reference = self._calculate_volume_reference(all_topics)
+        raw_volume_reference = self._calculate_volume_reference(all_topics)
+        adjusted_volume_reference = self._calculate_adjusted_volume_reference(all_topics)
 
         scored_topics: list[dict[str, Any]] = []
         for i, topic in enumerate(all_topics):
@@ -143,7 +171,8 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 keywords=keywords,
                 brand=brand,
                 money_pages=money_pages,
-                volume_reference=volume_reference,
+                raw_volume_reference=raw_volume_reference,
+                adjusted_volume_reference=adjusted_volume_reference,
             )
             fit_assessment = self._calculate_fit_assessment(
                 topic=topic,
@@ -152,9 +181,19 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 strategy=strategy,
                 business_alignment_score=factors["business_alignment"],
             )
+            factors["strategic_fit"] = fit_assessment["fit_score"]
             factors["fit_score"] = fit_assessment["fit_score"]
+            effective_market_mode = self._resolve_topic_market_mode(
+                base_market_mode=base_market_mode,
+                dfi=factors["demand_fragmentation_index"],
+            )
+            factors["effective_market_mode"] = effective_market_mode
+            factors["dfi_threshold"] = DFI_WORKFLOW_THRESHOLD
 
-            priority_score = self._calculate_priority_score(factors, weights)
+            priority_score = self._calculate_mode_aware_priority_score(
+                factors=factors,
+                effective_market_mode=effective_market_mode,
+            )
             explanation = self._generate_explanation(factors, keywords, fit_assessment)
 
             scored_topics.append({
@@ -167,6 +206,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 "deterministic_business_alignment": factors["business_alignment"],
                 "deterministic_authority": factors["authority"],
                 "explanation": explanation,
+                "effective_market_mode": effective_market_mode,
             })
 
         scored_topics.sort(key=lambda x: x["priority_score"], reverse=True)
@@ -251,38 +291,22 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                         "validation_notes": "Auto-assigned (LLM unavailable)",
                     }
 
-        await self._update_progress(80, "Blending LLM qualitative scores...")
+        await self._update_progress(80, "Finalizing market-aware scores...")
 
         for st in scored_topics:
             topic_id = st["topic_id"]
             prioritization = prioritizations_by_topic_id.get(topic_id, {})
-            llm_business = prioritization.get("llm_business_alignment")
-            llm_authority = prioritization.get("llm_authority_value")
-
-            hybrid_business_alignment = self._blend_qualitative_scores(
-                st["deterministic_business_alignment"],
-                llm_business,
-            )
-            hybrid_authority = self._blend_qualitative_scores(
-                st["deterministic_authority"],
-                llm_authority,
-            )
-
-            hybrid_factors = st["priority_factors"].copy()
-            hybrid_factors["business_alignment"] = hybrid_business_alignment
-            hybrid_factors["authority"] = hybrid_authority
-            hybrid_factors["llm_enhanced"] = {
-                "business_alignment": llm_business is not None,
-                "authority": llm_authority is not None,
+            factors = st["priority_factors"].copy()
+            factors["llm_enhanced"] = {
+                "business_alignment": prioritization.get("llm_business_alignment") is not None,
+                "authority": prioritization.get("llm_authority_value") is not None,
             }
             if prioritization:
-                hybrid_factors["llm_rationales"] = {
+                factors["llm_rationales"] = {
                     "business_alignment": prioritization.get("llm_business_alignment_rationale", ""),
                     "authority": prioritization.get("llm_authority_value_rationale", ""),
                 }
-
-            st["priority_score"] = self._calculate_priority_score(hybrid_factors, weights)
-            st["priority_factors"] = hybrid_factors
+            st["priority_factors"] = factors
 
         scored_topics.sort(key=lambda x: x["priority_score"], reverse=True)
         self._apply_fit_gating(scored_topics, strategy)
@@ -318,6 +342,9 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 "name": topic.name,
                 "priority_rank": rank,
                 "priority_score": st["priority_score"],
+                "market_mode": st["effective_market_mode"],
+                "demand_fragmentation_index": st["priority_factors"].get("demand_fragmentation_index"),
+                "adjusted_volume_sum": st["priority_factors"].get("adjusted_volume_sum"),
                 "priority_factors": priority_factors,
                 "score_explanation": st["explanation"],
                 "expected_role": prioritization.get("expected_role", "authority_builder") if is_eligible else "excluded",
@@ -345,7 +372,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
 
         return PrioritizationOutput(
             topics_ranked=ranked_count,
-            weights_used=weights,
+            weights_used=weights_used,
             topics=output_topics,
             strategy_notes=strategy_notes,
         )
@@ -377,11 +404,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             )
 
     def _get_priority_weights(self, project: Project) -> dict[str, float]:
-        """Get priority weights from project settings or use defaults."""
+        """Compatibility helper retained for legacy callers."""
         if project.api_budget_caps and "priority_weights" in project.api_budget_caps:
             custom = project.api_budget_caps["priority_weights"]
-            return {**DEFAULT_PRIORITY_WEIGHTS, **custom}
-        return DEFAULT_PRIORITY_WEIGHTS.copy()
+            return {**ESTABLISHED_PRIORITY_WEIGHTS, **custom}
+        return ESTABLISHED_PRIORITY_WEIGHTS.copy()
 
     def _build_brand_context(self, brand: BrandProfile | None, strategy: RunStrategy) -> str:
         """Build brand + strategy context string for LLM."""
@@ -433,37 +460,184 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         reference = volumes_sorted[min(percentile_90_idx, len(volumes_sorted) - 1)]
         return max(reference, 100)
 
+    def _calculate_adjusted_volume_reference(self, all_topics: list[Topic]) -> float:
+        """Calculate adaptive reference for adjusted cluster volume."""
+        adjusted_volumes = [
+            topic.adjusted_volume_sum
+            for topic in all_topics
+            if topic.adjusted_volume_sum is not None and topic.adjusted_volume_sum > 0
+        ]
+        if not adjusted_volumes:
+            return self._calculate_volume_reference(all_topics)
+        adjusted_sorted = sorted(adjusted_volumes)
+        percentile_90_idx = int(len(adjusted_sorted) * 0.90)
+        reference = adjusted_sorted[min(percentile_90_idx, len(adjusted_sorted) - 1)]
+        return max(reference, 100)
+
     def _calculate_factors(
         self,
         topic: Topic,
         keywords: list[Keyword],
         brand: BrandProfile | None,
         money_pages: list[str],
-        volume_reference: float,
-    ) -> dict[str, float]:
-        """Calculate weighted-priority factors (0-1 normalized)."""
-        total_volume = topic.total_volume or sum(kw.search_volume or 0 for kw in keywords)
-        if volume_reference == 0:
-            demand_score = 0.5
-        else:
-            demand_score = min(total_volume / volume_reference, 1.0)
+        raw_volume_reference: float,
+        adjusted_volume_reference: float,
+    ) -> dict[str, Any]:
+        """Calculate market-aware cluster factors."""
+        raw_volume_sum = topic.total_volume if topic.total_volume is not None else sum(
+            kw.search_volume or 0 for kw in keywords
+        )
+        adjusted_volume_sum = (
+            topic.adjusted_volume_sum
+            if topic.adjusted_volume_sum is not None
+            else sum(
+                kw.adjusted_volume
+                if kw.adjusted_volume is not None
+                else (kw.search_volume or 0)
+                for kw in keywords
+            )
+        )
 
+        if raw_volume_reference <= 0:
+            raw_volume_norm = 0.5
+        else:
+            raw_volume_norm = min(raw_volume_sum / raw_volume_reference, 1.0)
+        if adjusted_volume_reference <= 0:
+            adjusted_volume_norm = 0.5
+        else:
+            adjusted_volume_norm = min(adjusted_volume_sum / adjusted_volume_reference, 1.0)
+
+        avg_difficulty = self._topic_avg_difficulty(topic=topic, keywords=keywords)
+        difficulty_ease = max(0.0, min(1.0, 1.0 - (avg_difficulty / self.DIFFICULTY_MAX)))
+        mean_intent_score = self._mean_intent_score(keywords)
+        business_alignment = self._calculate_business_alignment(topic, keywords, brand, money_pages)
+        authority_score = self._calculate_authority_score(topic)
+        serp_opportunity_signal = self._estimate_serp_opportunity_signal(topic, keywords)
+        serp_signal = self._estimate_serp_signal(topic, keywords)
+        dfi = self._calculate_demand_fragmentation_index(
+            keyword_count=max(topic.keyword_count, len(keywords)),
+            raw_volume_sum=raw_volume_sum,
+        )
+
+        return {
+            "demand": raw_volume_norm,
+            "achievability": difficulty_ease,
+            "raw_volume_norm": raw_volume_norm,
+            "adjusted_volume_norm": adjusted_volume_norm,
+            "raw_volume_sum": float(raw_volume_sum),
+            "adjusted_volume_sum": float(adjusted_volume_sum),
+            "difficulty_ease": difficulty_ease,
+            "mean_intent_score": mean_intent_score,
+            "serp_opportunity_signal": serp_opportunity_signal,
+            "serp_signal": serp_signal,
+            "demand_fragmentation_index": dfi,
+            "business_alignment": business_alignment,
+            "authority": authority_score,
+        }
+
+    def _topic_avg_difficulty(self, topic: Topic, keywords: list[Keyword]) -> float:
         avg_difficulty = topic.avg_difficulty
         if avg_difficulty is None:
             difficulties = [kw.difficulty for kw in keywords if kw.difficulty is not None]
             avg_difficulty = sum(difficulties) / len(difficulties) if difficulties else 50.0
-        achievability_score = 1.0 - (avg_difficulty / self.DIFFICULTY_MAX)
-        achievability_score = max(0.0, min(1.0, achievability_score))
+        return float(avg_difficulty)
 
-        business_alignment = self._calculate_business_alignment(topic, keywords, brand, money_pages)
-        authority_score = self._calculate_authority_score(topic)
+    def _mean_intent_score(self, keywords: list[Keyword]) -> float:
+        if not keywords:
+            return 0.5
+        scores = [kw.intent_score if kw.intent_score is not None else 0.5 for kw in keywords]
+        return max(0.0, min(1.0, sum(scores) / len(scores)))
 
-        return {
-            "demand": demand_score,
-            "achievability": achievability_score,
-            "business_alignment": business_alignment,
-            "authority": authority_score,
-        }
+    def _calculate_demand_fragmentation_index(self, *, keyword_count: int, raw_volume_sum: float) -> float:
+        """DFI = num_keywords_in_cluster / max(aggregate_volume, 1)."""
+        denominator = max(raw_volume_sum, 1.0)
+        return keyword_count / denominator
+
+    def _resolve_topic_market_mode(self, *, base_market_mode: str, dfi: float) -> str:
+        """Resolve per-topic mode in mixed runs using DFI."""
+        if base_market_mode == "mixed":
+            return "fragmented_workflow" if dfi >= DFI_WORKFLOW_THRESHOLD else "established_category"
+        return base_market_mode
+
+    def _calculate_mode_aware_priority_score(
+        self,
+        *,
+        factors: dict[str, Any],
+        effective_market_mode: str,
+    ) -> float:
+        """Calculate cluster score using mode-aware weighting."""
+        if effective_market_mode == "fragmented_workflow":
+            score = (
+                (factors.get("mean_intent_score", 0.0) * 0.45)
+                + (factors.get("difficulty_ease", 0.0) * 0.20)
+                + (factors.get("adjusted_volume_norm", 0.0) * 0.15)
+                + (factors.get("strategic_fit", 0.0) * 0.10)
+                + (factors.get("serp_opportunity_signal", 0.0) * 0.10)
+            )
+        else:
+            score = (
+                (factors.get("raw_volume_norm", 0.0) * 0.40)
+                + (factors.get("difficulty_ease", 0.0) * 0.25)
+                + (factors.get("mean_intent_score", 0.0) * 0.20)
+                + (factors.get("serp_signal", 0.0) * 0.15)
+            )
+        return round(score * 100, 2)
+
+    def _estimate_serp_opportunity_signal(self, topic: Topic, keywords: list[Keyword]) -> float:
+        """Heuristic SERP opportunity proxy before live SERP validation."""
+        coherence = topic.cluster_coherence if topic.cluster_coherence is not None else 0.6
+        ugc_risk_ratio = self._risk_ratio(keywords, "ugc_dominated")
+        comparison_ratio = self._ratio_from_keywords(keywords, "is_comparison")
+        signal = (
+            0.45
+            + (ugc_risk_ratio * 0.25)
+            + ((1.0 - coherence) * 0.20)
+            + (comparison_ratio * 0.10)
+        )
+        return max(0.0, min(1.0, signal))
+
+    def _estimate_serp_signal(self, topic: Topic, keywords: list[Keyword]) -> float:
+        """Conservative SERP-quality proxy for established markets."""
+        coherence = topic.cluster_coherence if topic.cluster_coherence is not None else 0.6
+        mismatch_ratio = self._mismatch_ratio(keywords)
+        signal = (coherence * 0.65) + ((1.0 - mismatch_ratio) * 0.35)
+        return max(0.0, min(1.0, signal))
+
+    def _risk_ratio(self, keywords: list[Keyword], flag: str) -> float:
+        if not keywords:
+            return 0.0
+        hits = 0
+        for keyword in keywords:
+            risk_flags = keyword.risk_flags or []
+            if flag in risk_flags:
+                hits += 1
+        return hits / len(keywords)
+
+    def _ratio_from_keywords(self, keywords: list[Keyword], signal_flag: str) -> float:
+        if not keywords:
+            return 0.0
+        hits = 0
+        for keyword in keywords:
+            signals = keyword.discovery_signals if isinstance(keyword.discovery_signals, dict) else {}
+            if signals.get(signal_flag):
+                hits += 1
+        return hits / len(keywords)
+
+    def _mismatch_ratio(self, keywords: list[Keyword]) -> float:
+        if not keywords:
+            return 0.0
+        mismatches = 0
+        total = 0
+        for keyword in keywords:
+            flags = keyword.serp_mismatch_flags or []
+            if not isinstance(flags, list):
+                continue
+            total += 1
+            if "intent_mismatch" in flags or "page_type_mismatch" in flags:
+                mismatches += 1
+        if total == 0:
+            return 0.0
+        return mismatches / total
 
     def _calculate_business_alignment(
         self,
@@ -551,6 +725,15 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             brand=brand,
             strategy=strategy,
         )
+        avg_difficulty = self._topic_avg_difficulty(topic=topic, keywords=keywords)
+        if (
+            hard_exclusion_reason is None
+            and avg_difficulty >= EXTREME_DIFFICULTY_THRESHOLD
+        ):
+            hard_exclusion_reason = (
+                f"extreme_difficulty:{avg_difficulty:.2f}"
+                f">{EXTREME_DIFFICULTY_THRESHOLD:.2f}"
+            )
 
         if strategy.scope_mode == "strict" and solution_relevance < 0.35:
             fit_score *= 0.7
@@ -565,6 +748,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             f"ICP relevance: {icp_relevance:.0%}",
             f"Conversion path: {conversion_path:.0%}",
             f"SERP/intent suitability: {serp_suitability:.0%}",
+            f"Avg difficulty: {avg_difficulty:.1f}",
         ]
         if hard_exclusion_reason:
             reasons.append(f"Hard exclusion: {hard_exclusion_reason}")
@@ -814,36 +998,52 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         fit_assessment: dict[str, Any],
     ) -> dict[str, Any]:
         """Generate auditable explanation for priority + fit."""
+        scoring_factors = [
+            "mean_intent_score",
+            "difficulty_ease",
+            "raw_volume_norm",
+            "adjusted_volume_norm",
+            "strategic_fit",
+            "serp_opportunity_signal",
+            "serp_signal",
+        ]
         sorted_factors = sorted(
-            [(k, v) for k, v in factors.items() if k in DEFAULT_PRIORITY_WEIGHTS],
+            [(k, v) for k, v in factors.items() if k in scoring_factors],
             key=lambda x: x[1],
             reverse=True,
         )
 
         top_factors: list[str] = []
         for name, value in sorted_factors[:2]:
-            if name == "demand":
-                total_vol = sum(kw.search_volume or 0 for kw in keywords)
-                top_factors.append(f"Demand: {total_vol:,}/mo volume")
-            elif name == "achievability":
+            if name == "raw_volume_norm":
+                total_vol = int(factors.get("raw_volume_sum", 0))
+                top_factors.append(f"Raw demand: {total_vol:,}/mo")
+            elif name == "adjusted_volume_norm":
+                adjusted_total = int(factors.get("adjusted_volume_sum", 0))
+                top_factors.append(f"Adjusted demand: {adjusted_total:,} cluster score volume")
+            elif name == "difficulty_ease":
                 avg_diff = sum(kw.difficulty or 50 for kw in keywords) / max(len(keywords), 1)
-                top_factors.append(f"Achievability: {avg_diff:.0f} avg difficulty")
-            elif name == "business_alignment":
-                top_factors.append(f"Business fit: {value:.0%} aligned")
-            elif name == "authority":
-                top_factors.append(f"Authority: {value:.0%} value")
+                top_factors.append(f"Difficulty ease: {value:.0%} (avg KD {avg_diff:.0f})")
+            elif name == "mean_intent_score":
+                top_factors.append(f"Intent strength: {value:.0%}")
+            elif name == "strategic_fit":
+                top_factors.append(f"Strategic fit: {value:.0%}")
+            elif name in {"serp_opportunity_signal", "serp_signal"}:
+                top_factors.append(f"SERP signal: {value:.0%}")
 
         limiting_factors: list[str] = []
         for name, value in sorted_factors[-2:]:
             if value < 0.5:
-                if name == "demand":
+                if name in {"raw_volume_norm", "adjusted_volume_norm"}:
                     limiting_factors.append("Low volume")
-                elif name == "achievability":
+                elif name == "difficulty_ease":
                     limiting_factors.append("High difficulty")
-                elif name == "business_alignment":
+                elif name == "strategic_fit":
                     limiting_factors.append("Weak business fit")
-                elif name == "authority":
-                    limiting_factors.append("Low authority value")
+                elif name in {"serp_opportunity_signal", "serp_signal"}:
+                    limiting_factors.append("Weak SERP signal")
+                elif name == "mean_intent_score":
+                    limiting_factors.append("Weak intent clarity")
 
         missing_metrics = 0
         for kw in keywords:
@@ -861,6 +1061,8 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             "data_quality": round(data_quality, 2),
             "fit_reasons": fit_assessment["reasons"],
             "fit_score": fit_assessment["fit_score"],
+            "market_mode": factors.get("effective_market_mode"),
+            "demand_fragmentation_index": factors.get("demand_fragmentation_index"),
         }
 
     def _infer_role(self, scored_topic: dict[str, Any]) -> str:
@@ -899,6 +1101,9 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
 
             topic.priority_rank = topic_data["priority_rank"]
             topic.priority_score = topic_data["priority_score"]
+            topic.market_mode = topic_data.get("market_mode")
+            topic.demand_fragmentation_index = topic_data.get("demand_fragmentation_index")
+            topic.adjusted_volume_sum = topic_data.get("adjusted_volume_sum")
             topic.priority_factors = {
                 **topic_data["priority_factors"],
                 "explanation": topic_data["score_explanation"],
@@ -927,6 +1132,8 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 1 for t in result.topics if t.get("priority_factors", {}).get("fit_tier") == "excluded"
             ),
             "needs_serp_validation": sum(1 for t in result.topics if t.get("needs_serp_validation")),
+            "workflow_topics": sum(1 for t in result.topics if t.get("market_mode") == "fragmented_workflow"),
+            "established_topics": sum(1 for t in result.topics if t.get("market_mode") == "established_category"),
         }
         if result.quality_warnings:
             summary["quality_warnings"] = result.quality_warnings

@@ -79,9 +79,9 @@ class Settings(BaseSettings):
 
     _MODEL_DEFAULTS: ClassVar[dict[str, dict[str, str]]] = {
         "development": {
-            "reasoning": "openrouter:google/gemma-3-27b-it:free",
-            "standard": "openrouter:google/gemma-3-27b-it:free",
-            "fast": "openrouter:google/gemma-3-27b-it:free",
+            "reasoning": "openrouter:minimax/minimax-m2.5",
+            "standard": "openrouter:minimax/minimax-m2.5",
+            "fast": "openrouter:minimax/minimax-m2.5",
         },
         "staging": {
             "reasoning": "openrouter:google/gemma-3-27b-it:free",
@@ -133,6 +133,8 @@ class Settings(BaseSettings):
     default_skip_steps: list[int] = [8, 9, 10, 11]
     max_keywords_per_project: int = 50000
     batch_size_keyword_enrichment: int = 100
+    pipeline_task_workers: int = 1
+    pipeline_task_queue_size: int = 100
 
 
 @lru_cache

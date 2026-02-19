@@ -117,6 +117,7 @@ class Keyword(TypedModelMixin[KeywordCreateDTO, KeywordPatchDTO], Base, UUIDMixi
 
     # Step 4: Metrics
     search_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    adjusted_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     search_volume_period: Mapped[str | None] = mapped_column(String(50), nullable=True)
     cpc: Mapped[float | None] = mapped_column(Float, nullable=True)
     competition: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -128,6 +129,8 @@ class Keyword(TypedModelMixin[KeywordCreateDTO, KeywordPatchDTO], Base, UUIDMixi
 
     # Step 5: Intent
     intent: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    intent_layer: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    intent_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     intent_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     recommended_page_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     page_type_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -137,6 +140,7 @@ class Keyword(TypedModelMixin[KeywordCreateDTO, KeywordPatchDTO], Base, UUIDMixi
     # Step 7: Prioritization
     priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     priority_factors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    discovery_signals: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Step 8: SERP validation
     serp_top_results: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)

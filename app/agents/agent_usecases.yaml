@@ -4,6 +4,11 @@ agents:
     openrouter_category: marketing/seo
     arena_use_case_slug: reasoning
 
+  ICPRecommenderAgent:
+    use_case: positioning / icp expansion / reasoning
+    openrouter_category: marketing/seo
+    arena_use_case_slug: reasoning
+
   TopicGeneratorAgent:
     use_case: brainstorming / SEO ideation
     openrouter_category: marketing/seo

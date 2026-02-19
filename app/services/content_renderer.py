@@ -19,6 +19,22 @@ BLOCK_TYPES = {
 }
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _as_link_list(value: Any) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    for item in _as_list(value):
+        if isinstance(item, dict):
+            links.append(item)
+    return links
+
+
 def _safe_text(value: Any) -> str:
     if value is None:
         return ""
@@ -55,7 +71,7 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
 
     heading = _safe_text(block.get("heading") or "")
     body = _safe_text(block.get("body") or "")
-    links = block.get("links") if isinstance(block.get("links"), list) else []
+    links = _as_link_list(block.get("links"))
 
     if block_type == "hero":
         h1_value = heading or _safe_text(fallback_h1)
@@ -78,7 +94,7 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
         )
 
     if block_type in {"list", "steps"}:
-        items = block.get("items") if isinstance(block.get("items"), list) else []
+        items = _as_list(block.get("items"))
         list_tag = "ol" if block_type == "steps" or block.get("ordered") else "ul"
         heading_html = f"<h2>{heading}</h2>" if heading else ""
         item_html = "".join(f"<li>{_safe_text(item)}</li>" for item in items)
@@ -89,8 +105,8 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
         )
 
     if block_type == "comparison_table":
-        columns = block.get("table_columns") if isinstance(block.get("table_columns"), list) else []
-        rows = block.get("table_rows") if isinstance(block.get("table_rows"), list) else []
+        columns = _as_list(block.get("table_columns"))
+        rows = _as_list(block.get("table_rows"))
         heading_html = f"<h2>{heading}</h2>" if heading else ""
         header_cells = "".join(f"<th>{_safe_text(col)}</th>" for col in columns)
         body_rows: list[str] = []
@@ -109,7 +125,7 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
         )
 
     if block_type == "faq":
-        faq_items = block.get("faq_items") if isinstance(block.get("faq_items"), list) else []
+        faq_items = _as_list(block.get("faq_items"))
         heading_html = f"<h2>{heading}</h2>" if heading else ""
         details_html: list[str] = []
         for item in faq_items:
@@ -127,7 +143,7 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
             h1_used,
         )
 
-    cta = block.get("cta") if isinstance(block.get("cta"), dict) else {}
+    cta = _as_dict(block.get("cta"))
     cta_label = _safe_text(cta.get("label") or "Learn more")
     cta_href = _safe_text(cta.get("href") or "#")
     heading_html = f"<h2>{heading}</h2>" if heading else ""
@@ -141,10 +157,10 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
 
 def render_modular_document(document: dict[str, Any]) -> str:
     """Render semantic article HTML from the modular JSON contract."""
-    seo_meta = document.get("seo_meta") if isinstance(document.get("seo_meta"), dict) else {}
+    seo_meta = _as_dict(document.get("seo_meta"))
     fallback_h1 = str(seo_meta.get("h1") or "Untitled")
 
-    blocks = document.get("blocks") if isinstance(document.get("blocks"), list) else []
+    blocks = _as_list(document.get("blocks"))
     article_parts: list[str] = []
     h1_used = False
 

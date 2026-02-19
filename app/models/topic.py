@@ -58,9 +58,14 @@ class Topic(TypedModelMixin[TopicCreateDTO, TopicPatchDTO], Base, UUIDMixin, Tim
 
     # Aggregated metrics
     total_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    adjusted_volume_sum: Mapped[int | None] = mapped_column(Integer, nullable=True)
     avg_difficulty: Mapped[float | None] = mapped_column(Float, nullable=True)
     keyword_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     estimated_demand: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    demand_fragmentation_index: Mapped[float | None] = mapped_column(Float, nullable=True)
+    serp_servedness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    serp_competitor_density: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Step 7: Priority
     priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)

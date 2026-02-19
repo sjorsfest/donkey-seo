@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -141,6 +142,92 @@ def test_topic_needs_serp_validation_by_note_or_coherence() -> None:
     assert service._topic_needs_serp_validation(by_note) is True
     assert service._topic_needs_serp_validation(by_coherence) is True
     assert service._topic_needs_serp_validation(normal) is False
+
+
+def test_keyword_serp_strength_treats_messy_serp_as_low_servedness() -> None:
+    service = Step08SerpValidationService.__new__(Step08SerpValidationService)
+    keyword_model = SimpleNamespace(
+        keyword="connect slack to notion",
+        serp_top_results=[
+            {"domain": "reddit.com", "url": "https://reddit.com/r/noise", "title": "Need help connecting Slack to Notion"},
+            {"domain": "github.com", "url": "https://github.com/issues/1", "title": "Webhook issue"},
+            {"domain": "community.example.com", "url": "https://community.example.com/forum/x", "title": "Forum thread"},
+        ],
+    )
+
+    servedness, competitor_density = service._keyword_serp_strength(keyword_model)  # type: ignore[attr-defined]
+
+    assert servedness < 0.4
+    assert competitor_density == 0.0
+
+
+class _ScalarProxy:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _ResultProxy:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _ScalarProxy:
+        return _ScalarProxy(self._rows)
+
+
+class _SessionWithKeywords:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    async def execute(self, _query: object) -> _ResultProxy:
+        return _ResultProxy(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_update_topic_serp_signals_uses_alternate_when_primary_missing() -> None:
+    service = Step08SerpValidationService.__new__(Step08SerpValidationService)
+    topic_id = str(uuid.uuid4())
+    primary_id = str(uuid.uuid4())
+    alternate_id = str(uuid.uuid4())
+
+    topic = SimpleNamespace(
+        id=topic_id,
+        primary_keyword_id=primary_id,
+        dominant_intent="informational",
+        priority_factors={},
+        serp_servedness_score=None,
+        serp_competitor_density=None,
+    )
+    primary_keyword = SimpleNamespace(
+        id=primary_id,
+        topic_id=topic_id,
+        status="active",
+        search_volume=10,
+        keyword="primary keyword",
+        serp_top_results=[],
+        validated_intent=None,
+    )
+    alternate_keyword = SimpleNamespace(
+        id=alternate_id,
+        topic_id=topic_id,
+        status="active",
+        search_volume=80,
+        keyword="alternate keyword",
+        serp_top_results=[
+            {"domain": "vendor-a.com", "url": "https://vendor-a.com/integrations", "title": "Integrations"},
+            {"domain": "vendor-b.com", "url": "https://vendor-b.com/pricing", "title": "Pricing"},
+        ],
+        validated_intent="informational",
+    )
+    service.session = _SessionWithKeywords([primary_keyword, alternate_keyword])
+
+    await service._update_topic_serp_signals([topic])  # type: ignore[attr-defined]
+
+    assert topic.serp_servedness_score is not None
+    assert topic.serp_competitor_density is not None
+    assert topic.priority_factors["serp_evidence_source"] == "alternate"
 
 
 @pytest.mark.asyncio

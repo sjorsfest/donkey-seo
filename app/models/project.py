@@ -13,6 +13,7 @@ from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 
 if TYPE_CHECKING:
     from app.models.brand import BrandProfile
+    from app.models.discovery_learning import DiscoveryIterationLearning
     from app.models.content import ContentArticle, ContentBrief
     from app.models.discovery_snapshot import DiscoveryTopicSnapshot
     from app.models.keyword import Keyword, SeedTopic
@@ -111,6 +112,11 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
     )
     discovery_topic_snapshots: Mapped[list[DiscoveryTopicSnapshot]] = relationship(
         "DiscoveryTopicSnapshot",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    discovery_iteration_learnings: Mapped[list[DiscoveryIterationLearning]] = relationship(
+        "DiscoveryIterationLearning",
         back_populates="project",
         cascade="all, delete-orphan",
     )

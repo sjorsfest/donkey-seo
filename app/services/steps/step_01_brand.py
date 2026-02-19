@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.agents.brand_extractor import BrandExtractorAgent, BrandExtractorInput
+from app.agents.icp_recommender import ICPRecommenderAgent, ICPRecommenderInput
 from app.integrations.scraper import scrape_website
 from app.models.brand import BrandProfile
 from app.models.generated_dtos import BrandProfileCreateDTO, BrandProfilePatchDTO
@@ -37,6 +38,7 @@ class BrandOutput:
     unique_value_props: list[str]
     differentiators: list[str]
     target_audience: dict[str, Any]
+    suggested_icp_niches: list[dict[str, Any]]
     tone_attributes: list[str]
     allowed_claims: list[str]
     restricted_claims: list[str]
@@ -56,6 +58,14 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
     step_number = 1
     step_name = "brand_profile"
     is_optional = False
+    _TARGET_AUDIENCE_KEYS = (
+        "target_roles",
+        "target_industries",
+        "company_sizes",
+        "primary_pains",
+        "desired_outcomes",
+        "objections",
+    )
 
     async def _validate_preconditions(self, input_data: BrandInput) -> None:
         """Validate Step 0 is completed."""
@@ -78,16 +88,29 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         )
         project = result.scalar_one()
         domain = project.domain
-        logger.info("Starting brand extraction", extra={"project_id": input_data.project_id, "domain": domain})
+        logger.info(
+            "Starting brand extraction",
+            extra={"project_id": input_data.project_id, "domain": domain},
+        )
 
         await self._update_progress(10, f"Scraping website: {domain}...")
 
         # Scrape website
         scraped_data = await scrape_website(domain, max_pages=10)
-        logger.info("Website scraped", extra={"domain": domain, "pages_scraped": len(scraped_data.get("source_urls", [])), "content_length": len(scraped_data.get("combined_content", ""))})
+        logger.info(
+            "Website scraped",
+            extra={
+                "domain": domain,
+                "pages_scraped": len(scraped_data.get("source_urls", [])),
+                "content_length": len(scraped_data.get("combined_content", "")),
+            },
+        )
 
         if scraped_data.get("error"):
-            logger.warning("Scraping failed", extra={"domain": domain, "error": scraped_data["error"]})
+            logger.warning(
+                "Scraping failed",
+                extra={"domain": domain, "error": scraped_data["error"]},
+            )
             raise ValueError(f"Failed to scrape website: {scraped_data['error']}")
 
         await self._update_progress(40, "Analyzing brand content with AI...")
@@ -102,7 +125,66 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         # Run brand extraction agent
         agent = BrandExtractorAgent()
         brand_profile = await agent.run(agent_input)
-        logger.info("Brand profile extracted", extra={"company_name": brand_profile.company_name, "confidence": brand_profile.extraction_confidence, "products_count": len(brand_profile.products_services)})
+        logger.info(
+            "Brand profile extracted",
+            extra={
+                "company_name": brand_profile.company_name,
+                "confidence": brand_profile.extraction_confidence,
+                "products_count": len(brand_profile.products_services),
+            },
+        )
+
+        extracted_target_audience = {
+            "target_roles": list(brand_profile.target_audience.target_roles),
+            "target_industries": list(brand_profile.target_audience.target_industries),
+            "company_sizes": list(brand_profile.target_audience.company_sizes),
+            "primary_pains": list(brand_profile.target_audience.primary_pains),
+            "desired_outcomes": list(brand_profile.target_audience.desired_outcomes),
+            "objections": list(brand_profile.target_audience.common_objections),
+        }
+
+        await self._update_progress(65, "Expanding ICP opportunities with AI...")
+        icp_niches: list[dict[str, Any]] = []
+        try:
+            recommender = ICPRecommenderAgent()
+            recommendation = await recommender.run(
+                ICPRecommenderInput(
+                    company_name=brand_profile.company_name,
+                    tagline=brand_profile.tagline,
+                    products_services=[
+                        {
+                            "name": product.name,
+                            "description": product.description,
+                            "category": product.category,
+                            "target_audience": product.target_audience,
+                            "core_benefits": product.core_benefits,
+                        }
+                        for product in brand_profile.products_services
+                    ],
+                    unique_value_props=brand_profile.unique_value_props,
+                    differentiators=brand_profile.differentiators,
+                    current_target_audience=extracted_target_audience,
+                )
+            )
+            icp_niches = [niche.model_dump() for niche in recommendation.suggested_niches]
+            logger.info(
+                "Generated ICP niche recommendations",
+                extra={
+                    "company_name": brand_profile.company_name,
+                    "niches_count": len(icp_niches),
+                    "confidence": recommendation.recommendation_confidence,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "ICP niche recommendation failed; falling back to extracted website ICP only",
+                extra={"company_name": brand_profile.company_name},
+            )
+
+        merged_target_audience = self._merge_target_audience(
+            extracted_target_audience=extracted_target_audience,
+            suggested_icp_niches=icp_niches,
+        )
 
         await self._update_progress(90, "Finalizing brand profile...")
 
@@ -126,14 +208,8 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             ],
             unique_value_props=brand_profile.unique_value_props,
             differentiators=brand_profile.differentiators,
-            target_audience={
-                "target_roles": brand_profile.target_audience.target_roles,
-                "target_industries": brand_profile.target_audience.target_industries,
-                "company_sizes": brand_profile.target_audience.company_sizes,
-                "primary_pains": brand_profile.target_audience.primary_pains,
-                "desired_outcomes": brand_profile.target_audience.desired_outcomes,
-                "objections": brand_profile.target_audience.common_objections,
-            },
+            target_audience=merged_target_audience,
+            suggested_icp_niches=icp_niches,
             tone_attributes=brand_profile.tone_attributes,
             allowed_claims=brand_profile.allowed_claims,
             restricted_claims=brand_profile.restricted_claims,
@@ -166,6 +242,7 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             "primary_pains": result.target_audience.get("primary_pains", []),
             "desired_outcomes": result.target_audience.get("desired_outcomes", []),
             "objections": result.target_audience.get("objections", []),
+            "suggested_icp_niches": result.suggested_icp_niches,
             "tone_attributes": result.tone_attributes,
             "allowed_claims": result.allowed_claims,
             "restricted_claims": result.restricted_claims,
@@ -197,6 +274,7 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
                     primary_pains=result.target_audience.get("primary_pains", []),
                     desired_outcomes=result.target_audience.get("desired_outcomes", []),
                     objections=result.target_audience.get("objections", []),
+                    suggested_icp_niches=result.suggested_icp_niches,
                     tone_attributes=result.tone_attributes,
                     allowed_claims=result.allowed_claims,
                     restricted_claims=result.restricted_claims,
@@ -219,8 +297,91 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             "company_name": result.company_name,
             "products_count": len(result.products_services),
             "money_pages_count": len(result.money_pages),
+            "icp_niches_count": len(result.suggested_icp_niches),
+            "target_roles_count": len(result.target_audience.get("target_roles", [])),
             "extraction_confidence": result.extraction_confidence,
             "source_pages_count": len(result.source_pages),
         })
 
         await self.session.commit()
+
+    @classmethod
+    def _merge_target_audience(
+        cls,
+        *,
+        extracted_target_audience: dict[str, list[str]],
+        suggested_icp_niches: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        """Merge website ICP extraction with LLM-suggested ICP niches."""
+        merged: dict[str, list[str]] = {
+            key: cls._normalize_string_list(extracted_target_audience.get(key, []))
+            for key in cls._TARGET_AUDIENCE_KEYS
+        }
+        suggested_lists = cls._extract_niche_audience_lists(suggested_icp_niches)
+        max_items = {
+            "target_roles": 20,
+            "target_industries": 20,
+            "company_sizes": 12,
+            "primary_pains": 20,
+            "desired_outcomes": 20,
+            "objections": 20,
+        }
+
+        for key in cls._TARGET_AUDIENCE_KEYS:
+            combined = [*merged.get(key, []), *suggested_lists.get(key, [])]
+            merged[key] = cls._normalize_string_list(combined)[: max_items[key]]
+
+        return merged
+
+    @classmethod
+    def _extract_niche_audience_lists(
+        cls,
+        suggested_icp_niches: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        """Flatten list-style fields from niche recommendations."""
+        extracted: dict[str, list[str]] = {
+            key: []
+            for key in cls._TARGET_AUDIENCE_KEYS
+        }
+        objections_aliases = ("objections", "likely_objections", "common_objections")
+
+        for niche in suggested_icp_niches:
+            for key in (
+                "target_roles",
+                "target_industries",
+                "company_sizes",
+                "primary_pains",
+                "desired_outcomes",
+            ):
+                values = niche.get(key, [])
+                if isinstance(values, list):
+                    extracted[key].extend(str(value) for value in values)
+
+            for alias in objections_aliases:
+                if alias not in niche:
+                    continue
+                objections = niche.get(alias, [])
+                if isinstance(objections, list):
+                    extracted["objections"].extend(str(value) for value in objections)
+                    break
+
+        return extracted
+
+    @staticmethod
+    def _normalize_string_list(items: list[str]) -> list[str]:
+        """Trim, deduplicate, and preserve order for text list fields."""
+        normalized: list[str] = []
+        seen: set[str] = set()
+
+        for item in items:
+            value = " ".join(str(item).strip().split())
+            if not value:
+                continue
+
+            key = value.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(value)
+
+        return normalized

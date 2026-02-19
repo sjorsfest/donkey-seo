@@ -22,8 +22,8 @@ else:
             DiscoveryTopicSnapshotPatchDTO,
         )
     except ImportError:
-        DiscoveryTopicSnapshotCreateDTO = Any  # type: ignore[misc,assignment]
-        DiscoveryTopicSnapshotPatchDTO = Any  # type: ignore[misc,assignment]
+        DiscoveryTopicSnapshotCreateDTO = Any
+        DiscoveryTopicSnapshotPatchDTO = Any
 
 
 class DiscoveryTopicSnapshot(

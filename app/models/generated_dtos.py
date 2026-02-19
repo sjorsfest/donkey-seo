@@ -31,6 +31,7 @@ class BrandProfileRow:
     primary_pains: list[str] | None
     desired_outcomes: list[str] | None
     objections: list[str] | None
+    suggested_icp_niches: list[dict] | None
     tone_attributes: list[str] | None
     allowed_claims: list[str] | None
     restricted_claims: list[str] | None
@@ -61,6 +62,7 @@ class BrandProfileRow:
             primary_pains=model.primary_pains,
             desired_outcomes=model.desired_outcomes,
             objections=model.objections,
+            suggested_icp_niches=model.suggested_icp_niches,
             tone_attributes=model.tone_attributes,
             allowed_claims=model.allowed_claims,
             restricted_claims=model.restricted_claims,
@@ -93,6 +95,7 @@ class BrandProfileCreateDTO:
     primary_pains: list[str] | None = None
     desired_outcomes: list[str] | None = None
     objections: list[str] | None = None
+    suggested_icp_niches: list[dict] | None = None
     tone_attributes: list[str] | None = None
     allowed_claims: list[str] | None = None
     restricted_claims: list[str] | None = None
@@ -130,6 +133,7 @@ class BrandProfilePatchDTO:
     primary_pains: list[str] | None = None
     desired_outcomes: list[str] | None = None
     objections: list[str] | None = None
+    suggested_icp_niches: list[dict] | None = None
     tone_attributes: list[str] | None = None
     allowed_claims: list[str] | None = None
     restricted_claims: list[str] | None = None
@@ -639,6 +643,141 @@ class ContentBriefPatchDTO:
         }
 
 @dataclass(slots=True)
+class DiscoveryIterationLearningRow:
+    """Read DTO for `DiscoveryIterationLearning`."""
+
+    project_id: str
+    pipeline_run_id: str
+    iteration_index: int
+    source_capability: str
+    source_agent: str | None
+    learning_key: str
+    learning_type: str
+    polarity: str
+    status: str
+    title: str
+    detail: str
+    recommendation: str | None
+    confidence: float | None
+    novelty_score: float | None
+    baseline_metric: float | None
+    current_metric: float | None
+    delta_metric: float | None
+    applies_to_capabilities: list[str] | None
+    applies_to_agents: list[str] | None
+    evidence: dict | None
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "DiscoveryIterationLearningRow":
+        return cls(
+            project_id=model.project_id,
+            pipeline_run_id=model.pipeline_run_id,
+            iteration_index=model.iteration_index,
+            source_capability=model.source_capability,
+            source_agent=model.source_agent,
+            learning_key=model.learning_key,
+            learning_type=model.learning_type,
+            polarity=model.polarity,
+            status=model.status,
+            title=model.title,
+            detail=model.detail,
+            recommendation=model.recommendation,
+            confidence=model.confidence,
+            novelty_score=model.novelty_score,
+            baseline_metric=model.baseline_metric,
+            current_metric=model.current_metric,
+            delta_metric=model.delta_metric,
+            applies_to_capabilities=model.applies_to_capabilities,
+            applies_to_agents=model.applies_to_agents,
+            evidence=model.evidence,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class DiscoveryIterationLearningCreateDTO:
+    """Create DTO for `DiscoveryIterationLearning`."""
+
+    project_id: str
+    pipeline_run_id: str
+    iteration_index: int
+    source_capability: str
+    learning_key: str
+    learning_type: str
+    polarity: str
+    status: str
+    title: str
+    detail: str
+    source_agent: str | None = None
+    recommendation: str | None = None
+    confidence: float | None = None
+    novelty_score: float | None = None
+    baseline_metric: float | None = None
+    current_metric: float | None = None
+    delta_metric: float | None = None
+    applies_to_capabilities: list[str] | None = None
+    applies_to_agents: list[str] | None = None
+    evidence: dict | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = set()
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class DiscoveryIterationLearningPatchDTO:
+    """Sparse patch DTO for `DiscoveryIterationLearning`."""
+
+    project_id: str | None = None
+    pipeline_run_id: str | None = None
+    iteration_index: int | None = None
+    source_capability: str | None = None
+    source_agent: str | None = None
+    learning_key: str | None = None
+    learning_type: str | None = None
+    polarity: str | None = None
+    status: str | None = None
+    title: str | None = None
+    detail: str | None = None
+    recommendation: str | None = None
+    confidence: float | None = None
+    novelty_score: float | None = None
+    baseline_metric: float | None = None
+    current_metric: float | None = None
+    delta_metric: float | None = None
+    applies_to_capabilities: list[str] | None = None
+    applies_to_agents: list[str] | None = None
+    evidence: dict | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "DiscoveryIterationLearningPatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
 class DiscoveryTopicSnapshotRow:
     """Read DTO for `DiscoveryTopicSnapshot`."""
 
@@ -766,6 +905,7 @@ class KeywordRow:
     raw_variants: list[str] | None
     exclusion_flags: list[str] | None
     search_volume: int | None
+    adjusted_volume: int | None
     search_volume_period: str | None
     cpc: float | None
     competition: float | None
@@ -775,6 +915,8 @@ class KeywordRow:
     metrics_updated_at: datetime | None
     metrics_confidence: float | None
     intent: str | None
+    intent_layer: str | None
+    intent_score: float | None
     intent_confidence: float | None
     recommended_page_type: str | None
     page_type_rationale: str | None
@@ -782,6 +924,7 @@ class KeywordRow:
     risk_flags: list[str] | None
     priority_score: float | None
     priority_factors: dict | None
+    discovery_signals: dict | None
     serp_top_results: list[dict] | None
     serp_features: list[str] | None
     validated_intent: str | None
@@ -810,6 +953,7 @@ class KeywordRow:
             raw_variants=model.raw_variants,
             exclusion_flags=model.exclusion_flags,
             search_volume=model.search_volume,
+            adjusted_volume=model.adjusted_volume,
             search_volume_period=model.search_volume_period,
             cpc=model.cpc,
             competition=model.competition,
@@ -819,6 +963,8 @@ class KeywordRow:
             metrics_updated_at=model.metrics_updated_at,
             metrics_confidence=model.metrics_confidence,
             intent=model.intent,
+            intent_layer=model.intent_layer,
+            intent_score=model.intent_score,
             intent_confidence=model.intent_confidence,
             recommended_page_type=model.recommended_page_type,
             page_type_rationale=model.page_type_rationale,
@@ -826,6 +972,7 @@ class KeywordRow:
             risk_flags=model.risk_flags,
             priority_score=model.priority_score,
             priority_factors=model.priority_factors,
+            discovery_signals=model.discovery_signals,
             serp_top_results=model.serp_top_results,
             serp_features=model.serp_features,
             validated_intent=model.validated_intent,
@@ -856,6 +1003,7 @@ class KeywordCreateDTO:
     raw_variants: list[str] | None = None
     exclusion_flags: list[str] | None = None
     search_volume: int | None = None
+    adjusted_volume: int | None = None
     search_volume_period: str | None = None
     cpc: float | None = None
     competition: float | None = None
@@ -865,6 +1013,8 @@ class KeywordCreateDTO:
     metrics_updated_at: datetime | None = None
     metrics_confidence: float | None = None
     intent: str | None = None
+    intent_layer: str | None = None
+    intent_score: float | None = None
     intent_confidence: float | None = None
     recommended_page_type: str | None = None
     page_type_rationale: str | None = None
@@ -872,6 +1022,7 @@ class KeywordCreateDTO:
     risk_flags: list[str] | None = None
     priority_score: float | None = None
     priority_factors: dict | None = None
+    discovery_signals: dict | None = None
     serp_top_results: list[dict] | None = None
     serp_features: list[str] | None = None
     validated_intent: str | None = None
@@ -912,6 +1063,7 @@ class KeywordPatchDTO:
     raw_variants: list[str] | None = None
     exclusion_flags: list[str] | None = None
     search_volume: int | None = None
+    adjusted_volume: int | None = None
     search_volume_period: str | None = None
     cpc: float | None = None
     competition: float | None = None
@@ -921,6 +1073,8 @@ class KeywordPatchDTO:
     metrics_updated_at: datetime | None = None
     metrics_confidence: float | None = None
     intent: str | None = None
+    intent_layer: str | None = None
+    intent_score: float | None = None
     intent_confidence: float | None = None
     recommended_page_type: str | None = None
     page_type_rationale: str | None = None
@@ -928,6 +1082,7 @@ class KeywordPatchDTO:
     risk_flags: list[str] | None = None
     priority_score: float | None = None
     priority_factors: dict | None = None
+    discovery_signals: dict | None = None
     serp_top_results: list[dict] | None = None
     serp_features: list[str] | None = None
     validated_intent: str | None = None
@@ -1592,9 +1747,14 @@ class TopicRow:
     dominant_page_type: str | None
     funnel_stage: str | None
     total_volume: int | None
+    adjusted_volume_sum: int | None
     avg_difficulty: float | None
     keyword_count: int
     estimated_demand: int | None
+    market_mode: str | None
+    demand_fragmentation_index: float | None
+    serp_servedness_score: float | None
+    serp_competitor_density: float | None
     priority_rank: int | None
     priority_score: float | None
     priority_factors: dict | None
@@ -1624,9 +1784,14 @@ class TopicRow:
             dominant_page_type=model.dominant_page_type,
             funnel_stage=model.funnel_stage,
             total_volume=model.total_volume,
+            adjusted_volume_sum=model.adjusted_volume_sum,
             avg_difficulty=model.avg_difficulty,
             keyword_count=model.keyword_count,
             estimated_demand=model.estimated_demand,
+            market_mode=model.market_mode,
+            demand_fragmentation_index=model.demand_fragmentation_index,
+            serp_servedness_score=model.serp_servedness_score,
+            serp_competitor_density=model.serp_competitor_density,
             priority_rank=model.priority_rank,
             priority_score=model.priority_score,
             priority_factors=model.priority_factors,
@@ -1658,9 +1823,14 @@ class TopicCreateDTO:
     dominant_page_type: str | None = None
     funnel_stage: str | None = None
     total_volume: int | None = None
+    adjusted_volume_sum: int | None = None
     avg_difficulty: float | None = None
     keyword_count: int | None = None
     estimated_demand: int | None = None
+    market_mode: str | None = None
+    demand_fragmentation_index: float | None = None
+    serp_servedness_score: float | None = None
+    serp_competitor_density: float | None = None
     priority_rank: int | None = None
     priority_score: float | None = None
     priority_factors: dict | None = None
@@ -1699,9 +1869,14 @@ class TopicPatchDTO:
     dominant_page_type: str | None = None
     funnel_stage: str | None = None
     total_volume: int | None = None
+    adjusted_volume_sum: int | None = None
     avg_difficulty: float | None = None
     keyword_count: int | None = None
     estimated_demand: int | None = None
+    market_mode: str | None = None
+    demand_fragmentation_index: float | None = None
+    serp_servedness_score: float | None = None
+    serp_competitor_density: float | None = None
     priority_rank: int | None = None
     priority_score: float | None = None
     priority_factors: dict | None = None
@@ -1942,6 +2117,9 @@ __all__ = [
     "ContentBriefRow",
     "ContentBriefCreateDTO",
     "ContentBriefPatchDTO",
+    "DiscoveryIterationLearningRow",
+    "DiscoveryIterationLearningCreateDTO",
+    "DiscoveryIterationLearningPatchDTO",
     "DiscoveryTopicSnapshotRow",
     "DiscoveryTopicSnapshotCreateDTO",
     "DiscoveryTopicSnapshotPatchDTO",

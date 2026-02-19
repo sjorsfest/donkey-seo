@@ -38,6 +38,14 @@ _SEMANTIC_BY_BLOCK = {
 }
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 @dataclass(slots=True)
 class GeneratedArticleArtifact:
     """Final generated article payload."""
@@ -106,7 +114,7 @@ class ArticleGenerationService:
 
             if qa_report.get("passed") or attempt == 1:
                 status = "draft" if qa_report.get("passed") else "needs_review"
-                seo_meta = document.get("seo_meta") if isinstance(document.get("seo_meta"), dict) else {}
+                seo_meta = _as_dict(document.get("seo_meta"))
                 return GeneratedArticleArtifact(
                     title=str(seo_meta.get("h1") or brief.get("primary_keyword") or "Untitled"),
                     slug=str(seo_meta.get("slug") or self._slugify(str(brief.get("primary_keyword") or "article"))),
@@ -123,15 +131,16 @@ class ArticleGenerationService:
                     generation_temperature=agent.temperature,
                 )
 
+            required_failures = _as_list(qa_report.get("required_failures"))
             qa_feedback = [
-                f"Fix QA failure '{item}': {self._check_details(qa_report, item)}"
-                for item in qa_report.get("required_failures", [])
+                f"Fix QA failure '{item}': {self._check_details(qa_report, str(item))}"
+                for item in required_failures
             ]
 
         raise RuntimeError("Unreachable article generation state")
 
     def _check_details(self, qa_report: dict[str, Any], check_name: str) -> str:
-        checks = qa_report.get("checks") if isinstance(qa_report.get("checks"), list) else []
+        checks = _as_list(qa_report.get("checks"))
         for check in checks:
             if isinstance(check, dict) and check.get("name") == check_name:
                 return str(check.get("details"))
@@ -144,20 +153,22 @@ class ArticleGenerationService:
         writer_instructions: dict[str, Any],
         conversion_intents: list[str],
     ) -> dict[str, Any]:
+        seo_meta: dict[str, Any] = _as_dict(document.get("seo_meta"))
+        conversion_plan: dict[str, Any] = _as_dict(document.get("conversion_plan"))
+        blocks: list[Any] = _as_list(document.get("blocks"))
         normalized: dict[str, Any] = {
             "schema_version": "1.0",
-            "seo_meta": document.get("seo_meta") if isinstance(document.get("seo_meta"), dict) else {},
-            "conversion_plan": document.get("conversion_plan") if isinstance(document.get("conversion_plan"), dict) else {},
-            "blocks": document.get("blocks") if isinstance(document.get("blocks"), list) else [],
+            "seo_meta": seo_meta,
+            "conversion_plan": conversion_plan,
+            "blocks": blocks,
         }
 
-        seo_meta = normalized["seo_meta"]
         primary_keyword = str(brief.get("primary_keyword") or "")
         if not seo_meta.get("primary_keyword"):
             seo_meta["primary_keyword"] = primary_keyword
 
         if not seo_meta.get("h1"):
-            working_titles = brief.get("working_titles") if isinstance(brief.get("working_titles"), list) else []
+            working_titles = _as_list(brief.get("working_titles"))
             seo_meta["h1"] = str(working_titles[0] if working_titles else primary_keyword or "Untitled")
 
         if not seo_meta.get("meta_title"):
@@ -172,12 +183,12 @@ class ArticleGenerationService:
         if not seo_meta.get("slug"):
             seo_meta["slug"] = self._slugify(primary_keyword or str(seo_meta.get("h1")))
 
-        normalized_blocks = self._normalize_blocks(normalized["blocks"], seo_meta)
+        normalized_blocks = self._normalize_blocks(blocks, seo_meta)
 
         if self._cta_required(brief, conversion_intents) and not any(
             block.get("block_type") == "cta" for block in normalized_blocks
         ):
-            money_pages = brief.get("money_page_links") if isinstance(brief.get("money_page_links"), list) else []
+            money_pages = _as_list(brief.get("money_page_links"))
             cta_href = "#"
             if money_pages and isinstance(money_pages[0], dict):
                 cta_href = str(money_pages[0].get("url") or "#")
@@ -194,17 +205,19 @@ class ArticleGenerationService:
 
         normalized["blocks"] = normalized_blocks
 
-        if not normalized["conversion_plan"].get("primary_intent"):
-            normalized["conversion_plan"]["primary_intent"] = str(brief.get("funnel_stage") or "informational")
-        if "cta_strategy" not in normalized["conversion_plan"]:
-            normalized["conversion_plan"]["cta_strategy"] = []
+        if not conversion_plan.get("primary_intent"):
+            conversion_plan["primary_intent"] = str(brief.get("funnel_stage") or "informational")
+        if "cta_strategy" not in conversion_plan or not isinstance(conversion_plan.get("cta_strategy"), list):
+            conversion_plan["cta_strategy"] = []
 
-        if not normalized["conversion_plan"]["cta_strategy"] and normalized["blocks"]:
-            normalized["conversion_plan"]["cta_strategy"] = [
+        cta_strategy = _as_list(conversion_plan.get("cta_strategy"))
+        if not cta_strategy and normalized["blocks"]:
+            conversion_plan["cta_strategy"] = [
                 "CTA near conclusion",
                 "Contextual CTA in product-relevant sections",
             ]
 
+        normalized["conversion_plan"] = conversion_plan
         return normalized
 
     def _normalize_blocks(self, blocks: list[Any], seo_meta: dict[str, Any]) -> list[dict[str, Any]]:

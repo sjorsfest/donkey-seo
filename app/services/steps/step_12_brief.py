@@ -38,6 +38,9 @@ class BriefInput:
     publication_start_date: date | None = None
     use_llm_timing_hints: bool = True
     llm_timing_flex_days: int = 14
+    include_zero_data_topics: bool = True
+    zero_data_topic_share: float = 0.2
+    zero_data_fit_score_min: float = 0.65
 
 
 @dataclass
@@ -138,24 +141,61 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 ).order_by(Topic.priority_rank)
             )
 
-        all_topics = list(topics_result.scalars())[:input_data.max_briefs]
-        eligible_topics = [topic for topic in all_topics if self._is_topic_eligible(topic)]
-        skipped_ineligible = len(all_topics) - len(eligible_topics)
+        all_topics = list(topics_result.scalars())
+        eligible_topics_all = [topic for topic in all_topics if self._is_topic_eligible(topic)]
+        skipped_ineligible = len(all_topics) - len(eligible_topics_all)
+
+        selected_topics = eligible_topics_all
+        zero_data_candidates = 0
+        zero_data_selected = 0
+        if input_data.topic_ids:
+            selected_topics = eligible_topics_all[:input_data.max_briefs]
+        else:
+            primary_keywords_by_topic_id = await self._load_primary_keywords_for_topics(
+                eligible_topics_all
+            )
+            zero_data_candidates = sum(
+                1
+                for topic in eligible_topics_all
+                if self._is_zero_data_topic_candidate(
+                    topic=topic,
+                    primary_keyword=primary_keywords_by_topic_id.get(str(topic.id)),
+                    min_fit_score=input_data.zero_data_fit_score_min,
+                )
+            )
+            selected_topics = self._select_topics_for_briefs(
+                topics=eligible_topics_all,
+                primary_keywords_by_topic_id=primary_keywords_by_topic_id,
+                input_data=input_data,
+            )
+            zero_data_selected = sum(
+                1
+                for topic in selected_topics
+                if self._is_zero_data_topic_candidate(
+                    topic=topic,
+                    primary_keyword=primary_keywords_by_topic_id.get(str(topic.id)),
+                    min_fit_score=input_data.zero_data_fit_score_min,
+                )
+            )
+
         existing_brief_topic_ids = await self._load_existing_brief_topic_ids(
-            [str(topic.id) for topic in eligible_topics]
+            [str(topic.id) for topic in selected_topics]
         )
         topics_to_generate = [
-            topic for topic in eligible_topics if str(topic.id) not in existing_brief_topic_ids
+            topic for topic in selected_topics if str(topic.id) not in existing_brief_topic_ids
         ]
-        skipped_existing = len(eligible_topics) - len(topics_to_generate)
+        skipped_existing = len(selected_topics) - len(topics_to_generate)
         logger.info(
             "Brief generation starting",
             extra={
                 "project_id": input_data.project_id,
                 "topic_count": len(all_topics),
-                "eligible_topics": len(eligible_topics),
+                "eligible_topics": len(eligible_topics_all),
+                "selected_topics": len(selected_topics),
                 "skipped_ineligible": skipped_ineligible,
                 "skipped_existing": skipped_existing,
+                "zero_data_candidates": zero_data_candidates,
+                "zero_data_selected": zero_data_selected,
             },
         )
 
@@ -411,6 +451,133 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             return topic.priority_rank is not None
         return fit_tier in {"primary", "secondary"}
 
+    def _select_topics_for_briefs(
+        self,
+        *,
+        topics: list[Topic],
+        primary_keywords_by_topic_id: dict[str, Keyword | None],
+        input_data: BriefInput,
+    ) -> list[Topic]:
+        """Select topics for briefs with optional zero-data exploratory reservation."""
+        max_briefs = max(1, int(input_data.max_briefs))
+        if len(topics) <= max_briefs:
+            return topics
+
+        if not input_data.include_zero_data_topics:
+            return topics[:max_briefs]
+
+        share = max(0.0, min(float(input_data.zero_data_topic_share), 0.5))
+        reserved_slots = int(round(max_briefs * share))
+        if share > 0 and reserved_slots <= 0:
+            reserved_slots = 1
+        if reserved_slots <= 0:
+            return topics[:max_briefs]
+
+        zero_data_candidates = [
+            topic
+            for topic in topics
+            if self._is_zero_data_topic_candidate(
+                topic=topic,
+                primary_keyword=primary_keywords_by_topic_id.get(str(topic.id)),
+                min_fit_score=input_data.zero_data_fit_score_min,
+            )
+        ]
+        if not zero_data_candidates:
+            return topics[:max_briefs]
+
+        reserved_slots = min(reserved_slots, len(zero_data_candidates), max_briefs)
+        selected_zero_data = sorted(
+            zero_data_candidates,
+            key=self._zero_data_sort_key,
+        )[:reserved_slots]
+        selected_zero_data_ids = {str(topic.id) for topic in selected_zero_data}
+
+        core_slots = max(0, max_briefs - reserved_slots)
+        selected_core = [
+            topic for topic in topics if str(topic.id) not in selected_zero_data_ids
+        ][:core_slots]
+        selected_ids = {str(topic.id) for topic in selected_core}
+        selected_ids.update(selected_zero_data_ids)
+
+        selected: list[Topic] = []
+        for topic in topics:
+            if str(topic.id) in selected_ids:
+                selected.append(topic)
+            if len(selected) >= max_briefs:
+                break
+
+        return selected
+
+    def _is_zero_data_topic_candidate(
+        self,
+        *,
+        topic: Topic,
+        primary_keyword: Keyword | None,
+        min_fit_score: float,
+    ) -> bool:
+        """Return True if topic should be considered for zero-data exploratory briefs."""
+        if primary_keyword is None:
+            return False
+
+        fit_score = self._topic_fit_score(topic)
+        if fit_score is None or fit_score < min_fit_score:
+            return False
+
+        return self._is_keyword_zero_data(primary_keyword)
+
+    def _is_keyword_zero_data(self, keyword: Keyword) -> bool:
+        """Treat missing volume/metrics as zero-data demand signal."""
+        if keyword.search_volume is None:
+            return True
+        if keyword.metrics_confidence is not None and keyword.metrics_confidence <= 0.2:
+            return True
+        return False
+
+    def _zero_data_sort_key(self, topic: Topic) -> tuple[float, int]:
+        """Sort high-fit zero-data topics by fit first, then existing priority rank."""
+        fit_score = self._topic_fit_score(topic) or 0.0
+        rank = topic.priority_rank if topic.priority_rank is not None else 999_999
+        return (-fit_score, rank)
+
+    def _topic_fit_score(self, topic: Topic) -> float | None:
+        """Read fit_score from topic priority factors, if available."""
+        factors = topic.priority_factors or {}
+        fit_score = factors.get("fit_score")
+        try:
+            if fit_score is None:
+                return None
+            return float(fit_score)
+        except (TypeError, ValueError):
+            return None
+
+    async def _load_primary_keywords_for_topics(
+        self,
+        topics: list[Topic],
+    ) -> dict[str, Keyword | None]:
+        """Load primary keyword models for topic selection logic."""
+        topic_ids = [str(topic.id) for topic in topics]
+        primary_ids = [
+            topic.primary_keyword_id
+            for topic in topics
+            if topic.primary_keyword_id
+        ]
+        if not topic_ids:
+            return {}
+        mapping: dict[str, Keyword | None] = {topic_id: None for topic_id in topic_ids}
+        if not primary_ids:
+            return mapping
+
+        result = await self.session.execute(
+            select(Keyword).where(Keyword.id.in_(primary_ids))
+        )
+        keywords = list(result.scalars())
+        by_id = {str(keyword.id): keyword for keyword in keywords}
+        for topic in topics:
+            if topic.primary_keyword_id:
+                mapping[str(topic.id)] = by_id.get(str(topic.primary_keyword_id))
+
+        return mapping
+
     def _resolve_brief_serp_profile(self, primary_kw: Keyword, topic: Topic) -> dict[str, Any]:
         """Resolve brief search profile, preferring Step 8 validation when available."""
         return {
@@ -431,7 +598,10 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             ],
         }
 
-    def _build_publication_schedule_config(self, input_data: BriefInput) -> PublicationScheduleConfig:
+    def _build_publication_schedule_config(
+        self,
+        input_data: BriefInput,
+    ) -> PublicationScheduleConfig:
         """Normalize publication scheduling controls from step input."""
         posts_per_week = max(1, min(input_data.posts_per_week, 7))
         min_lead_days = max(1, min(input_data.min_lead_days, 60))
@@ -877,6 +1047,54 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
         return warnings
 
+    def _optional_str(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        coerced = str(value).strip()
+        return coerced or None
+
+    def _str_list_or_none(self, value: Any) -> list[str] | None:
+        if not isinstance(value, list):
+            return None
+        cleaned = [
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        ]
+        return cleaned or None
+
+    def _dict_list_or_none(self, value: Any) -> list[dict] | None:
+        if not isinstance(value, list):
+            return None
+        cleaned = [item for item in value if isinstance(item, dict)]
+        return cleaned or None
+
+    def _dict_or_none(self, value: Any) -> dict | None:
+        if isinstance(value, dict):
+            return value
+        return None
+
+    def _optional_int(self, value: Any) -> int | None:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _optional_date(self, value: Any) -> date | None:
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return None
+        return None
+
     async def _persist_results(self, result: BriefOutput) -> None:
         """Save content briefs to database."""
         topic_ids = [
@@ -898,29 +1116,64 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             }
 
         for brief_data in result.briefs:
-            existing = existing_by_topic_id.get(str(brief_data["topic_id"]))
+            topic_id = self._optional_str(brief_data.get("topic_id"))
+            if topic_id is None:
+                continue
+
+            existing = existing_by_topic_id.get(topic_id)
+            target_word_count_raw = brief_data.get("target_word_count")
+            target_word_count = (
+                target_word_count_raw
+                if isinstance(target_word_count_raw, dict)
+                else {}
+            )
+            primary_keyword = str(brief_data.get("primary_keyword") or "")
+            search_intent = self._optional_str(brief_data.get("search_intent"))
+            page_type = self._optional_str(brief_data.get("page_type"))
+            funnel_stage = self._optional_str(brief_data.get("funnel_stage"))
+            working_titles = self._str_list_or_none(brief_data.get("working_titles"))
+            target_audience = self._optional_str(brief_data.get("target_audience"))
+            reader_job_to_be_done = self._optional_str(brief_data.get("reader_job_to_be_done"))
+            outline = self._dict_list_or_none(brief_data.get("outline"))
+            supporting_keywords = self._str_list_or_none(brief_data.get("supporting_keywords"))
+            supporting_keywords_map = self._dict_or_none(brief_data.get("supporting_keywords_map"))
+            examples_required = self._str_list_or_none(brief_data.get("examples_required"))
+            faq_questions = self._str_list_or_none(brief_data.get("faq_questions"))
+            recommended_schema_type = self._optional_str(brief_data.get("recommended_schema_type"))
+            internal_links_out = self._dict_list_or_none(brief_data.get("internal_links_out"))
+            money_page_links = self._dict_list_or_none(brief_data.get("money_page_links"))
+            meta_title_guidelines = self._optional_str(brief_data.get("meta_title_guidelines"))
+            meta_description_guidelines = self._optional_str(
+                brief_data.get("meta_description_guidelines")
+            )
+            target_word_count_min = self._optional_int(target_word_count.get("min"))
+            target_word_count_max = self._optional_int(target_word_count.get("max"))
+            must_include_sections = self._str_list_or_none(brief_data.get("must_include_sections"))
+            proposed_publication_date = self._optional_date(
+                brief_data.get("proposed_publication_date")
+            )
             payload = {
-                "primary_keyword": brief_data["primary_keyword"],
-                "search_intent": brief_data.get("search_intent"),
-                "page_type": brief_data.get("page_type"),
-                "funnel_stage": brief_data.get("funnel_stage"),
-                "working_titles": brief_data.get("working_titles"),
-                "target_audience": brief_data.get("target_audience"),
-                "reader_job_to_be_done": brief_data.get("reader_job_to_be_done"),
-                "outline": brief_data.get("outline"),
-                "supporting_keywords": brief_data.get("supporting_keywords"),
-                "supporting_keywords_map": brief_data.get("supporting_keywords_map"),
-                "examples_required": brief_data.get("examples_required"),
-                "faq_questions": brief_data.get("faq_questions"),
-                "recommended_schema_type": brief_data.get("recommended_schema_type"),
-                "internal_links_out": brief_data.get("internal_links_out"),
-                "money_page_links": brief_data.get("money_page_links"),
-                "meta_title_guidelines": brief_data.get("meta_title_guidelines"),
-                "meta_description_guidelines": brief_data.get("meta_description_guidelines"),
-                "target_word_count_min": brief_data.get("target_word_count", {}).get("min"),
-                "target_word_count_max": brief_data.get("target_word_count", {}).get("max"),
-                "must_include_sections": brief_data.get("must_include_sections"),
-                "proposed_publication_date": brief_data.get("proposed_publication_date"),
+                "primary_keyword": primary_keyword,
+                "search_intent": search_intent,
+                "page_type": page_type,
+                "funnel_stage": funnel_stage,
+                "working_titles": working_titles,
+                "target_audience": target_audience,
+                "reader_job_to_be_done": reader_job_to_be_done,
+                "outline": outline,
+                "supporting_keywords": supporting_keywords,
+                "supporting_keywords_map": supporting_keywords_map,
+                "examples_required": examples_required,
+                "faq_questions": faq_questions,
+                "recommended_schema_type": recommended_schema_type,
+                "internal_links_out": internal_links_out,
+                "money_page_links": money_page_links,
+                "meta_title_guidelines": meta_title_guidelines,
+                "meta_description_guidelines": meta_description_guidelines,
+                "target_word_count_min": target_word_count_min,
+                "target_word_count_max": target_word_count_max,
+                "must_include_sections": must_include_sections,
+                "proposed_publication_date": proposed_publication_date,
                 "status": "draft",
             }
             if existing:
@@ -930,13 +1183,36 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 )
                 continue
 
+            create_dto = ContentBriefCreateDTO(
+                project_id=self.project_id,
+                topic_id=topic_id,
+                primary_keyword=primary_keyword,
+                search_intent=search_intent,
+                page_type=page_type,
+                funnel_stage=funnel_stage,
+                working_titles=working_titles,
+                target_audience=target_audience,
+                reader_job_to_be_done=reader_job_to_be_done,
+                outline=outline,
+                supporting_keywords=supporting_keywords,
+                supporting_keywords_map=supporting_keywords_map,
+                examples_required=examples_required,
+                faq_questions=faq_questions,
+                recommended_schema_type=recommended_schema_type,
+                internal_links_out=internal_links_out,
+                money_page_links=money_page_links,
+                meta_title_guidelines=meta_title_guidelines,
+                meta_description_guidelines=meta_description_guidelines,
+                target_word_count_min=target_word_count_min,
+                target_word_count_max=target_word_count_max,
+                must_include_sections=must_include_sections,
+                proposed_publication_date=proposed_publication_date,
+                status="draft",
+            )
+
             ContentBrief.create(
                 self.session,
-                ContentBriefCreateDTO(
-                    project_id=self.project_id,
-                    topic_id=brief_data["topic_id"],
-                    **payload,
-                ),
+                create_dto,
             )
 
         # Update project step

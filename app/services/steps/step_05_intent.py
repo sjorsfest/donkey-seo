@@ -16,6 +16,7 @@ from app.agents.intent_classifier import IntentClassifierAgent, IntentClassifier
 from app.models.brand import BrandProfile
 from app.models.keyword import Keyword
 from app.models.project import Project
+from app.services.discovery_capabilities import CAPABILITY_INTENT_CLASSIFICATION
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,27 @@ RISK_PATTERNS = {
     "ugc_dominated": [r"\breddit\b", r"\bquora\b", r"\bforum\b"],
     "seasonal": [r"\b(christmas|halloween|black\s*friday|cyber\s*monday)\b"],
 }
+WORKFLOW_INTENT_TERMS = {
+    "integrate",
+    "integration",
+    "webhook",
+    "api",
+    "sync",
+    "connect",
+    "automation",
+    "workflow",
+    "route",
+    "notify",
+}
+COMPARISON_TERMS = {
+    "alternative",
+    "alternatives",
+    "replace",
+    "replacement",
+    "vs",
+    "versus",
+    "instead",
+}
 
 
 class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
@@ -120,6 +142,7 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
 
     step_number = 5
     step_name = "intent_labeling"
+    capability_key = CAPABILITY_INTENT_CLASSIFICATION
     is_optional = False
 
     LLM_BATCH_SIZE = 30  # Keywords per LLM call
@@ -155,6 +178,16 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
             brand_context = (
                 f"Brand: {brand.company_name}. "
                 f"Products: {', '.join(products)}"
+            )
+        learning_context = await self.build_learning_context(
+            self.capability_key,
+            "IntentClassifierAgent",
+        )
+        if learning_context:
+            brand_context = (
+                f"{brand_context}\n\n{learning_context}"
+                if brand_context
+                else learning_context
             )
 
         await self._update_progress(5, "Loading keywords...")
@@ -320,7 +353,24 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
 
         for kw, classification in all_classified:
             # Update keyword model
+            discovery_signals = (
+                kw.discovery_signals
+                if isinstance(kw.discovery_signals, dict)
+                else {}
+            )
+            intent_layer = self._derive_intent_layer(
+                keyword=kw.keyword,
+                intent=classification["intent"],
+                discovery_signals=discovery_signals,
+            )
+            intent_score = self._calculate_intent_score(
+                intent_layer=intent_layer,
+                intent_confidence=classification.get("intent_confidence", 0.8),
+                discovery_signals=discovery_signals,
+            )
             kw.intent = classification["intent"]
+            kw.intent_layer = intent_layer
+            kw.intent_score = intent_score
             kw.intent_confidence = classification.get("intent_confidence", 0.8)
             kw.recommended_page_type = classification["page_type"]
             kw.page_type_rationale = classification.get("rationale")
@@ -331,6 +381,8 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
                 "keyword_id": str(kw.id),
                 "keyword": kw.keyword,
                 "intent_label": classification["intent"],
+                "intent_layer": intent_layer,
+                "intent_score": intent_score,
                 "intent_confidence": classification.get("intent_confidence", 0.8),
                 "recommended_page_type": classification["page_type"],
                 "funnel_stage": classification["funnel_stage"],
@@ -408,6 +460,64 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
             "rationale": "Classified by deterministic rules",
             "risk_flags": risk_flags,
         }
+
+    def _derive_intent_layer(
+        self,
+        *,
+        keyword: str,
+        intent: str,
+        discovery_signals: dict[str, Any],
+    ) -> str:
+        """Derive secondary intent taxonomy for market-aware discovery."""
+        keyword_lower = keyword.lower()
+        is_comparison = bool(discovery_signals.get("is_comparison")) or any(
+            re.search(rf"\b{re.escape(term)}\b", keyword_lower) for term in COMPARISON_TERMS
+        )
+        if is_comparison:
+            return "comparison_replacement"
+
+        is_workflow = (
+            bool(discovery_signals.get("has_action_verb"))
+            or bool(discovery_signals.get("has_integration_term"))
+            or bool(discovery_signals.get("has_two_entities"))
+            or any(re.search(rf"\b{re.escape(term)}\b", keyword_lower) for term in WORKFLOW_INTENT_TERMS)
+        )
+        if is_workflow:
+            return "workflow_integration"
+
+        word_count = int(discovery_signals.get("word_count") or len(keyword_lower.split()))
+        if intent == "informational" and word_count <= 2:
+            return "category"
+
+        return "solution_feature"
+
+    def _calculate_intent_score(
+        self,
+        *,
+        intent_layer: str,
+        intent_confidence: float,
+        discovery_signals: dict[str, Any],
+    ) -> float:
+        """Calculate normalized intent strength score (0-1)."""
+        base_by_layer = {
+            "category": 0.45,
+            "solution_feature": 0.62,
+            "workflow_integration": 0.80,
+            "comparison_replacement": 0.78,
+        }
+        score = base_by_layer.get(intent_layer, 0.6)
+        if discovery_signals.get("has_action_verb"):
+            score += 0.07
+        if discovery_signals.get("has_integration_term"):
+            score += 0.06
+        if discovery_signals.get("has_two_entities"):
+            score += 0.05
+        if discovery_signals.get("is_comparison"):
+            score += 0.05
+
+        confidence = max(0.0, min(1.0, float(intent_confidence)))
+        blended = (score * 0.8) + (confidence * 0.2)
+        return round(max(0.0, min(1.0, blended)), 4)
 
     async def _persist_results(self, result: IntentOutput) -> None:
         """Save intent classifications (already updated during execution)."""

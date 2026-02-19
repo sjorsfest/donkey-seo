@@ -603,6 +603,9 @@ class PipelineOrchestrator:
                 "publication_start_date": content_config.publication_start_date,
                 "use_llm_timing_hints": content_config.use_llm_timing_hints,
                 "llm_timing_flex_days": content_config.llm_timing_flex_days,
+                "include_zero_data_topics": content_config.include_zero_data_topics,
+                "zero_data_topic_share": content_config.zero_data_topic_share,
+                "zero_data_fit_score_min": content_config.zero_data_fit_score_min,
             }
         }
         chained_config = {

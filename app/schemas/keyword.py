@@ -32,6 +32,7 @@ class KeywordMetrics(BaseModel):
     """Keyword metrics data."""
 
     search_volume: int | None
+    adjusted_volume: int | None
     cpc: float | None
     competition: float | None
     difficulty: float | None
@@ -43,6 +44,8 @@ class KeywordIntent(BaseModel):
     """Keyword intent data."""
 
     intent: str | None
+    intent_layer: str | None
+    intent_score: float | None
     intent_confidence: float | None
     recommended_page_type: str | None
     page_type_rationale: str | None
@@ -63,11 +66,14 @@ class KeywordResponse(BaseModel):
 
     # Metrics (Step 4)
     search_volume: int | None
+    adjusted_volume: int | None
     cpc: float | None
     difficulty: float | None
 
     # Intent (Step 5)
     intent: str | None
+    intent_layer: str | None
+    intent_score: float | None
     recommended_page_type: str | None
     funnel_stage: str | None
 
@@ -104,6 +110,7 @@ class KeywordDetailResponse(KeywordResponse):
 
     # Priority
     priority_factors: dict | None
+    discovery_signals: dict | None
 
     # SERP validation
     serp_top_results: list[dict] | None

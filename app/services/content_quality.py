@@ -6,8 +6,16 @@ import re
 from typing import Any
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _collect_heading_values(document: dict[str, Any]) -> list[str]:
-    blocks = document.get("blocks") if isinstance(document.get("blocks"), list) else []
+    blocks = _as_list(document.get("blocks"))
     headings: list[str] = []
     for block in blocks:
         if not isinstance(block, dict):
@@ -20,13 +28,13 @@ def _collect_heading_values(document: dict[str, Any]) -> list[str]:
 
 def _collect_text(document: dict[str, Any]) -> str:
     parts: list[str] = []
-    seo_meta = document.get("seo_meta") if isinstance(document.get("seo_meta"), dict) else {}
+    seo_meta = _as_dict(document.get("seo_meta"))
     for key in ("h1", "meta_title", "meta_description", "primary_keyword"):
         value = seo_meta.get(key)
         if isinstance(value, str):
             parts.append(value)
 
-    blocks = document.get("blocks") if isinstance(document.get("blocks"), list) else []
+    blocks = _as_list(document.get("blocks"))
     for block in blocks:
         if not isinstance(block, dict):
             continue
@@ -164,7 +172,7 @@ def evaluate_article_quality(
         "details": {"count": external_links, "minimum": min_external_links},
     })
 
-    blocks = document.get("blocks") if isinstance(document.get("blocks"), list) else []
+    blocks = _as_list(document.get("blocks"))
     has_cta = any(
         isinstance(block, dict) and block.get("block_type") == "cta"
         for block in blocks

@@ -1,5 +1,10 @@
 """Unit tests for discovery loop strategy and filtering helpers."""
 
+from types import SimpleNamespace
+
+import pytest
+
+from app.schemas.pipeline import DiscoveryLoopConfig
 from app.services.discovery_loop import DiscoveryLoopSupervisor, TopicDecision
 
 
@@ -74,6 +79,24 @@ def test_extract_top_domains_dedupes_and_normalizes() -> None:
     )
 
     assert domains == ["example.com", "another.com"]
+
+
+def test_collect_iteration_step_summaries_keeps_dict_only() -> None:
+    service = DiscoveryLoopSupervisor.__new__(DiscoveryLoopSupervisor)
+
+    summaries = service._collect_iteration_step_summaries(  # type: ignore[attr-defined]
+        None,
+        step_num=2,
+        execution=SimpleNamespace(result_summary={"seeds_created": 12}),
+    )
+    summaries = service._collect_iteration_step_summaries(  # type: ignore[attr-defined]
+        summaries,
+        step_num=3,
+        execution=SimpleNamespace(result_summary="ignored"),
+    )
+
+    assert summaries[2] == {"seeds_created": 12}
+    assert summaries[3] == {}
 
 
 def test_merge_accepted_topics_accumulates_across_iterations() -> None:
@@ -160,3 +183,242 @@ def test_merge_accepted_topics_updates_same_topic_to_latest_id() -> None:
 
     assert selected_ids == ["new-id"]
     assert selected_names == ["Support Pricing"]
+
+
+class _ScalarRows:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[object]:
+        return self._rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _RowsResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _ScalarRows:
+        return _ScalarRows(self._rows)
+
+
+class _SessionSequence:
+    def __init__(self, topic_rows: list[object], keyword_rows: list[object]) -> None:
+        self._topic_rows = topic_rows
+        self._keyword_rows = keyword_rows
+        self._calls = 0
+
+    async def execute(self, _query: object) -> _RowsResult:
+        self._calls += 1
+        if self._calls == 1:
+            return _RowsResult(self._topic_rows)
+        return _RowsResult(self._keyword_rows)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_decisions_accepts_workflow_topic_with_alternate_serp() -> None:
+    topic = SimpleNamespace(
+        id="topic-1",
+        name="Slack to Notion Workflow",
+        priority_factors={
+            "fit_tier": "primary",
+            "fit_score": 0.81,
+            "fit_reasons": [],
+            "serp_intent_confidence": 0.8,
+            "serp_evidence_keyword_id": "kw-alt",
+        },
+        primary_keyword_id="kw-primary",
+        market_mode="fragmented_workflow",
+        serp_servedness_score=0.25,
+        serp_competitor_density=0.2,
+        avg_difficulty=40.0,
+    )
+    primary_kw = SimpleNamespace(
+        id="kw-primary",
+        serp_top_results=[],
+        serp_mismatch_flags=[],
+        difficulty=40.0,
+        validated_intent=None,
+        validated_page_type=None,
+    )
+    alternate_kw = SimpleNamespace(
+        id="kw-alt",
+        serp_top_results=[{"domain": "reddit.com"}],
+        serp_mismatch_flags=[],
+        difficulty=40.0,
+        validated_intent="informational",
+        validated_page_type="guide",
+    )
+    supervisor = DiscoveryLoopSupervisor.__new__(DiscoveryLoopSupervisor)
+    supervisor.project_id = "project-1"
+    supervisor.run = SimpleNamespace(id="run-1")
+    supervisor.session = _SessionSequence([topic], [primary_kw, alternate_kw])
+
+    decisions = await supervisor._evaluate_topic_decisions(  # type: ignore[attr-defined]
+        iteration_index=1,
+        discovery=DiscoveryLoopConfig(
+            require_serp_gate=True,
+            require_intent_match=True,
+            max_keyword_difficulty=65.0,
+            min_domain_diversity=0.5,
+            max_serp_servedness=0.75,
+            max_serp_competitor_density=0.70,
+            min_serp_intent_confidence=0.35,
+        ),
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].decision == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_topic_decisions_rejects_workflow_topic_when_saturated() -> None:
+    topic = SimpleNamespace(
+        id="topic-2",
+        name="CRM Integration",
+        priority_factors={
+            "fit_tier": "primary",
+            "fit_score": 0.77,
+            "fit_reasons": [],
+            "serp_intent_confidence": 0.9,
+            "serp_evidence_keyword_id": "kw-primary",
+        },
+        primary_keyword_id="kw-primary",
+        market_mode="fragmented_workflow",
+        serp_servedness_score=0.9,
+        serp_competitor_density=0.9,
+        avg_difficulty=30.0,
+    )
+    primary_kw = SimpleNamespace(
+        id="kw-primary",
+        serp_top_results=[{"domain": "vendor-a.com"}, {"domain": "vendor-b.com"}],
+        serp_mismatch_flags=[],
+        difficulty=30.0,
+        validated_intent="commercial",
+        validated_page_type="landing",
+    )
+    supervisor = DiscoveryLoopSupervisor.__new__(DiscoveryLoopSupervisor)
+    supervisor.project_id = "project-1"
+    supervisor.run = SimpleNamespace(id="run-1")
+    supervisor.session = _SessionSequence([topic], [primary_kw])
+
+    decisions = await supervisor._evaluate_topic_decisions(  # type: ignore[attr-defined]
+        iteration_index=1,
+        discovery=DiscoveryLoopConfig(
+            require_serp_gate=True,
+            require_intent_match=True,
+            max_keyword_difficulty=65.0,
+            min_domain_diversity=0.5,
+            max_serp_servedness=0.75,
+            max_serp_competitor_density=0.70,
+            min_serp_intent_confidence=0.35,
+        ),
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].decision == "rejected"
+    assert any("workflow_serp_saturated" in reason for reason in decisions[0].rejection_reasons)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_topic_decisions_rejects_off_goal_intent_for_secondary_fit() -> None:
+    topic = SimpleNamespace(
+        id="topic-3",
+        name="Helpdesk Login Portal",
+        dominant_intent="navigational",
+        priority_factors={
+            "fit_tier": "secondary",
+            "fit_score": 0.62,
+            "fit_reasons": [],
+            "serp_evidence_keyword_id": "kw-primary",
+        },
+        primary_keyword_id="kw-primary",
+        market_mode="established_category",
+        avg_difficulty=18.0,
+    )
+    keyword = SimpleNamespace(
+        id="kw-primary",
+        serp_top_results=[{"domain": "vendor-a.com"}, {"domain": "vendor-b.com"}],
+        serp_mismatch_flags=["intent_mismatch"],
+        difficulty=18.0,
+        validated_intent="navigational",
+        validated_page_type="landing",
+    )
+    supervisor = DiscoveryLoopSupervisor.__new__(DiscoveryLoopSupervisor)
+    supervisor.project_id = "project-1"
+    supervisor.run = SimpleNamespace(
+        id="run-1",
+        steps_config={"primary_goal": "revenue_content", "strategy": {}},
+    )
+    supervisor.session = _SessionSequence([topic], [keyword])
+
+    decisions = await supervisor._evaluate_topic_decisions(  # type: ignore[attr-defined]
+        iteration_index=1,
+        discovery=DiscoveryLoopConfig(
+            require_serp_gate=True,
+            require_intent_match=True,
+            max_keyword_difficulty=65.0,
+            min_domain_diversity=0.5,
+            max_serp_servedness=0.75,
+            max_serp_competitor_density=0.70,
+            min_serp_intent_confidence=0.35,
+        ),
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].decision == "rejected"
+    assert any(
+        reason.startswith("goal_intent_mismatch:")
+        for reason in decisions[0].rejection_reasons
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_topic_decisions_accepts_core_goal_intent_despite_mismatch_flag() -> None:
+    topic = SimpleNamespace(
+        id="topic-4",
+        name="Helpdesk Pricing Software",
+        dominant_intent="transactional",
+        priority_factors={
+            "fit_tier": "secondary",
+            "fit_score": 0.63,
+            "fit_reasons": [],
+            "serp_evidence_keyword_id": "kw-primary",
+        },
+        primary_keyword_id="kw-primary",
+        market_mode="established_category",
+        avg_difficulty=22.0,
+    )
+    keyword = SimpleNamespace(
+        id="kw-primary",
+        serp_top_results=[{"domain": "vendor-a.com"}, {"domain": "vendor-b.com"}],
+        serp_mismatch_flags=["intent_mismatch"],
+        difficulty=22.0,
+        validated_intent="commercial",
+        validated_page_type="landing",
+    )
+    supervisor = DiscoveryLoopSupervisor.__new__(DiscoveryLoopSupervisor)
+    supervisor.project_id = "project-1"
+    supervisor.run = SimpleNamespace(
+        id="run-1",
+        steps_config={"primary_goal": "revenue_content", "strategy": {}},
+    )
+    supervisor.session = _SessionSequence([topic], [keyword])
+
+    decisions = await supervisor._evaluate_topic_decisions(  # type: ignore[attr-defined]
+        iteration_index=1,
+        discovery=DiscoveryLoopConfig(
+            require_serp_gate=True,
+            require_intent_match=True,
+            max_keyword_difficulty=65.0,
+            min_domain_diversity=0.5,
+            max_serp_servedness=0.75,
+            max_serp_competitor_density=0.70,
+            min_serp_intent_confidence=0.35,
+        ),
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].decision == "accepted"

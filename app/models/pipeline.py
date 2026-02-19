@@ -18,6 +18,7 @@ from app.models.generated_dtos import (
 )
 
 if TYPE_CHECKING:
+    from app.models.discovery_learning import DiscoveryIterationLearning
     from app.models.discovery_snapshot import DiscoveryTopicSnapshot
     from app.models.project import Project
 
@@ -66,6 +67,11 @@ class PipelineRun(
     )
     discovery_topic_snapshots: Mapped[list[DiscoveryTopicSnapshot]] = relationship(
         "DiscoveryTopicSnapshot",
+        back_populates="pipeline_run",
+        cascade="all, delete-orphan",
+    )
+    discovery_iteration_learnings: Mapped[list[DiscoveryIterationLearning]] = relationship(
+        "DiscoveryIterationLearning",
         back_populates="pipeline_run",
         cascade="all, delete-orphan",
     )

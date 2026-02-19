@@ -18,6 +18,7 @@ from app.config import settings
 from app.core.database import close_db, init_db
 from app.core.logging import setup_logging
 from app.core.redis import close_redis
+from app.services.pipeline_task_manager import get_pipeline_task_manager
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await init_db()
         logger.info("Development database initialized")
 
+    await get_pipeline_task_manager().start()
+
     yield
 
     logger.info("Shutting down DonkeySEO")
+    await get_pipeline_task_manager().stop()
     await close_redis()
     await close_db()
 

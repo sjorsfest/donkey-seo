@@ -54,6 +54,7 @@ class BrandProfile(
     primary_pains: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     desired_outcomes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     objections: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    suggested_icp_niches: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
 
     # Voice & claims
     tone_attributes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)

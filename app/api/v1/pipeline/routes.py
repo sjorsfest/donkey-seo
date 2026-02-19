@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -14,13 +14,10 @@ from app.api.v1.pipeline.constants import (
     NO_PAUSED_PIPELINE_DETAIL,
     NO_RUNNING_PIPELINE_DETAIL,
     PIPELINE_ALREADY_RUNNING_DETAIL,
+    PIPELINE_QUEUE_FULL_DETAIL,
     PIPELINE_RUN_NOT_FOUND_DETAIL,
 )
 from app.api.v1.pipeline.openapi_docs import PIPELINE_START_OPENAPI_EXTRA
-from app.api.v1.pipeline.utils import (
-    resume_pipeline_background,
-    run_pipeline_background,
-)
 from app.dependencies import CurrentUser, DbSession
 from app.models.discovery_snapshot import DiscoveryTopicSnapshot
 from app.models.generated_dtos import PipelineRunCreateDTO
@@ -33,6 +30,11 @@ from app.schemas.pipeline import (
     PipelineStartRequest,
     StepExecutionResponse,
 )
+from app.services.pipeline_task_manager import (
+    PipelineQueueFullError,
+    get_pipeline_task_manager,
+)
+from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,6 @@ async def start_pipeline(
     request: PipelineStartRequest,
     current_user: CurrentUser,
     session: DbSession,
-    background_tasks: BackgroundTasks,
 ) -> PipelineRun:
     """Start a new pipeline run for a project."""
     project = await get_user_project(project_id, current_user, session)
@@ -116,12 +117,16 @@ async def start_pipeline(
             "publication_start_date": content_payload.get("publication_start_date"),
             "use_llm_timing_hints": content_payload.get("use_llm_timing_hints", True),
             "llm_timing_flex_days": content_payload.get("llm_timing_flex_days", 14),
+            "include_zero_data_topics": content_payload.get("include_zero_data_topics", True),
+            "zero_data_topic_share": content_payload.get("zero_data_topic_share", 0.2),
+            "zero_data_fit_score_min": content_payload.get("zero_data_fit_score_min", 0.65),
         }
     steps_config = {
         "start": start_step,
         "end": end_step,
         "skip": skip_steps,
         "strategy": strategy_payload,
+        "primary_goal": project.primary_goal,
         "mode": mode,
         "discovery": discovery_payload,
         "content": content_payload,
@@ -147,14 +152,46 @@ async def start_pipeline(
     # session does not hold an open transaction for the entire pipeline run.
     await session.commit()
 
-    background_tasks.add_task(
-        run_pipeline_background,
+    task_id = str(pipeline_run.id)
+    total_steps = len([step for step in range(start_step, end_step + 1) if step not in skip_steps])
+    task_manager = TaskManager()
+    await task_manager.set_task_state(
+        task_id=task_id,
+        status="queued",
+        stage="Queued pipeline execution",
         project_id=project_id_str,
-        run_id=str(pipeline_run.id),
-        start_step=start_step,
-        end_step=end_step,
-        skip_steps=skip_steps,
+        current_step=start_step,
+        current_step_name=None,
+        completed_steps=0,
+        total_steps=total_steps,
+        progress_percent=0.0,
+        error_message=None,
     )
+
+    queue = get_pipeline_task_manager()
+    try:
+        await queue.enqueue_start(
+            project_id=project_id_str,
+            run_id=task_id,
+            start_step=start_step,
+            end_step=end_step,
+            skip_steps=skip_steps,
+        )
+    except PipelineQueueFullError as exc:
+        pipeline_run.status = "paused"
+        pipeline_run.error_message = PIPELINE_QUEUE_FULL_DETAIL
+        await session.flush()
+        await session.commit()
+        await task_manager.set_task_state(
+            task_id=task_id,
+            status="paused",
+            stage="Pipeline queue is full",
+            error_message=PIPELINE_QUEUE_FULL_DETAIL,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PIPELINE_QUEUE_FULL_DETAIL,
+        ) from exc
 
     return pipeline_run
 
@@ -362,7 +399,6 @@ async def resume_pipeline(
     run_id: uuid.UUID,
     current_user: CurrentUser,
     session: DbSession,
-    background_tasks: BackgroundTasks,
 ) -> dict[str, str]:
     """Resume a paused pipeline run."""
     await get_user_project(project_id, current_user, session)
@@ -390,10 +426,33 @@ async def resume_pipeline(
     # Don't change status here — the orchestrator handles the paused→running
     # transition in its own session to avoid a race condition.
 
-    background_tasks.add_task(
-        resume_pipeline_background,
+    task_manager = TaskManager()
+    await task_manager.set_task_state(
+        task_id=str(pipeline_run.id),
+        status="queued",
+        stage="Queued pipeline resume",
         project_id=str(project_id),
-        run_id=str(pipeline_run.id),
+        current_step=pipeline_run.paused_at_step,
+        current_step_name=None,
+        error_message=None,
     )
+
+    queue = get_pipeline_task_manager()
+    try:
+        await queue.enqueue_resume(
+            project_id=str(project_id),
+            run_id=str(pipeline_run.id),
+        )
+    except PipelineQueueFullError as exc:
+        await task_manager.set_task_state(
+            task_id=str(pipeline_run.id),
+            status="paused",
+            stage="Pipeline queue is full",
+            error_message=PIPELINE_QUEUE_FULL_DETAIL,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PIPELINE_QUEUE_FULL_DETAIL,
+        ) from exc
 
     return {"message": "Pipeline resumed"}

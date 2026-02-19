@@ -112,10 +112,15 @@ The pipeline start endpoint supports three modes:
 In `discovery_loop`, a topic is accepted only when:
 
 - Step 7 fit tier is `primary` or `secondary`.
-- SERP gate passes for the primary keyword:
+- For `established_category` topics: primary-keyword SERP gate passes:
   - `difficulty <= max_keyword_difficulty`
   - `domain_diversity >= min_domain_diversity`
   - No `intent_mismatch` (if `require_intent_match=true`)
+- For `fragmented_workflow` topics: cluster-level SERP gate passes:
+  - Cluster SERP evidence exists (primary or fallback variant)
+  - `difficulty <= max_keyword_difficulty`
+  - Not saturated (`serp_servedness_score` + `serp_competitor_density`)
+  - `serp_intent_confidence >= min_serp_intent_confidence` (if `require_intent_match=true`)
 
 Per-topic accept/reject decisions are persisted per iteration as discovery snapshots.
 
@@ -152,6 +157,7 @@ Start discovery loop with adaptive retries and auto-handoff:
   "strategy": {
     "fit_threshold_profile": "aggressive",
     "scope_mode": "strict",
+    "market_mode_override": "auto",
     "include_topics": ["customer support automation"],
     "exclude_topics": ["medical advice"]
   },
@@ -162,6 +168,9 @@ Start discovery loop with adaptive retries and auto-handoff:
     "max_keyword_difficulty": 65,
     "min_domain_diversity": 0.5,
     "require_intent_match": true,
+    "max_serp_servedness": 0.75,
+    "max_serp_competitor_density": 0.7,
+    "min_serp_intent_confidence": 0.35,
     "auto_start_content": true
   },
   "content": {

@@ -9,6 +9,7 @@ from app.models.content import (
     WriterInstructions,
 )
 from app.models.discovery_snapshot import DiscoveryTopicSnapshot
+from app.models.discovery_learning import DiscoveryIterationLearning
 from app.models.keyword import Keyword, SeedTopic
 from app.models.oauth_account import OAuthAccount
 from app.models.pipeline import PipelineRun, StepExecution
@@ -38,4 +39,5 @@ __all__ = [
     "PipelineRun",
     "StepExecution",
     "DiscoveryTopicSnapshot",
+    "DiscoveryIterationLearning",
 ]

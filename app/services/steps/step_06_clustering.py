@@ -22,6 +22,7 @@ from app.models.generated_dtos import TopicCreateDTO
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
+from app.services.discovery_capabilities import CAPABILITY_CLUSTERING
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
 
     step_number = 6
     step_name = "clustering"
+    capability_key = CAPABILITY_CLUSTERING
     is_optional = False
 
     MAX_CLUSTER_SIZE = 20
@@ -94,6 +96,18 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
         brand = brand_result.scalar_one_or_none()
         strategy = await self.get_run_strategy()
         brand_context = self._build_clustering_context(brand, strategy)
+        learning_context = await self.build_learning_context(
+            self.capability_key,
+            "ClusterAgent",
+        )
+        if learning_context:
+            brand_context = (
+                f"{brand_context}\n\n{learning_context}"
+                if brand_context
+                else learning_context
+            )
+        market_mode = await self.get_market_mode(default="mixed")
+        workflowish_mode = market_mode in {"fragmented_workflow", "mixed"}
 
         await self._update_progress(5, "Loading keywords with intent...")
 
@@ -132,7 +146,10 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             await self._update_progress(10, "Stage 1: Coarse clustering by head term + intent...")
 
             # Stage 1: Coarse clustering
-            coarse_clusters = self._stage1_coarse_cluster(all_keywords)
+            coarse_clusters = self._stage1_coarse_cluster(
+                all_keywords,
+                workflowish_mode=workflowish_mode,
+            )
             logger.info("Coarse clustering done", extra={"cluster_count": len(coarse_clusters)})
 
             await self._update_progress(30, f"Created {len(coarse_clusters)} coarse clusters")
@@ -158,10 +175,11 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
 
         await self._update_progress(75, "Validating and naming clusters...")
 
-        # Validate and name clusters with LLM
+            # Validate and name clusters with LLM
         final_clusters = await self._validate_and_name_clusters(
             refined_clusters,
             brand_context,
+            workflowish_mode=workflowish_mode,
         )
 
         await self._update_progress(90, "Processing split/merge recommendations...")
@@ -227,6 +245,8 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
     def _stage1_coarse_cluster(
         self,
         keywords: list[Keyword],
+        *,
+        workflowish_mode: bool,
     ) -> dict[str, list[Keyword]]:
         """Stage 1: Coarse cluster by head term + intent.
 
@@ -240,9 +260,18 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             # Extract head term (first 2-3 significant words)
             head_term = self._extract_head_term(kw.keyword)
             intent = kw.intent or "unknown"
-
-            # Create cluster key combining head term + intent
-            cluster_key = f"{intent}::{head_term}"
+            if workflowish_mode:
+                signal_parts = self._workflow_cluster_signal_parts(kw)
+                cluster_key = (
+                    f"{intent}::{head_term}"
+                    f"::pair={signal_parts['entity_pair']}"
+                    f"::verb={signal_parts['workflow_verb']}"
+                    f"::cmp={signal_parts['comparison_target']}"
+                    f"::noun={signal_parts['core_noun_phrase']}"
+                )
+            else:
+                # Create cluster key combining head term + intent
+                cluster_key = f"{intent}::{head_term}"
             clusters[cluster_key].append(kw)
 
         return dict(clusters)
@@ -272,6 +301,34 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             return " ".join(significant_words)
         else:
             return keyword.lower()[:30]  # Fallback
+
+    def _workflow_cluster_signal_parts(self, keyword_model: Keyword) -> dict[str, str]:
+        """Extract signal partitions used by workflow-ish clustering constraints."""
+        signals = (
+            keyword_model.discovery_signals
+            if isinstance(keyword_model.discovery_signals, dict)
+            else {}
+        )
+
+        matched_entities = sorted(
+            str(entity).strip().lower()
+            for entity in (signals.get("matched_entities") or [])
+            if str(entity).strip()
+        )
+        entity_pair = "none"
+        if len(matched_entities) >= 2:
+            entity_pair = "|".join(sorted(matched_entities[:2]))
+
+        workflow_verb = str(signals.get("workflow_verb") or "none").strip().lower() or "none"
+        comparison_target = str(signals.get("comparison_target") or "none").strip().lower() or "none"
+        core_noun_phrase = str(signals.get("core_noun_phrase") or "none").strip().lower() or "none"
+
+        return {
+            "entity_pair": entity_pair,
+            "workflow_verb": workflow_verb,
+            "comparison_target": comparison_target,
+            "core_noun_phrase": core_noun_phrase,
+        }
 
     async def _stage2_refine_with_embeddings(
         self,
@@ -497,6 +554,8 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
         self,
         clusters: list[dict[str, Any]],
         brand_context: str,
+        *,
+        workflowish_mode: bool,
     ) -> list[dict[str, Any]]:
         """Validate clusters and add names using LLM."""
         # Prepare cluster data for agent
@@ -554,11 +613,17 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                             keywords = original.get("keywords", [])
 
                             # Find primary keyword: prefer embedding-based
-                            # selection, fall back to LLM name match
+                            # selection for established markets; use clarity-first
+                            # selection for workflow-ish markets.
                             primary_kw = None
                             cluster_embeddings = original.get("embeddings")
 
-                            if cluster_embeddings and len(cluster_embeddings) == len(keywords):
+                            if workflowish_mode:
+                                primary_kw = self._select_primary_keyword_workflow(
+                                    keywords=keywords,
+                                    cluster_embeddings=cluster_embeddings,
+                                )
+                            elif cluster_embeddings and len(cluster_embeddings) == len(keywords):
                                 items_for_scoring = [
                                     {
                                         "search_volume": kw.search_volume,
@@ -596,6 +661,12 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                                 "action": validation.action,
                                 "notes": validation.notes,
                                 "total_volume": sum(kw.search_volume or 0 for kw in keywords),
+                                "adjusted_volume_sum": sum(
+                                    kw.adjusted_volume
+                                    if kw.adjusted_volume is not None
+                                    else (kw.search_volume or 0)
+                                    for kw in keywords
+                                ),
                                 "avg_difficulty": (
                                     sum(kw.difficulty or 0 for kw in keywords) / len(keywords)
                                     if keywords else 0
@@ -633,13 +704,26 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                                 "name": f"Cluster {cluster_idx + 1}",
                                 "description": "",
                                 "keywords": keywords,
-                                "primary_keyword": keywords[0] if keywords else None,
+                                "primary_keyword": (
+                                    self._select_primary_keyword_workflow(
+                                        keywords=keywords,
+                                        cluster_embeddings=original.get("embeddings"),
+                                    )
+                                    if workflowish_mode
+                                    else (keywords[0] if keywords else None)
+                                ),
                                 "dominant_intent": original.get("dominant_intent"),
                                 "coherence": original.get("coherence", 0.5),
                                 "needs_serp_validation": True,
                                 "action": "keep",
                                 "notes": "Auto-generated cluster",
                                 "total_volume": sum(kw.search_volume or 0 for kw in keywords),
+                                "adjusted_volume_sum": sum(
+                                    kw.adjusted_volume
+                                    if kw.adjusted_volume is not None
+                                    else (kw.search_volume or 0)
+                                    for kw in keywords
+                                ),
                                 "avg_difficulty": (
                                     sum(kw.difficulty or 0 for kw in keywords) / len(keywords)
                                     if keywords else 0
@@ -705,7 +789,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                 logger.info(
                     "Cluster flagged for merge review",
                     extra={
-                        "name": cluster.get("name", ""),
+                        "cluster_name": cluster.get("name", ""),
                         "size": len(cluster.get("keywords", [])),
                     },
                 )
@@ -751,6 +835,10 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                 "action": "keep",
                 "notes": "Split from parent cluster by sub-intent",
                 "total_volume": sum(kw.search_volume or 0 for kw in sub_kws),
+                "adjusted_volume_sum": sum(
+                    kw.adjusted_volume if kw.adjusted_volume is not None else (kw.search_volume or 0)
+                    for kw in sub_kws
+                ),
                 "avg_difficulty": (
                     sum(kw.difficulty or 0 for kw in sub_kws) / len(sub_kws)
                     if sub_kws else 0
@@ -763,6 +851,98 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
         if len(valid) >= 2:
             return result
         return [cluster]
+
+    def _select_primary_keyword_workflow(
+        self,
+        *,
+        keywords: list[Keyword],
+        cluster_embeddings: list[list[float]] | None,
+    ) -> Keyword | None:
+        """Select workflow primary keyword by clarity + intent + feasible difficulty."""
+        if not keywords:
+            return None
+        if len(keywords) == 1:
+            return keywords[0]
+
+        embedding_scores = self._embedding_representativeness(
+            embeddings=cluster_embeddings,
+            count=len(keywords),
+        )
+        best_index = 0
+        best_score = -1.0
+
+        for idx, keyword in enumerate(keywords):
+            signals = keyword.discovery_signals if isinstance(keyword.discovery_signals, dict) else {}
+            word_count = int(signals.get("word_count") or len(keyword.keyword.split()))
+            clarity = self._keyword_clarity_score(
+                word_count=word_count,
+                has_action_verb=bool(signals.get("has_action_verb")),
+                has_integration_term=bool(signals.get("has_integration_term")),
+                has_two_entities=bool(signals.get("has_two_entities")),
+                is_comparison=bool(signals.get("is_comparison")),
+            )
+            intent_score = float(keyword.intent_score or 0.5)
+            difficulty = float(keyword.difficulty if keyword.difficulty is not None else 55.0)
+            difficulty_ease = max(0.0, min(1.0, 1.0 - (difficulty / 100.0)))
+            representativeness = embedding_scores[idx] if idx < len(embedding_scores) else 0.5
+
+            composite = (
+                (clarity * 0.35)
+                + (intent_score * 0.30)
+                + (difficulty_ease * 0.20)
+                + (representativeness * 0.15)
+            )
+            if composite > best_score:
+                best_score = composite
+                best_index = idx
+
+        return keywords[best_index]
+
+    def _keyword_clarity_score(
+        self,
+        *,
+        word_count: int,
+        has_action_verb: bool,
+        has_integration_term: bool,
+        has_two_entities: bool,
+        is_comparison: bool,
+    ) -> float:
+        """Estimate how clear and representative a workflow keyword is."""
+        if word_count <= 0:
+            base = 0.2
+        elif 2 <= word_count <= 6:
+            base = 0.75
+        elif word_count <= 8:
+            base = 0.6
+        else:
+            base = 0.35
+
+        if has_action_verb:
+            base += 0.08
+        if has_integration_term:
+            base += 0.07
+        if has_two_entities:
+            base += 0.06
+        if is_comparison:
+            base += 0.04
+
+        return max(0.0, min(1.0, base))
+
+    def _embedding_representativeness(
+        self,
+        *,
+        embeddings: list[list[float]] | None,
+        count: int,
+    ) -> list[float]:
+        """Return centroid similarity per keyword, fallback to neutral values."""
+        if not embeddings or len(embeddings) != count:
+            return [0.5 for _ in range(count)]
+
+        centroid = np.mean(embeddings, axis=0).tolist()
+        scores: list[float] = []
+        for emb in embeddings:
+            scores.append(max(0.0, min(1.0, EmbeddingsClient.cosine_similarity(emb, centroid))))
+        return scores
 
     def _serialize_clusters(self, clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Serialize clusters for checkpoint storage.
@@ -830,6 +1010,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
             primary_kw = cluster.get("primary_keyword")
             keywords = cluster.get("keywords", [])
             total_volume = cluster.get("total_volume", 0)
+            adjusted_volume_sum = cluster.get("adjusted_volume_sum", total_volume)
             notes = cluster.get("notes") or ""
             if cluster.get("needs_serp_validation"):
                 notes = "[needs_serp_validation] " + notes if notes else "[needs_serp_validation]"
@@ -849,6 +1030,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
                 dominant_page_type=primary_kw.recommended_page_type if primary_kw else None,
                 funnel_stage=primary_kw.funnel_stage if primary_kw else None,
                 total_volume=total_volume,
+                adjusted_volume_sum=adjusted_volume_sum,
                 keyword_count=len(keywords),
                 estimated_demand=total_volume,
                 avg_difficulty=cluster.get("avg_difficulty", 0),

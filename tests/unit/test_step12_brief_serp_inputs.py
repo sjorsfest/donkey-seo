@@ -183,3 +183,93 @@ def test_select_proposed_publication_date_falls_back_when_out_of_range() -> None
     )
 
     assert selected == date(2026, 2, 24)
+
+
+def test_select_topics_for_briefs_reserves_zero_data_slots() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    topics = [
+        SimpleNamespace(
+            id="t1",
+            priority_rank=1,
+            priority_factors={"fit_score": 0.70, "fit_tier": "primary"},
+        ),
+        SimpleNamespace(
+            id="t2",
+            priority_rank=2,
+            priority_factors={"fit_score": 0.72, "fit_tier": "primary"},
+        ),
+        SimpleNamespace(
+            id="t3",
+            priority_rank=3,
+            priority_factors={"fit_score": 0.71, "fit_tier": "primary"},
+        ),
+        SimpleNamespace(
+            id="t4",
+            priority_rank=4,
+            priority_factors={"fit_score": 0.93, "fit_tier": "secondary"},
+        ),
+    ]
+    primary_keywords = {
+        "t1": SimpleNamespace(search_volume=120, metrics_confidence=1.0),
+        "t2": SimpleNamespace(search_volume=80, metrics_confidence=1.0),
+        "t3": SimpleNamespace(search_volume=40, metrics_confidence=1.0),
+        "t4": SimpleNamespace(search_volume=None, metrics_confidence=0.1),
+    }
+    input_data = BriefInput(
+        project_id="project-1",
+        max_briefs=3,
+        include_zero_data_topics=True,
+        zero_data_topic_share=0.34,
+        zero_data_fit_score_min=0.8,
+    )
+
+    selected = service._select_topics_for_briefs(
+        topics=topics,  # type: ignore[arg-type]
+        primary_keywords_by_topic_id=primary_keywords,  # type: ignore[arg-type]
+        input_data=input_data,
+    )
+    selected_ids = [topic.id for topic in selected]
+
+    assert selected_ids == ["t1", "t2", "t4"]
+
+
+def test_select_topics_for_briefs_skips_zero_data_when_disabled() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    topics = [
+        SimpleNamespace(
+            id="t1",
+            priority_rank=1,
+            priority_factors={"fit_score": 0.70, "fit_tier": "primary"},
+        ),
+        SimpleNamespace(
+            id="t2",
+            priority_rank=2,
+            priority_factors={"fit_score": 0.72, "fit_tier": "primary"},
+        ),
+        SimpleNamespace(
+            id="t3",
+            priority_rank=3,
+            priority_factors={"fit_score": 0.93, "fit_tier": "secondary"},
+        ),
+    ]
+    primary_keywords = {
+        "t1": SimpleNamespace(search_volume=120, metrics_confidence=1.0),
+        "t2": SimpleNamespace(search_volume=80, metrics_confidence=1.0),
+        "t3": SimpleNamespace(search_volume=None, metrics_confidence=0.1),
+    }
+    input_data = BriefInput(
+        project_id="project-1",
+        max_briefs=2,
+        include_zero_data_topics=False,
+        zero_data_topic_share=0.5,
+        zero_data_fit_score_min=0.8,
+    )
+
+    selected = service._select_topics_for_briefs(
+        topics=topics,  # type: ignore[arg-type]
+        primary_keywords_by_topic_id=primary_keywords,  # type: ignore[arg-type]
+        input_data=input_data,
+    )
+    selected_ids = [topic.id for topic in selected]
+
+    assert selected_ids == ["t1", "t2"]

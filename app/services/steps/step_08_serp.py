@@ -20,6 +20,7 @@ from app.integrations.dataforseo import DataForSEOClient, get_location_code
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
+from app.services.discovery_capabilities import CAPABILITY_SERP_VALIDATION
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class Step08SerpValidationService(
 
     step_number = 8
     step_name = "serp_validation"
+    capability_key = CAPABILITY_SERP_VALIDATION
     is_optional = True
 
     LOW_COHERENCE_THRESHOLD = 0.7
@@ -163,6 +165,10 @@ class Step08SerpValidationService(
             )
             primary_keywords = list(primary_result.scalars())
 
+        # Add one alternate keyword per prioritized topic so we can fall back
+        # when primary keyword SERP data is unavailable.
+        alternate_keywords = await self._load_alternate_keywords(prioritized_topics)
+
         # For flagged topics, sample top keywords by volume instead of all
         sampled_keywords: list[Keyword] = []
         if flagged_topic_ids:
@@ -182,7 +188,10 @@ class Step08SerpValidationService(
                 kws.sort(key=lambda k: k.search_volume or 0, reverse=True)
                 sampled_keywords.extend(kws[: self.MAX_SAMPLE_PER_TOPIC])
 
-        candidate_keywords = self._merge_keyword_candidates(primary_keywords, sampled_keywords)
+        candidate_keywords = self._merge_keyword_candidates(
+            primary_keywords,
+            alternate_keywords + sampled_keywords,
+        )
 
         # Skip keywords that already have SERP data from a previous run
         already_validated = [kw for kw in candidate_keywords if kw.serp_top_results is not None]
@@ -290,6 +299,8 @@ class Step08SerpValidationService(
             if any(flag in {"intent_mismatch", "page_type_mismatch"} for flag in mismatch_flags):
                 keywords_mismatched += 1
 
+        await self._update_topic_serp_signals(prioritized_topics)
+
         logger.info(
             "SERP validation complete",
             extra={
@@ -331,6 +342,213 @@ class Step08SerpValidationService(
         for keyword_model in primary_keywords + flagged_keywords:
             deduped[str(keyword_model.id)] = keyword_model
         return list(deduped.values())
+
+    async def _load_alternate_keywords(self, prioritized_topics: list[Topic]) -> list[Keyword]:
+        """Load one alternate keyword per topic for SERP fallback evidence."""
+        topic_ids = [str(topic.id) for topic in prioritized_topics if topic.id]
+        if not topic_ids:
+            return []
+
+        result = await self.session.execute(
+            select(Keyword).where(
+                Keyword.topic_id.in_([uuid.UUID(topic_id) for topic_id in topic_ids]),
+                Keyword.status == "active",
+            )
+        )
+        all_keywords = self._scalar_rows(result)
+        by_topic: dict[str, list[Keyword]] = defaultdict(list)
+        for keyword_model in all_keywords:
+            if keyword_model.topic_id is None:
+                continue
+            by_topic[str(keyword_model.topic_id)].append(keyword_model)
+
+        alternates: list[Keyword] = []
+        for topic in prioritized_topics:
+            topic_id = str(topic.id)
+            candidates = [
+                keyword_model
+                for keyword_model in by_topic.get(topic_id, [])
+                if str(keyword_model.id) != str(topic.primary_keyword_id)
+            ]
+            if not candidates:
+                continue
+            candidates.sort(key=lambda item: item.search_volume or 0, reverse=True)
+            alternates.append(candidates[0])
+
+        return alternates
+
+    async def _update_topic_serp_signals(self, prioritized_topics: list[Topic]) -> None:
+        """Aggregate keyword-level SERP evidence into topic-level servedness metrics."""
+        if not prioritized_topics:
+            return
+
+        topic_by_id = {str(topic.id): topic for topic in prioritized_topics}
+        topic_ids = list(topic_by_id.keys())
+        keywords_result = await self.session.execute(
+            select(Keyword).where(
+                Keyword.topic_id.in_([uuid.UUID(topic_id) for topic_id in topic_ids]),
+                Keyword.status == "active",
+            )
+        )
+        keywords = self._scalar_rows(keywords_result)
+        by_topic: dict[str, list[Keyword]] = defaultdict(list)
+        for keyword_model in keywords:
+            if keyword_model.topic_id is None:
+                continue
+            by_topic[str(keyword_model.topic_id)].append(keyword_model)
+
+        for topic_id, topic in topic_by_id.items():
+            topic_keywords = by_topic.get(topic_id, [])
+            evidence_keywords = [
+                kw
+                for kw in topic_keywords
+                if isinstance(kw.serp_top_results, list) and len(kw.serp_top_results) > 0
+            ]
+            primary_keyword = next(
+                (kw for kw in topic_keywords if str(kw.id) == str(topic.primary_keyword_id)),
+                None,
+            )
+            if primary_keyword in evidence_keywords:
+                evidence_source = "primary"
+                selected_evidence_keyword = primary_keyword
+            else:
+                selected_evidence_keyword = (
+                    sorted(evidence_keywords, key=lambda kw: kw.search_volume or 0, reverse=True)[0]
+                    if evidence_keywords else None
+                )
+                evidence_source = "alternate" if selected_evidence_keyword else "none"
+
+            if not evidence_keywords:
+                topic.serp_servedness_score = None
+                topic.serp_competitor_density = None
+                topic.priority_factors = {
+                    **(topic.priority_factors or {}),
+                    "serp_intent_confidence": 0.0,
+                    "serp_evidence_source": "none",
+                    "serp_evidence_keyword_id": None,
+                    "serp_evidence_keyword_count": 0,
+                }
+                continue
+
+            # Aggregate top evidence keywords to avoid overfitting to one phrase.
+            evidence_keywords.sort(key=lambda kw: kw.search_volume or 0, reverse=True)
+            sampled = evidence_keywords[:3]
+            servedness_scores: list[float] = []
+            competitor_densities: list[float] = []
+            intent_confidence_scores: list[float] = []
+
+            for keyword_model in sampled:
+                servedness, competitor_density = self._keyword_serp_strength(keyword_model)
+                servedness_scores.append(servedness)
+                competitor_densities.append(competitor_density)
+                if keyword_model.validated_intent is None:
+                    intent_confidence_scores.append(0.5)
+                elif topic.dominant_intent and keyword_model.validated_intent == topic.dominant_intent:
+                    intent_confidence_scores.append(1.0)
+                else:
+                    intent_confidence_scores.append(0.0)
+
+            topic.serp_servedness_score = round(
+                sum(servedness_scores) / max(len(servedness_scores), 1),
+                4,
+            )
+            topic.serp_competitor_density = round(
+                sum(competitor_densities) / max(len(competitor_densities), 1),
+                4,
+            )
+            topic.priority_factors = {
+                **(topic.priority_factors or {}),
+                "serp_intent_confidence": round(
+                    sum(intent_confidence_scores) / max(len(intent_confidence_scores), 1),
+                    4,
+                ),
+                "serp_evidence_source": evidence_source,
+                "serp_evidence_keyword_id": (
+                    str(selected_evidence_keyword.id) if selected_evidence_keyword else None
+                ),
+                "serp_evidence_keyword_count": len(sampled),
+            }
+
+    def _scalar_rows(self, result: Any) -> list[Any]:
+        """Normalize SQLAlchemy scalar results and lightweight test proxies."""
+        scalars = result.scalars()
+        if hasattr(scalars, "all"):
+            return list(scalars.all())
+        return list(scalars)
+
+    def _keyword_serp_strength(self, keyword_model: Keyword) -> tuple[float, float]:
+        """Compute servedness and competitor density for a keyword SERP."""
+        organic_results = keyword_model.serp_top_results or []
+        if not organic_results:
+            return 0.0, 0.0
+
+        vendor_count = 0
+        ugc_docs_count = 0
+        exact_intent_hits = 0
+        query_tokens = {
+            token for token in re.split(r"[^a-z0-9]+", keyword_model.keyword.lower()) if len(token) > 2
+        }
+
+        for result in organic_results[: self.SERP_DEPTH]:
+            url = str(result.get("url") or "").lower()
+            domain = str(result.get("domain") or "").lower()
+            title = str(result.get("title") or "").lower()
+            if self._is_vendorish_result(url=url, domain=domain, title=title):
+                vendor_count += 1
+            if self._is_ugc_or_docs(url=url, domain=domain):
+                ugc_docs_count += 1
+            title_tokens = {t for t in re.split(r"[^a-z0-9]+", title) if len(t) > 2}
+            if query_tokens and len(query_tokens & title_tokens) >= max(1, int(len(query_tokens) * 0.5)):
+                exact_intent_hits += 1
+
+        total = max(len(organic_results[: self.SERP_DEPTH]), 1)
+        competitor_density = vendor_count / total
+        ugc_docs_share = ugc_docs_count / total
+        exact_match_ratio = exact_intent_hits / total
+        servedness_score = max(
+            0.0,
+            min(
+                1.0,
+                (competitor_density * 0.7) + (exact_match_ratio * 0.3) - (ugc_docs_share * 0.1),
+            ),
+        )
+        return round(servedness_score, 4), round(competitor_density, 4)
+
+    def _is_vendorish_result(self, *, url: str, domain: str, title: str) -> bool:
+        if self._is_ugc_or_docs(url=url, domain=domain):
+            return False
+        vendor_hints = (
+            "/pricing",
+            "/product",
+            "/features",
+            "/platform",
+            "/software",
+            "/solutions",
+            "/integrations",
+            "free trial",
+            "book demo",
+            "sign up",
+        )
+        return any(hint in url or hint in title for hint in vendor_hints)
+
+    def _is_ugc_or_docs(self, *, url: str, domain: str) -> bool:
+        ugc_domains = (
+            "reddit.com",
+            "quora.com",
+            "stackoverflow.com",
+            "stackexchange.com",
+            "github.com",
+            "gitlab.com",
+            "medium.com",
+            "dev.to",
+        )
+        if any(ugc in domain for ugc in ugc_domains):
+            return True
+        if "docs." in domain or "/docs" in url:
+            return True
+        if "forum" in domain or "/forum" in url:
+            return True
+        return False
 
     async def _fetch_serp_payloads(
         self,
@@ -512,7 +730,7 @@ class Step08SerpValidationService(
         if "paa" in serp_features:
             scores["guide"] += 0.8
 
-        winner = max(scores, key=scores.get)
+        winner = max(scores, key=lambda page_type: scores[page_type])
         if scores[winner] > 0:
             return winner
 

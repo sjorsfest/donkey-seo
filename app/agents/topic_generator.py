@@ -40,6 +40,10 @@ class TopicGeneratorInput(BaseModel):
     unique_value_props: list[str]
     in_scope_topics: list[str]
     out_of_scope_topics: list[str]
+    learning_context: str = Field(
+        default="",
+        description="Optional project memory from previous discovery iterations.",
+    )
 
 
 class TopicGeneratorOutput(BaseModel):
@@ -157,6 +161,11 @@ Desired Outcomes: {', '.join(input_data.target_audience.get('desired_outcomes', 
         offer_categories = ", ".join(input_data.offer_categories) or "Not specified"
         buyer_jobs = ", ".join(input_data.buyer_jobs) or "Not specified"
         conversion_intents = ", ".join(input_data.conversion_intents) or "Not specified"
+        learning_context = (
+            f"\n## Discovery Memory\n{input_data.learning_context}\n"
+            if input_data.learning_context
+            else ""
+        )
 
         return f"""Generate seed keywords for {input_data.company_name}.
 
@@ -181,6 +190,7 @@ Desired Outcomes: {', '.join(input_data.target_audience.get('desired_outcomes', 
 ## Topic Boundaries
 In-scope: {', '.join(input_data.in_scope_topics) or 'Not specified'}
 Out-of-scope: {', '.join(input_data.out_of_scope_topics) or 'Not specified'}
+{learning_context}
 
 ## Instructions
 1. Create seed keyword buckets (only use buckets that apply to this business)

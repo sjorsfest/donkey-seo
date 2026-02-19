@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.models.generated_dtos import (
+    DiscoveryIterationLearningCreateDTO,
+    DiscoveryIterationLearningPatchDTO,
     DiscoveryTopicSnapshotCreateDTO,
     DiscoveryTopicSnapshotPatchDTO,
     PipelineRunCreateDTO,
@@ -10,6 +12,7 @@ from app.models.generated_dtos import (
     StepExecutionCreateDTO,
     StepExecutionPatchDTO,
 )
+from app.models.discovery_learning import DiscoveryIterationLearning
 from app.models.discovery_snapshot import DiscoveryTopicSnapshot
 from app.models.pipeline import PipelineRun, StepExecution
 from app.persistence.typed.adapters._base import BaseWriteAdapter
@@ -56,6 +59,27 @@ DISCOVERY_TOPIC_SNAPSHOT_PATCH_ALLOWLIST = {
     "rejection_reasons",
 }
 
+DISCOVERY_ITERATION_LEARNING_PATCH_ALLOWLIST = {
+    "iteration_index",
+    "source_capability",
+    "source_agent",
+    "learning_key",
+    "learning_type",
+    "polarity",
+    "status",
+    "title",
+    "detail",
+    "recommendation",
+    "confidence",
+    "novelty_score",
+    "baseline_metric",
+    "current_metric",
+    "delta_metric",
+    "applies_to_capabilities",
+    "applies_to_agents",
+    "evidence",
+}
+
 _PIPELINE_RUN_ADAPTER = BaseWriteAdapter[
     PipelineRun,
     PipelineRunCreateDTO,
@@ -83,6 +107,15 @@ _DISCOVERY_TOPIC_SNAPSHOT_ADAPTER = BaseWriteAdapter[
     patch_allowlist=DISCOVERY_TOPIC_SNAPSHOT_PATCH_ALLOWLIST,
 )
 
+_DISCOVERY_ITERATION_LEARNING_ADAPTER = BaseWriteAdapter[
+    DiscoveryIterationLearning,
+    DiscoveryIterationLearningCreateDTO,
+    DiscoveryIterationLearningPatchDTO,
+](
+    model_cls=DiscoveryIterationLearning,
+    patch_allowlist=DISCOVERY_ITERATION_LEARNING_PATCH_ALLOWLIST,
+)
+
 
 def register() -> None:
     """Register pipeline adapters."""
@@ -91,3 +124,4 @@ def register() -> None:
     register_adapter(PipelineRun, _PIPELINE_RUN_ADAPTER)
     register_adapter(StepExecution, _STEP_EXECUTION_ADAPTER)
     register_adapter(DiscoveryTopicSnapshot, _DISCOVERY_TOPIC_SNAPSHOT_ADAPTER)
+    register_adapter(DiscoveryIterationLearning, _DISCOVERY_ITERATION_LEARNING_ADAPTER)

@@ -18,6 +18,7 @@ from app.config import settings
 from app.integrations.dataforseo import DataForSEOClient, get_location_code
 from app.models.keyword import Keyword
 from app.models.project import Project
+from app.services.discovery_capabilities import CAPABILITY_KEYWORD_EXPANSION
 from app.services.steps.base_step import BaseStepService, StepResult
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
 
     step_number = 4
     step_name = "keyword_metrics"
+    capability_key = CAPABILITY_KEYWORD_EXPANSION
     is_optional = False
 
     # Default cache TTL in days (can cut API costs by 80%+)
@@ -90,6 +92,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
             select(Project).where(Project.id == input_data.project_id)
         )
         project = result.scalar_one()
+        market_mode = await self.get_market_mode(default="mixed")
 
         # Get locale settings
         locale = project.primary_locale or "en-US"
@@ -173,6 +176,10 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                             if kw_model:
                                 # Update keyword with metrics
                                 kw_model.search_volume = metrics.get("search_volume")
+                                kw_model.adjusted_volume = self._compute_adjusted_volume(
+                                    search_volume=kw_model.search_volume,
+                                    market_mode=market_mode,
+                                )
                                 kw_model.cpc = metrics.get("cpc")
                                 kw_model.competition = metrics.get("competition")
                                 kw_model.difficulty = metrics.get("difficulty")
@@ -185,6 +192,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                                     "keyword_id": str(kw_model.id),
                                     "keyword": kw_text,
                                     "search_volume": metrics.get("search_volume"),
+                                    "adjusted_volume": kw_model.adjusted_volume,
                                     "cpc": metrics.get("cpc"),
                                     "competition": metrics.get("competition"),
                                     "difficulty": metrics.get("difficulty"),
@@ -202,6 +210,10 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                                     kw_model.metrics_updated_at = datetime.now(timezone.utc)
                                     kw_model.metrics_confidence = 0.1
                                     kw_model.metrics_data_source = "dataforseo"
+                                    kw_model.adjusted_volume = self._compute_adjusted_volume(
+                                        search_volume=kw_model.search_volume,
+                                        market_mode=market_mode,
+                                    )
                                     failed_keywords.append(kw_text)
 
                     except Exception as e:
@@ -213,6 +225,10 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
                             if kw_model:
                                 kw_model.metrics_updated_at = datetime.now(timezone.utc)
                                 kw_model.metrics_confidence = 0.0
+                                kw_model.adjusted_volume = self._compute_adjusted_volume(
+                                    search_volume=kw_model.search_volume,
+                                    market_mode=market_mode,
+                                )
                                 failed_keywords.append(kw_text)
 
                     # Save checkpoint after each batch (for resumability)
@@ -226,10 +242,15 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
 
         # Add cached keywords to result
         for kw in cached_keywords:
+            kw.adjusted_volume = self._compute_adjusted_volume(
+                search_volume=kw.search_volume,
+                market_mode=market_mode,
+            )
             enriched_keywords.append({
                 "keyword_id": str(kw.id),
                 "keyword": kw.keyword,
                 "search_volume": kw.search_volume,
+                "adjusted_volume": kw.adjusted_volume,
                 "cpc": kw.cpc,
                 "competition": kw.competition,
                 "difficulty": kw.difficulty,
@@ -248,6 +269,16 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
             api_calls_made=api_calls_made,
             keywords=enriched_keywords,
         )
+
+    def _compute_adjusted_volume(self, search_volume: Any, market_mode: str) -> int | None:
+        """Treat low/unknown volume as sparse-demand signal in workflow-ish markets."""
+        try:
+            raw_volume = int(search_volume) if search_volume is not None else None
+        except (TypeError, ValueError):
+            raw_volume = None
+        if market_mode == "established_category":
+            return raw_volume
+        return max(raw_volume or 0, 1)
 
     async def _persist_results(self, result: MetricsOutput) -> None:
         """Save metrics to database (already updated during execution)."""

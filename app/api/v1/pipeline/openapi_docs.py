@@ -33,10 +33,17 @@ Content generation does not auto-create multiple articles for a single topic.
 - Iterates over Step `2 -> 8`.
 - If project setup is incomplete, executes Step `0 -> 1` once before discovery iterations.
 - Candidate topics are those with Step 7 fit tier `primary` or `secondary`.
-- Topic acceptance uses a SERP gate on the topic primary keyword:
-  - `difficulty <= max_keyword_difficulty`
-  - `domain_diversity >= min_domain_diversity`
-  - no `intent_mismatch` when `require_intent_match=true`
+- Market-aware discovery classifies each run into:
+  - `established_category`
+  - `fragmented_workflow`
+  - `mixed` (resolved per topic using DFI).
+- Topic acceptance gates:
+  - Established topics keep strict primary-keyword SERP checks
+    (`difficulty`, `domain_diversity`, intent match).
+  - Workflow topics use cluster-level servedness checks with alternate-keyword fallback:
+    - reject when saturated (`serp_servedness_score` + `serp_competitor_density`)
+    - reject on extreme difficulty
+    - reject on low `serp_intent_confidence` when intent match is required.
 - Stores historical per-iteration decisions in discovery snapshots.
 - Can auto-start content production with accepted topic IDs.
 """
@@ -56,6 +63,7 @@ _PIPELINE_GUIDE_JSON_OBJECT: dict[str, Any] = {
             "completion_rule": "accepted_topics >= target",
             "snapshot_endpoint": "/api/v1/pipeline/{project_id}/runs/{run_id}/discovery-snapshots",
             "auto_handoff": "optional auto-start of content_production",
+            "market_mode_override": "strategy.market_mode_override (auto by default)",
         },
         "content_production": {
             "step_range": [12, 14],
@@ -71,10 +79,17 @@ _PIPELINE_GUIDE_JSON_OBJECT: dict[str, Any] = {
     "discovery_gate": {
         "fit_tiers": ["primary", "secondary"],
         "require_serp_gate": True,
-        "criteria": {
+        "criteria_established": {
             "max_keyword_difficulty": "<= threshold",
             "min_domain_diversity": ">= threshold",
-            "intent_mismatch": "reject when require_intent_match=true",
+            "goal_intent_mismatch": "reject off-goal intents when require_intent_match=true",
+            "intent_mismatch": "treated as a signal; may reject only when also off-goal",
+        },
+        "criteria_workflow": {
+            "max_keyword_difficulty": "<= threshold",
+            "max_serp_servedness": "< threshold when competitor density is also high",
+            "max_serp_competitor_density": "< threshold when servedness is also high",
+            "min_serp_intent_confidence": ">= threshold when require_intent_match=true",
         },
     },
 }
@@ -121,6 +136,7 @@ PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
             "strategy": {
                 "scope_mode": "strict",
                 "fit_threshold_profile": "aggressive",
+                "market_mode_override": "auto",
                 "include_topics": ["customer support automation"],
                 "exclude_topics": ["medical advice"],
             },
@@ -131,6 +147,9 @@ PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
                 "max_keyword_difficulty": 65.0,
                 "min_domain_diversity": 0.5,
                 "require_intent_match": True,
+                "max_serp_servedness": 0.75,
+                "max_serp_competitor_density": 0.70,
+                "min_serp_intent_confidence": 0.35,
                 "auto_start_content": True,
             },
             "content": {

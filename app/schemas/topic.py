@@ -42,8 +42,13 @@ class TopicResponse(BaseModel):
 
     # Aggregated metrics
     total_volume: int | None
+    adjusted_volume_sum: int | None
     avg_difficulty: float | None
     keyword_count: int
+    market_mode: str | None
+    demand_fragmentation_index: float | None
+    serp_servedness_score: float | None
+    serp_competitor_density: float | None
 
     # Priority
     priority_rank: int | None

@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas.pipeline import PipelineStartRequest
-from app.services.run_strategy import resolve_run_strategy
+from app.services.run_strategy import (
+    build_goal_intent_profile,
+    classify_intent_alignment,
+    resolve_run_strategy,
+)
 from app.services.steps.step_03_expansion import Step03ExpansionService
 from app.services.steps.step_07_prioritization import Step07PrioritizationService
 
@@ -26,6 +30,7 @@ def test_pipeline_start_request_accepts_strategy_payload() -> None:
                 "icp_roles": ["support manager"],
                 "icp_industries": ["saas"],
                 "icp_pains": ["slow response times"],
+                "market_mode_override": "mixed",
             },
         }
     )
@@ -34,6 +39,7 @@ def test_pipeline_start_request_accepts_strategy_payload() -> None:
     assert req.strategy.conversion_intents == ["demo", "trial"]
     assert req.strategy.scope_mode == "balanced_adjacent"
     assert req.strategy.branded_keyword_mode == "comparisons_only"
+    assert req.strategy.market_mode_override == "mixed"
 
 
 def test_pipeline_start_request_accepts_mode_and_configs() -> None:
@@ -43,6 +49,7 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
             "mode": "discovery_loop",
             "strategy": {
                 "fit_threshold_profile": "aggressive",
+                "market_mode_override": "auto",
             },
             "discovery": {
                 "max_iterations": 3,
@@ -51,6 +58,9 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
                 "max_keyword_difficulty": 65,
                 "min_domain_diversity": 0.5,
                 "require_intent_match": True,
+                "max_serp_servedness": 0.75,
+                "max_serp_competitor_density": 0.7,
+                "min_serp_intent_confidence": 0.35,
                 "auto_start_content": True,
             },
             "content": {
@@ -66,11 +76,17 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
     assert req.discovery is not None
     assert req.discovery.max_iterations == 3
     assert req.discovery.min_eligible_topics == 6
+    assert req.discovery.max_serp_servedness == 0.75
+    assert req.discovery.max_serp_competitor_density == 0.7
+    assert req.discovery.min_serp_intent_confidence == 0.35
     assert req.content is not None
     assert req.content.max_briefs == 15
     assert req.content.posts_per_week == 3
     assert req.content.preferred_weekdays == [0, 2, 4]
     assert req.content.min_lead_days == 7
+    assert req.content.include_zero_data_topics is True
+    assert req.content.zero_data_topic_share == 0.2
+    assert req.content.zero_data_fit_score_min == 0.65
 
 
 def test_pipeline_start_request_rejects_invalid_preferred_weekday() -> None:
@@ -262,3 +278,27 @@ def test_step07_fit_gating_adaptive_fallback_promotes_when_relaxed_still_low() -
     service._apply_fit_gating(scored_topics, strategy)  # type: ignore[attr-defined]
     tiers = [item["fit_assessment"]["fit_tier"] for item in scored_topics]
     assert tiers.count("secondary") == 3
+
+
+def test_resolve_run_strategy_maps_goal_preset_to_multiple_conversion_intents() -> None:
+    strategy = resolve_run_strategy(
+        strategy_payload=None,
+        brand=None,
+        primary_goal="revenue_content",
+    )
+
+    assert "revenue_content" in strategy.conversion_intents
+    assert "transactional" in strategy.conversion_intents
+    assert "commercial" in strategy.conversion_intents
+    assert "pricing" in strategy.conversion_intents
+
+
+def test_goal_intent_profile_mixed_goals_allows_multiple_intent_paths() -> None:
+    profile = build_goal_intent_profile(
+        ["traffic_growth", "lead_generation", "demo", "trial"]
+    )
+
+    assert profile.profile_name == "mixed_goals"
+    assert classify_intent_alignment("informational", profile) == "core"
+    assert classify_intent_alignment("commercial", profile) == "core"
+    assert classify_intent_alignment("transactional", profile) == "core"

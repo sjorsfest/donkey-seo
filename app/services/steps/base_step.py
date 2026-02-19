@@ -1,5 +1,6 @@
 """Base class for pipeline step services."""
 
+import copy
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -10,8 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.brand import BrandProfile
+from app.models.discovery_learning import DiscoveryIterationLearning
+from app.models.generated_dtos import PipelineRunPatchDTO
 from app.models.pipeline import PipelineRun, StepExecution
 from app.models.project import Project
+from app.services.discovery_capabilities import (
+    capabilities_from_legacy_steps,
+    normalize_capability_key,
+)
 from app.services.run_strategy import RunStrategy, resolve_run_strategy
 
 logger = logging.getLogger(__name__)
@@ -46,6 +53,7 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
 
     step_number: int
     step_name: str
+    capability_key: str = "unknown"
     is_optional: bool = False
     requires_oauth: bool = False
 
@@ -219,3 +227,174 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
             primary_goal=project.primary_goal if project else None,
         )
         return self._run_strategy
+
+    async def _load_pipeline_run(self) -> PipelineRun | None:
+        """Load the pipeline run for this step execution."""
+        pipeline_run_id = self.execution.pipeline_run_id
+        if not pipeline_run_id:
+            return None
+        result = await self.session.execute(
+            select(PipelineRun).where(PipelineRun.id == pipeline_run_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_steps_config(self) -> dict[str, Any]:
+        """Return mutable copy of run steps_config."""
+        run = await self._load_pipeline_run()
+        if not run or not isinstance(run.steps_config, dict):
+            return {}
+        return copy.deepcopy(run.steps_config)
+
+    async def update_steps_config(
+        self,
+        updates: dict[str, Any],
+        *,
+        deep_merge: bool = True,
+    ) -> dict[str, Any]:
+        """Patch run steps_config safely and commit it."""
+        run = await self._load_pipeline_run()
+        if run is None:
+            return {}
+
+        existing = run.steps_config if isinstance(run.steps_config, dict) else {}
+        if deep_merge:
+            merged = self._deep_merge_dict(existing, updates)
+        else:
+            merged = {**existing, **updates}
+
+        run.patch(
+            self.session,
+            PipelineRunPatchDTO.from_partial({"steps_config": merged}),
+        )
+        await self.session.commit()
+        return merged
+
+    async def get_market_diagnosis(self) -> dict[str, Any] | None:
+        """Read current market diagnosis from steps_config."""
+        steps_config = await self.get_steps_config()
+        diagnosis = steps_config.get("market_diagnosis")
+        if isinstance(diagnosis, dict):
+            return diagnosis
+        return None
+
+    async def set_market_diagnosis(self, diagnosis: dict[str, Any]) -> dict[str, Any]:
+        """Persist market diagnosis under steps_config.market_diagnosis."""
+        return await self.update_steps_config({"market_diagnosis": diagnosis})
+
+    async def get_market_mode(self, default: str = "mixed") -> str:
+        """Resolve effective market mode for the current step run."""
+        diagnosis = await self.get_market_diagnosis()
+        if diagnosis and isinstance(diagnosis.get("mode"), str):
+            return str(diagnosis["mode"])
+        strategy = await self.get_run_strategy()
+        override = getattr(strategy, "market_mode_override", "auto")
+        if override and override != "auto":
+            return str(override)
+        return default
+
+    async def build_learning_context(
+        self,
+        capability_key: str,
+        agent_name: str | None = None,
+        *,
+        max_items: int = 8,
+        max_chars: int = 2200,
+    ) -> str:
+        """Build compact project-memory guidance for discovery agent prompts."""
+        normalized_capability = normalize_capability_key(capability_key)
+        if normalized_capability is None:
+            return ""
+
+        result = await self.session.execute(
+            select(DiscoveryIterationLearning)
+            .where(DiscoveryIterationLearning.project_id == self.project_id)
+            .order_by(DiscoveryIterationLearning.created_at.desc())
+            .limit(200)
+        )
+        rows = list(result.scalars())
+        if not rows:
+            return ""
+
+        selected: list[tuple[float, DiscoveryIterationLearning]] = []
+        seen_keys: set[str] = set()
+
+        for idx, row in enumerate(rows):
+            if row.learning_key in seen_keys:
+                continue
+
+            capabilities = {
+                normalize_capability_key(item)
+                for item in (row.applies_to_capabilities or [])
+            }
+            capabilities.discard(None)
+            capabilities |= self._legacy_capabilities_from_row(row)
+            if normalized_capability not in capabilities:
+                continue
+
+            agents = {
+                str(item).strip()
+                for item in (row.applies_to_agents or [])
+                if str(item).strip()
+            }
+            if agent_name and agents and agent_name not in agents:
+                continue
+
+            recency_bonus = max(0.0, 1.0 - (idx / max(len(rows), 1)))
+            score = self._learning_priority_score(row) + recency_bonus
+            selected.append((score, row))
+            seen_keys.add(row.learning_key)
+
+        if not selected:
+            return ""
+
+        selected.sort(key=lambda item: item[0], reverse=True)
+        top_rows = [item[1] for item in selected[:max_items]]
+        lines = ["Discovery memory signals from previous iterations:"]
+        for row in top_rows:
+            recommendation = str(row.recommendation or "").strip()
+            suffix = f" -> {recommendation}" if recommendation else ""
+            line = (
+                f"- [{row.status}/{row.polarity}] {row.title}: {row.detail}{suffix}"
+            )
+            projected = "\n".join([*lines, line])
+            if len(projected) > max_chars and len(lines) > 1:
+                break
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _deep_merge_dict(self, current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+        """Recursively merge dict updates into current dict."""
+        merged = copy.deepcopy(current)
+        for key, value in updates.items():
+            if (
+                key in merged
+                and isinstance(merged[key], dict)
+                and isinstance(value, dict)
+            ):
+                merged[key] = self._deep_merge_dict(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    def _legacy_capabilities_from_row(self, row: DiscoveryIterationLearning) -> set[str]:
+        """Dual-read compatibility for legacy step-based applicability payloads."""
+        evidence = row.evidence if isinstance(row.evidence, dict) else {}
+        legacy_steps = evidence.get("applies_to_steps")
+        if isinstance(legacy_steps, list):
+            return capabilities_from_legacy_steps(legacy_steps)
+
+        # Handle transitional rows that may still expose an applies_to_steps attribute.
+        transitional_steps = getattr(row, "applies_to_steps", None)
+        if isinstance(transitional_steps, list):
+            return capabilities_from_legacy_steps(transitional_steps)
+        return set()
+
+    def _learning_priority_score(self, row: DiscoveryIterationLearning) -> float:
+        status_weight = {
+            "regressed": 3.0,
+            "new": 2.0,
+            "confirmed": 1.0,
+        }.get(str(row.status or "").lower(), 0.5)
+        novelty = float(row.novelty_score) if row.novelty_score is not None else 0.0
+        confidence = float(row.confidence) if row.confidence is not None else 0.0
+        return status_weight + novelty + confidence
