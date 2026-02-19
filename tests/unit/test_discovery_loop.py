@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas.pipeline import DiscoveryLoopConfig
-from app.services.discovery_loop import DiscoveryLoopSupervisor, TopicDecision
+from app.services.pipelines.discovery.loop import DiscoveryLoopSupervisor, TopicDecision
 
 
 def test_iteration_strategy_progression_and_excludes() -> None:

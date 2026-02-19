@@ -12,6 +12,8 @@ class TaskStatusResponse(BaseModel):
     status: str
     stage: str | None = None
     project_id: str | None = None
+    pipeline_module: str | None = None
+    source_topic_id: str | None = None
     current_step: int | None = None
     current_step_name: str | None = None
     completed_steps: int = 0

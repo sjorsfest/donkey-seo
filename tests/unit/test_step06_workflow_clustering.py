@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from app.services.steps.step_06_clustering import Step06ClusteringService
+from app.services.steps.discovery.step_06_clustering import Step06ClusteringService
 
 
 def test_stage1_workflow_clustering_uses_entity_pair_constraints() -> None:

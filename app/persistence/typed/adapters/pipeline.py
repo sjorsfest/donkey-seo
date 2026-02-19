@@ -18,6 +18,9 @@ from app.models.pipeline import PipelineRun, StepExecution
 from app.persistence.typed.adapters._base import BaseWriteAdapter
 
 PIPELINE_RUN_PATCH_ALLOWLIST = {
+    "pipeline_module",
+    "parent_run_id",
+    "source_topic_id",
     "status",
     "error_message",
     "paused_at_step",

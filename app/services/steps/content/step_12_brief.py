@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.agents.brief_generator import BriefGeneratorAgent, BriefGeneratorInput
 from app.models.brand import BrandProfile
@@ -85,7 +85,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
     is_optional = False
 
     async def _validate_preconditions(self, input_data: BriefInput) -> None:
-        """Validate Step 7 is completed."""
+        """Validate required upstream artifacts exist."""
         result = await self.session.execute(
             select(Project).where(Project.id == input_data.project_id)
         )
@@ -93,9 +93,6 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
-
-        if project.current_step < 7:
-            raise ValueError("Step 7 (Prioritization) must be completed first")
 
         # Check prioritized topics exist
         topics_result = await self.session.execute(
@@ -109,11 +106,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
     async def _execute(self, input_data: BriefInput) -> BriefOutput:
         """Execute content brief generation."""
-        # Load project and brand
-        result = await self.session.execute(
-            select(Project).where(Project.id == input_data.project_id)
-        )
-        project = result.scalar_one()
+        # Load brand + run strategy
         strategy = await self.get_run_strategy()
 
         brand_result = await self.session.execute(
@@ -209,8 +202,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         brand_context = self._build_brand_context(brand)
         money_pages = self._extract_money_pages(brand)
 
-        # Check if Step 10 (cannibalization) ran
-        step_10_ran = project.current_step >= 10
+        # Infer cannibalization coverage from stored topic fields.
+        step_10_ran = await self._has_cannibalization_signals(input_data.project_id)
 
         # Load existing URLs for collision check (if Step 9 ran)
         existing_urls = await self._load_existing_urls(input_data.project_id)
@@ -577,6 +570,21 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 mapping[str(topic.id)] = by_id.get(str(topic.primary_keyword_id))
 
         return mapping
+
+    async def _has_cannibalization_signals(self, project_id: str) -> bool:
+        """Return True if topic rows contain cannibalization artifacts."""
+        result = await self.session.execute(
+            select(Topic.id)
+            .where(
+                Topic.project_id == project_id,
+                or_(
+                    Topic.cannibalization_risk.isnot(None),
+                    Topic.overlapping_topic_ids.isnot(None),
+                ),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     def _resolve_brief_serp_profile(self, primary_kw: Keyword, topic: Topic) -> dict[str, Any]:
         """Resolve brief search profile, preferring Step 8 validation when available."""

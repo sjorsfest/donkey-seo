@@ -14,7 +14,7 @@ MarketModeOverride = Literal[
     "fragmented_workflow",
     "mixed",
 ]
-PipelineMode = Literal["full", "discovery_loop", "content_production"]
+PipelineMode = Literal["discovery", "content"]
 
 
 class PipelineRunStrategy(BaseModel):
@@ -34,7 +34,7 @@ class PipelineRunStrategy(BaseModel):
 
 
 class DiscoveryLoopConfig(BaseModel):
-    """Configuration for discovery-loop mode."""
+    """Configuration for discovery module."""
 
     max_iterations: int = Field(
         default=3,
@@ -91,14 +91,14 @@ class DiscoveryLoopConfig(BaseModel):
             "Minimum cluster-level SERP intent confidence when intent matching is required."
         ),
     )
-    auto_start_content: bool = Field(
+    auto_dispatch_content_tasks: bool = Field(
         default=True,
-        description="Automatically start content_production when discovery completes.",
+        description="Dispatch content tasks when topics are accepted during discovery.",
     )
 
 
 class ContentPipelineConfig(BaseModel):
-    """Configuration for content-production mode."""
+    """Configuration for content module."""
 
     max_briefs: int = Field(
         default=20,
@@ -173,38 +173,37 @@ class PipelineStartRequest(BaseModel):
     """Schema for starting a pipeline run."""
 
     mode: PipelineMode = Field(
-        default="full",
+        default="discovery",
         description=(
-            "Pipeline orchestration mode: full range execution, adaptive discovery loop, "
-            "or content-only production."
+            "Pipeline orchestration mode: discovery or content."
         ),
     )
-    start_step: int = 0
+    start_step: int | None = None
     end_step: int | None = None
     skip_steps: list[int] | None = None
     strategy: PipelineRunStrategy | None = None
     discovery: DiscoveryLoopConfig | None = Field(
         default=None,
-        description="Optional discovery loop controls (used when mode=discovery_loop).",
+        description="Optional discovery controls (used when mode=discovery).",
     )
     content: ContentPipelineConfig | None = Field(
         default=None,
-        description="Optional content pipeline controls (used in content-related modes).",
+        description="Optional content controls (used when mode=content).",
     )
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "mode": "full",
-                    "start_step": 0,
-                    "end_step": 14,
+                    "mode": "discovery",
+                    "start_step": 1,
+                    "end_step": 8,
                     "strategy": {
                         "fit_threshold_profile": "aggressive",
                     },
                 },
                 {
-                    "mode": "discovery_loop",
+                    "mode": "discovery",
                     "strategy": {
                         "scope_mode": "strict",
                         "fit_threshold_profile": "aggressive",
@@ -222,7 +221,7 @@ class PipelineStartRequest(BaseModel):
                         "max_serp_servedness": 0.75,
                         "max_serp_competitor_density": 0.70,
                         "min_serp_intent_confidence": 0.35,
-                        "auto_start_content": True,
+                        "auto_dispatch_content_tasks": True,
                     },
                     "content": {
                         "max_briefs": 20,
@@ -232,7 +231,7 @@ class PipelineStartRequest(BaseModel):
                     },
                 },
                 {
-                    "mode": "content_production",
+                    "mode": "content",
                     "content": {
                         "max_briefs": 15,
                         "posts_per_week": 2,
@@ -268,6 +267,9 @@ class PipelineRunResponse(BaseModel):
 
     id: str
     project_id: str
+    pipeline_module: str
+    parent_run_id: str | None
+    source_topic_id: str | None
     status: str
     started_at: datetime | None
     completed_at: datetime | None

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.pipeline_orchestrator import PipelineOrchestrator
-from app.services.steps.step_08_serp import (
+from app.services.steps.discovery.step_08_serp import (
     SerpValidationInput,
     Step08SerpValidationService,
 )
@@ -32,7 +32,12 @@ async def test_get_step_service_returns_step08_service() -> None:
     orchestrator = PipelineOrchestrator(_FakeSession(), str(uuid.uuid4()))
     execution = SimpleNamespace()
 
-    service = await orchestrator._get_step_service(8, execution, session=_FakeSession())
+    service = await orchestrator._get_step_service(
+        module="discovery",
+        step_number=8,
+        execution=execution,
+        session=_FakeSession(),
+    )
 
     assert isinstance(service, Step08SerpValidationService)
 
@@ -44,7 +49,8 @@ async def test_get_step_input_returns_step08_input() -> None:
     orchestrator = PipelineOrchestrator(session, project_id)
 
     input_data = await orchestrator._get_step_input(
-        8,
+        module="discovery",
+        step_number=8,
         pipeline_run_id=str(uuid.uuid4()),
         session=session,
     )

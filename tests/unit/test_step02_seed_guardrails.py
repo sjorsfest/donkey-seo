@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from app.services.steps.step_02_seeds import Step02SeedsService
+from app.services.steps.discovery.step_02_seeds import Step02SeedsService
 
 
 def test_sanitize_seed_candidates_filters_long_duplicates_and_out_of_scope() -> None:

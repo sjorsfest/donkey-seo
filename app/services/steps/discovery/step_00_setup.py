@@ -157,7 +157,7 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
             "robots_allowed": result.robots_allowed,
             "compliance_suggestions": result.compliance_suggestions,
         }
-        project.current_step = 0
+        project.current_step = max(project.current_step, 0)
         project.status = "running"
 
         # Set result summary

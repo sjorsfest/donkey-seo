@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.steps.step_12_brief import (
+from app.services.steps.content.step_12_brief import (
     BriefInput,
     BriefOutput,
     PublicationScheduleConfig,

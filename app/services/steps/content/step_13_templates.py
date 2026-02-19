@@ -71,7 +71,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
     is_optional = False
 
     async def _validate_preconditions(self, input_data: TemplatesInput) -> None:
-        """Validate Step 12 is completed."""
+        """Validate required content artifacts exist."""
         result = await self.session.execute(
             select(Project).where(Project.id == input_data.project_id)
         )
@@ -79,9 +79,6 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
 
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
-
-        if project.current_step < 12:
-            raise ValueError("Step 12 (Content Briefs) must be completed first")
 
         # Check briefs exist
         briefs_result = await self.session.execute(

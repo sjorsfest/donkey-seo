@@ -1188,6 +1188,9 @@ class PipelineRunRow:
     """Read DTO for `PipelineRun`."""
 
     project_id: str
+    pipeline_module: str
+    parent_run_id: str | None
+    source_topic_id: str | None
     started_at: datetime | None
     completed_at: datetime | None
     status: str
@@ -1205,6 +1208,9 @@ class PipelineRunRow:
     def from_model(cls, model: Any) -> "PipelineRunRow":
         return cls(
             project_id=model.project_id,
+            pipeline_module=model.pipeline_module,
+            parent_run_id=model.parent_run_id,
+            source_topic_id=model.source_topic_id,
             started_at=model.started_at,
             completed_at=model.completed_at,
             status=model.status,
@@ -1224,6 +1230,9 @@ class PipelineRunCreateDTO:
     """Create DTO for `PipelineRun`."""
 
     project_id: str
+    pipeline_module: str
+    parent_run_id: str | None = None
+    source_topic_id: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     status: str | None = None
@@ -1250,6 +1259,9 @@ class PipelineRunPatchDTO:
     """Sparse patch DTO for `PipelineRun`."""
 
     project_id: str | None = None
+    pipeline_module: str | None = None
+    parent_run_id: str | None = None
+    source_topic_id: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     status: str | None = None

@@ -65,9 +65,6 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
 
-        if project.current_step < 13:
-            raise ValueError("Step 13 (Writer Templates) must be completed first")
-
         brief_stmt = select(ContentBrief).where(ContentBrief.project_id == input_data.project_id)
         if input_data.brief_ids:
             brief_stmt = brief_stmt.where(

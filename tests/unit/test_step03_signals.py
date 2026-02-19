@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from app.services.market_diagnosis import extract_keyword_discovery_signals
 from app.services.run_strategy import resolve_run_strategy
-from app.services.steps.step_03_expansion import Step03ExpansionService
+from app.services.steps.discovery.step_03_expansion import Step03ExpansionService
 
 
 def test_extract_keyword_discovery_signals_workflow_and_entities() -> None:

@@ -710,7 +710,7 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = 3
+        project.current_step = max(project.current_step, 3)
 
         # Set result summary
         self.set_result_summary({

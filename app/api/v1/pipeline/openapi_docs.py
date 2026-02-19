@@ -8,89 +8,38 @@ from typing import Any
 OPENAPI_PIPELINE_GUIDE_MARKDOWN = """
 ## Pipeline Architecture Guide
 
-This API supports a two-stage SEO workflow:
+This API supports two independent pipeline modules:
 
-1. Discovery stage (keyword/topic opportunity finding)
-2. Content stage (briefs, writer instructions, and articles)
+1. `discovery` (local steps 1-8, setup bootstrap step 0 when needed)
+2. `content` (local steps 1-3)
 
 ### Execution Modes
 
-- `full`: runs a configured step range in a single run.
-- `discovery_loop`: runs adaptive discovery iterations to produce enough accepted topics.
-- `content_production`: generates content artifacts from eligible/selected topics.
+- `discovery`: adaptive topic discovery with per-topic acceptance decisions.
+- `content`: content production for selected/accepted topics.
 
-### Current Content Granularity
+### Dispatch Model
 
-The current model is:
-
-- `1 topic -> 1 content brief -> 1 article`
-
-Topic splitting should happen upstream in clustering/prioritization.
-Content generation does not auto-create multiple articles for a single topic.
-
-### Discovery Loop Behavior
-
-- Iterates over Step `2 -> 8`.
-- If project setup is incomplete, executes Step `0 -> 1` once before discovery iterations.
-- Candidate topics are those with Step 7 fit tier `primary` or `secondary`.
-- Market-aware discovery classifies each run into:
-  - `established_category`
-  - `fragmented_workflow`
-  - `mixed` (resolved per topic using DFI).
-- Topic acceptance gates:
-  - Established topics keep strict primary-keyword SERP checks
-    (`difficulty`, `domain_diversity`, intent match).
-  - Workflow topics use cluster-level servedness checks with alternate-keyword fallback:
-    - reject when saturated (`serp_servedness_score` + `serp_competitor_density`)
-    - reject on extreme difficulty
-    - reject on low `serp_intent_confidence` when intent match is required.
-- Stores historical per-iteration decisions in discovery snapshots.
-- Can auto-start content production with accepted topic IDs.
+When discovery accepts a topic, content work is dispatched immediately as a task.
+Dispatch dedupe is tracked in the database per discovery run (`parent_run_id + source_topic_id`).
 """
 
 _PIPELINE_GUIDE_JSON_OBJECT: dict[str, Any] = {
-    "pipeline_model": {
-        "content_granularity": "1_topic_to_1_brief_to_1_article",
-        "topic_splitting_stage": "clustering_and_prioritization",
-    },
-    "modes": {
-        "full": {
-            "description": "Runs requested step range in one pipeline run.",
-        },
-        "discovery_loop": {
-            "step_range_per_iteration": [2, 8],
-            "bootstrap_steps_if_needed": [0, 1],
-            "completion_rule": "accepted_topics >= target",
+    "modules": {
+        "discovery": {
+            "local_steps": [1, 8],
+            "bootstrap_step": 0,
+            "dispatch_behavior": "accepted topics enqueue content runs immediately",
             "snapshot_endpoint": "/api/v1/pipeline/{project_id}/runs/{run_id}/discovery-snapshots",
-            "auto_handoff": "optional auto-start of content_production",
-            "market_mode_override": "strategy.market_mode_override (auto by default)",
         },
-        "content_production": {
-            "step_range": [12, 14],
-            "inputs": [
-                "selected_topic_ids",
-                "max_briefs",
-                "posts_per_week",
-                "preferred_weekdays",
-                "min_lead_days",
-            ],
+        "content": {
+            "local_steps": [1, 3],
+            "granularity": "1_topic_to_1_brief_to_1_article",
         },
     },
-    "discovery_gate": {
-        "fit_tiers": ["primary", "secondary"],
-        "require_serp_gate": True,
-        "criteria_established": {
-            "max_keyword_difficulty": "<= threshold",
-            "min_domain_diversity": ">= threshold",
-            "goal_intent_mismatch": "reject off-goal intents when require_intent_match=true",
-            "intent_mismatch": "treated as a signal; may reject only when also off-goal",
-        },
-        "criteria_workflow": {
-            "max_keyword_difficulty": "<= threshold",
-            "max_serp_servedness": "< threshold when competitor density is also high",
-            "max_serp_competitor_density": "< threshold when servedness is also high",
-            "min_serp_intent_confidence": ">= threshold when require_intent_match=true",
-        },
+    "dedupe": {
+        "scope": "per discovery run",
+        "key": ["parent_run_id", "source_topic_id", "pipeline_module=content"],
     },
 }
 
@@ -101,45 +50,18 @@ OPENAPI_PIPELINE_GUIDE_JSON = json.dumps(
 )
 
 PIPELINE_TAG_DESCRIPTION = """
-Endpoints for orchestrating and observing pipeline runs.
+Endpoints for orchestrating and observing discovery/content module runs.
 
-- `full`: direct range execution.
-- `discovery_loop`: adaptive topic discovery loop
-  (Step 2-8 per iteration; Step 0-1 bootstrap when required).
-- `content_production`: content-only pipeline (Step 12-14).
-
-Use discovery snapshots to inspect accepted/rejected topic decisions per
-iteration and power frontend dashboard logic.
+- `discovery`: adaptive topic discovery loop.
+- `content`: content-only module run.
 """
 
 PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
-    "full_default": {
-        "summary": "Full mode (default range-style start)",
-        "description": "Runs the default full pipeline range from step 0 to step 14.",
+    "discovery": {
+        "summary": "Discovery module",
+        "description": "Runs adaptive discovery and dispatches content tasks when topics are accepted.",
         "value": {
-            "mode": "full",
-            "start_step": 0,
-            "end_step": 14,
-            "strategy": {
-                "fit_threshold_profile": "aggressive",
-            },
-        },
-    },
-    "discovery_loop": {
-        "summary": "Discovery loop with auto handoff",
-        "description": (
-            "Runs adaptive discovery until accepted topics reach target, "
-            "then auto-starts content production."
-        ),
-        "value": {
-            "mode": "discovery_loop",
-            "strategy": {
-                "scope_mode": "strict",
-                "fit_threshold_profile": "aggressive",
-                "market_mode_override": "auto",
-                "include_topics": ["customer support automation"],
-                "exclude_topics": ["medical advice"],
-            },
+            "mode": "discovery",
             "discovery": {
                 "max_iterations": 3,
                 "min_eligible_topics": 8,
@@ -150,7 +72,7 @@ PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
                 "max_serp_servedness": 0.75,
                 "max_serp_competitor_density": 0.70,
                 "min_serp_intent_confidence": 0.35,
-                "auto_start_content": True,
+                "auto_dispatch_content_tasks": True,
             },
             "content": {
                 "max_briefs": 20,
@@ -160,11 +82,11 @@ PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
             },
         },
     },
-    "content_production": {
-        "summary": "Content production only",
-        "description": "Runs Step 12-14 using current eligible/selected topics.",
+    "content": {
+        "summary": "Content module",
+        "description": "Runs content steps 1-3 with content controls.",
         "value": {
-            "mode": "content_production",
+            "mode": "content",
             "content": {
                 "max_briefs": 15,
                 "posts_per_week": 2,

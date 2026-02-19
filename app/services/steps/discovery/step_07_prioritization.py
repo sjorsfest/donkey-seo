@@ -1117,7 +1117,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = 7
+        project.current_step = max(project.current_step, 7)
 
         summary: dict[str, Any] = {
             "topics_ranked": result.topics_ranked,

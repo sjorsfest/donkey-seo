@@ -278,7 +278,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = 2
+        project.current_step = max(project.current_step, 2)
 
         # Set result summary
         self.set_result_summary({

@@ -287,7 +287,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = 4
+        project.current_step = max(project.current_step, 4)
 
         # Set result summary
         self.set_result_summary({

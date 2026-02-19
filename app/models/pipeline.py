@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from app.models.discovery_learning import DiscoveryIterationLearning
     from app.models.discovery_snapshot import DiscoveryTopicSnapshot
     from app.models.project import Project
+    from app.models.topic import Topic
 
 
 class PipelineRun(
@@ -37,6 +38,19 @@ class PipelineRun(
         StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    pipeline_module: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    parent_run_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    source_topic_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("topics.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
 
@@ -59,6 +73,19 @@ class PipelineRun(
 
     # Relationships
     project: Mapped[Project] = relationship("Project", back_populates="pipeline_runs")
+    parent_run: Mapped[PipelineRun | None] = relationship(
+        "PipelineRun",
+        back_populates="child_runs",
+        remote_side="PipelineRun.id",
+        foreign_keys=[parent_run_id],
+    )
+    child_runs: Mapped[list[PipelineRun]] = relationship(
+        "PipelineRun",
+        back_populates="parent_run",
+        cascade="all, delete-orphan",
+        foreign_keys=[parent_run_id],
+    )
+    source_topic: Mapped[Topic | None] = relationship("Topic", foreign_keys=[source_topic_id])
     step_executions: Mapped[list[StepExecution]] = relationship(
         "StepExecution",
         back_populates="pipeline_run",

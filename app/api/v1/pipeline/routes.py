@@ -9,11 +9,13 @@ from sqlalchemy.orm import selectinload
 
 from app.api.v1.dependencies import get_user_project
 from app.api.v1.pipeline.constants import (
+    CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL,
     DEFAULT_RUN_LIMIT,
+    DISCOVERY_PIPELINE_ALREADY_RUNNING_DETAIL,
     MAX_RUN_LIMIT,
+    MULTIPLE_RUNNING_PIPELINES_DETAIL,
     NO_PAUSED_PIPELINE_DETAIL,
     NO_RUNNING_PIPELINE_DETAIL,
-    PIPELINE_ALREADY_RUNNING_DETAIL,
     PIPELINE_QUEUE_FULL_DETAIL,
     PIPELINE_RUN_NOT_FOUND_DETAIL,
 )
@@ -30,9 +32,11 @@ from app.schemas.pipeline import (
     PipelineStartRequest,
     StepExecutionResponse,
 )
+from app.services.pipeline_orchestrator import PipelineOrchestrator
 from app.services.pipeline_task_manager import (
     PipelineQueueFullError,
-    get_pipeline_task_manager,
+    get_content_pipeline_task_manager,
+    get_discovery_pipeline_task_manager,
 )
 from app.services.task_manager import TaskManager
 
@@ -46,10 +50,7 @@ router = APIRouter()
     response_model=PipelineRunResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Start pipeline run",
-    description=(
-        "Create a new pipeline run for a project and queue background execution for the "
-        "requested step range."
-    ),
+    description="Create a new module pipeline run and queue background execution.",
     openapi_extra=PIPELINE_START_OPENAPI_EXTRA,
 )
 async def start_pipeline(
@@ -61,55 +62,41 @@ async def start_pipeline(
     """Start a new pipeline run for a project."""
     project = await get_user_project(project_id, current_user, session)
     project_id_str = str(project_id)
+    pipeline_module = request.mode
 
-    mode = request.mode
-    if mode == "discovery_loop":
-        start_step = 2
-        end_step = 8
-        skip_steps = []
-    elif mode == "content_production":
-        start_step = 12
-        end_step = 14
-        skip_steps = []
+    if pipeline_module == "discovery":
+        start_step = request.start_step or 1
+        end_step = request.end_step or 8
+        skip_steps = request.skip_steps or []
     else:
-        start_step = request.start_step
-        end_step = request.end_step or 14
-        skip_steps = request.skip_steps or project.skip_steps or []
+        start_step = request.start_step or 1
+        end_step = request.end_step or 3
+        skip_steps = request.skip_steps or []
 
-    logger.info(
-        "Pipeline start requested",
-        extra={
-            "project_id": project_id_str,
-            "mode": mode,
-            "start_step": start_step,
-            "end_step": end_step,
-            "has_strategy": request.strategy is not None,
-        },
-    )
-
-    result = await session.execute(
+    running_result = await session.execute(
         select(PipelineRun).where(
             PipelineRun.project_id == project_id,
+            PipelineRun.pipeline_module == pipeline_module,
             PipelineRun.status == "running",
         )
     )
-    existing_run = result.scalar_one_or_none()
-
-    if existing_run:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=PIPELINE_ALREADY_RUNNING_DETAIL,
+    if running_result.scalar_one_or_none():
+        detail = (
+            DISCOVERY_PIPELINE_ALREADY_RUNNING_DETAIL
+            if pipeline_module == "discovery"
+            else CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL
         )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
     strategy_payload = request.strategy.model_dump() if request.strategy else None
     discovery_payload = request.discovery.model_dump() if request.discovery else None
     content_config = request.content
-    if content_config is None and mode in {"discovery_loop", "content_production"}:
+    if content_config is None:
         content_config = ContentPipelineConfig()
-    content_payload = content_config.model_dump() if content_config else None
+    content_payload = content_config.model_dump()
     step_inputs_payload: dict[str, dict[str, object]] = {}
-    if content_payload:
-        step_inputs_payload["12"] = {
+    if pipeline_module == "content":
+        step_inputs_payload["1"] = {
             "max_briefs": content_payload.get("max_briefs", 20),
             "posts_per_week": content_payload.get("posts_per_week", 1),
             "preferred_weekdays": content_payload.get("preferred_weekdays", []),
@@ -121,13 +108,14 @@ async def start_pipeline(
             "zero_data_topic_share": content_payload.get("zero_data_topic_share", 0.2),
             "zero_data_fit_score_min": content_payload.get("zero_data_fit_score_min", 0.65),
         }
+
     steps_config = {
+        "pipeline_module": pipeline_module,
         "start": start_step,
         "end": end_step,
         "skip": skip_steps,
         "strategy": strategy_payload,
         "primary_goal": project.primary_goal,
-        "mode": mode,
         "discovery": discovery_payload,
         "content": content_payload,
         "iteration_index": 0,
@@ -139,6 +127,7 @@ async def start_pipeline(
         session,
         PipelineRunCreateDTO(
             project_id=project_id_str,
+            pipeline_module=pipeline_module,
             status="pending",
             start_step=start_step,
             end_step=end_step,
@@ -148,8 +137,6 @@ async def start_pipeline(
     )
     await session.flush()
     await session.refresh(pipeline_run, ["step_executions"])
-    # Commit before launching long-running background work so the request
-    # session does not hold an open transaction for the entire pipeline run.
     await session.commit()
 
     task_id = str(pipeline_run.id)
@@ -160,6 +147,8 @@ async def start_pipeline(
         status="queued",
         stage="Queued pipeline execution",
         project_id=project_id_str,
+        pipeline_module=pipeline_module,
+        source_topic_id=pipeline_run.source_topic_id,
         current_step=start_step,
         current_step_name=None,
         completed_steps=0,
@@ -168,14 +157,15 @@ async def start_pipeline(
         error_message=None,
     )
 
-    queue = get_pipeline_task_manager()
+    queue = (
+        get_discovery_pipeline_task_manager()
+        if pipeline_module == "discovery"
+        else get_content_pipeline_task_manager()
+    )
     try:
         await queue.enqueue_start(
             project_id=project_id_str,
             run_id=task_id,
-            start_step=start_step,
-            end_step=end_step,
-            skip_steps=skip_steps,
         )
     except PipelineQueueFullError as exc:
         pipeline_run.status = "paused"
@@ -200,10 +190,6 @@ async def start_pipeline(
     "/{project_id}/runs",
     response_model=list[PipelineRunResponse],
     summary="List pipeline runs",
-    description=(
-        "Return recent pipeline runs for a project, including step execution data, limited by "
-        "the provided count."
-    ),
 )
 async def list_pipeline_runs(
     project_id: uuid.UUID,
@@ -211,9 +197,7 @@ async def list_pipeline_runs(
     session: DbSession,
     limit: int = Query(DEFAULT_RUN_LIMIT, ge=1, le=MAX_RUN_LIMIT),
 ) -> list[PipelineRun]:
-    """List pipeline runs for a project."""
     await get_user_project(project_id, current_user, session)
-
     result = await session.execute(
         select(PipelineRun)
         .where(PipelineRun.project_id == project_id)
@@ -221,7 +205,6 @@ async def list_pipeline_runs(
         .order_by(PipelineRun.created_at.desc())
         .limit(limit)
     )
-
     return list(result.scalars().all())
 
 
@@ -229,7 +212,6 @@ async def list_pipeline_runs(
     "/{project_id}/runs/{run_id}",
     response_model=PipelineRunResponse,
     summary="Get pipeline run",
-    description="Return full details for a specific pipeline run in the project.",
 )
 async def get_pipeline_run(
     project_id: uuid.UUID,
@@ -237,22 +219,18 @@ async def get_pipeline_run(
     current_user: CurrentUser,
     session: DbSession,
 ) -> PipelineRun:
-    """Get a specific pipeline run."""
     await get_user_project(project_id, current_user, session)
-
     result = await session.execute(
         select(PipelineRun)
         .where(PipelineRun.id == run_id, PipelineRun.project_id == project_id)
         .options(selectinload(PipelineRun.step_executions))
     )
     pipeline_run = result.scalar_one_or_none()
-
     if not pipeline_run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=PIPELINE_RUN_NOT_FOUND_DETAIL,
         )
-
     return pipeline_run
 
 
@@ -260,10 +238,6 @@ async def get_pipeline_run(
     "/{project_id}/runs/{run_id}/progress",
     response_model=PipelineProgressResponse,
     summary="Get pipeline progress",
-    description=(
-        "Return real-time pipeline progress including run status, active step, and per-step "
-        "execution details."
-    ),
 )
 async def get_pipeline_progress(
     project_id: uuid.UUID,
@@ -271,16 +245,13 @@ async def get_pipeline_progress(
     current_user: CurrentUser,
     session: DbSession,
 ) -> PipelineProgressResponse:
-    """Get real-time progress for a pipeline run."""
     await get_user_project(project_id, current_user, session)
-
     result = await session.execute(
         select(PipelineRun)
         .where(PipelineRun.id == run_id, PipelineRun.project_id == project_id)
         .options(selectinload(PipelineRun.step_executions))
     )
     pipeline_run = result.scalar_one_or_none()
-
     if not pipeline_run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -311,10 +282,6 @@ async def get_pipeline_progress(
     "/{project_id}/runs/{run_id}/discovery-snapshots",
     response_model=list[DiscoveryTopicSnapshotResponse],
     summary="List discovery snapshots",
-    description=(
-        "Return per-iteration topic decision snapshots (accepted/rejected) "
-        "for a discovery-loop run."
-    ),
 )
 async def list_discovery_snapshots(
     project_id: uuid.UUID,
@@ -322,9 +289,7 @@ async def list_discovery_snapshots(
     current_user: CurrentUser,
     session: DbSession,
 ) -> list[DiscoveryTopicSnapshot]:
-    """List discovery snapshots for a pipeline run."""
     await get_user_project(project_id, current_user, session)
-
     run_result = await session.execute(
         select(PipelineRun).where(
             PipelineRun.id == run_id,
@@ -356,35 +321,57 @@ async def list_discovery_snapshots(
     "/{project_id}/pause",
     status_code=status.HTTP_200_OK,
     summary="Pause running pipeline",
-    description="Pause the currently running pipeline run for the project.",
 )
 async def pause_pipeline(
     project_id: uuid.UUID,
     current_user: CurrentUser,
     session: DbSession,
 ) -> dict[str, str]:
-    """Pause a running pipeline."""
     await get_user_project(project_id, current_user, session)
-
     result = await session.execute(
         select(PipelineRun).where(
             PipelineRun.project_id == project_id,
             PipelineRun.status == "running",
         )
     )
-    pipeline_run = result.scalar_one_or_none()
-
-    if not pipeline_run:
+    runs = list(result.scalars().all())
+    if not runs:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=NO_RUNNING_PIPELINE_DETAIL,
         )
+    if len(runs) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=MULTIPLE_RUNNING_PIPELINES_DETAIL,
+        )
 
-    pipeline_run.status = "paused"
-    await session.flush()
+    pipeline_run = runs[0]
+    orchestrator = PipelineOrchestrator(session, str(project_id))
+    await orchestrator.pause_pipeline(str(pipeline_run.id))
+    return {"message": "Pipeline paused"}
 
-    logger.info("Pipeline paused", extra={"project_id": str(project_id)})
 
+@router.post(
+    "/{project_id}/runs/{run_id}/pause",
+    status_code=status.HTTP_200_OK,
+    summary="Pause run by id",
+)
+async def pause_pipeline_run(
+    project_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> dict[str, str]:
+    await get_user_project(project_id, current_user, session)
+    orchestrator = PipelineOrchestrator(session, str(project_id))
+    try:
+        await orchestrator.pause_pipeline(str(run_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=NO_RUNNING_PIPELINE_DETAIL,
+        ) from exc
     return {"message": "Pipeline paused"}
 
 
@@ -392,7 +379,6 @@ async def pause_pipeline(
     "/{project_id}/resume/{run_id}",
     status_code=status.HTTP_200_OK,
     summary="Resume paused pipeline",
-    description="Queue background work to resume a paused pipeline run.",
 )
 async def resume_pipeline(
     project_id: uuid.UUID,
@@ -400,14 +386,7 @@ async def resume_pipeline(
     current_user: CurrentUser,
     session: DbSession,
 ) -> dict[str, str]:
-    """Resume a paused pipeline run."""
     await get_user_project(project_id, current_user, session)
-
-    logger.info(
-        "Pipeline resume requested",
-        extra={"project_id": str(project_id), "run_id": str(run_id)},
-    )
-
     result = await session.execute(
         select(PipelineRun).where(
             PipelineRun.id == run_id,
@@ -416,15 +395,11 @@ async def resume_pipeline(
         )
     )
     pipeline_run = result.scalar_one_or_none()
-
     if not pipeline_run:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=NO_PAUSED_PIPELINE_DETAIL,
         )
-
-    # Don't change status here — the orchestrator handles the paused→running
-    # transition in its own session to avoid a race condition.
 
     task_manager = TaskManager()
     await task_manager.set_task_state(
@@ -432,12 +407,18 @@ async def resume_pipeline(
         status="queued",
         stage="Queued pipeline resume",
         project_id=str(project_id),
+        pipeline_module=pipeline_run.pipeline_module,
+        source_topic_id=pipeline_run.source_topic_id,
         current_step=pipeline_run.paused_at_step,
         current_step_name=None,
         error_message=None,
     )
 
-    queue = get_pipeline_task_manager()
+    queue = (
+        get_discovery_pipeline_task_manager()
+        if pipeline_run.pipeline_module == "discovery"
+        else get_content_pipeline_task_manager()
+    )
     try:
         await queue.enqueue_resume(
             project_id=str(project_id),

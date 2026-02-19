@@ -133,8 +133,10 @@ class Settings(BaseSettings):
     default_skip_steps: list[int] = [8, 9, 10, 11]
     max_keywords_per_project: int = 50000
     batch_size_keyword_enrichment: int = 100
-    pipeline_task_workers: int = 1
-    pipeline_task_queue_size: int = 100
+    discovery_pipeline_task_workers: int = 1
+    discovery_pipeline_task_queue_size: int = 100
+    content_pipeline_task_workers: int = 1
+    content_pipeline_task_queue_size: int = 200
 
 
 @lru_cache

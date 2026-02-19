@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 ExecuteStepFn = Callable[[PipelineRun, int], Awaitable[StepExecution]]
 MarkStepFn = Callable[[str, int, str], Awaitable[dict[str, Any]]]
+DispatchTopicsFn = Callable[[list[str], ContentPipelineConfig], Awaitable[None]]
 
 DISCOVERY_STEPS = (2, 3, 4, 5, 6, 7, 8)
 SCOPE_SEQUENCE = ("strict", "balanced_adjacent", "broad_education")
@@ -99,6 +100,7 @@ class DiscoveryLoopSupervisor:
         *,
         execute_step: ExecuteStepFn,
         mark_step_completed: MarkStepFn,
+        dispatch_accepted_topics: DispatchTopicsFn,
     ) -> DiscoveryLoopResult:
         """Execute the adaptive discovery loop."""
         task_id = str(self.run.id)
@@ -194,6 +196,7 @@ class DiscoveryLoopSupervisor:
                 accepted_topic_count=len(accepted_topics_by_key),
                 iteration_index=iteration,
             )
+            await dispatch_accepted_topics(accepted_topic_ids, content)
 
             accepted_count_current = sum(
                 1 for decision in decisions if decision.decision == "accepted"

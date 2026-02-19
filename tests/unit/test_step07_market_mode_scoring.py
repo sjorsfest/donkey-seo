@@ -1,6 +1,6 @@
 """Unit tests for Step 7 market-aware prioritization scoring."""
 
-from app.services.steps.step_07_prioritization import (
+from app.services.steps.discovery.step_07_prioritization import (
     DFI_WORKFLOW_THRESHOLD,
     Step07PrioritizationService,
 )

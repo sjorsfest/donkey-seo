@@ -11,9 +11,7 @@ logger = logging.getLogger(__name__)
 async def run_pipeline_background(
     project_id: str,
     run_id: str,
-    start_step: int,
-    end_step: int,
-    skip_steps: list[int],
+    pipeline_module: str,
 ) -> None:
     """Execute the pipeline in the background with a fresh DB session."""
     try:
@@ -21,9 +19,7 @@ async def run_pipeline_background(
             orchestrator = PipelineOrchestrator(session, project_id)
             await orchestrator.start_pipeline(
                 run_id=run_id,
-                start_step=start_step,
-                end_step=end_step,
-                skip_steps=skip_steps,
+                pipeline_module=pipeline_module,  # type: ignore[arg-type]
             )
     except Exception:
         logger.exception("Pipeline execution failed for project %s", project_id)

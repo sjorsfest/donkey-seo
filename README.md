@@ -93,23 +93,27 @@ API docs available at: http://localhost:8000/docs
 | 13 | Writer Templates | Create QA checklists | Yes |
 | 14 | Article Generation | Generate modular SEO articles + HTML | Yes |
 
+The service implementations keep their internal step identifiers, but API execution now uses
+module-local steps:
+- Discovery module: local steps `1..8` (plus bootstrap `0` when needed)
+- Content module: local steps `1..3`
+
 ## Pipeline Modes
 
-The pipeline start endpoint supports three modes:
+The pipeline start endpoint supports two module modes:
 
-- `full`: Standard range execution (default behavior).
-- `discovery_loop`: Runs an adaptive loop for topic opportunity discovery.
-  - Executes Step `2 -> 8` repeatedly.
-  - If brand setup is missing, runs Step `0 -> 1` once before looping.
+- `discovery`: Runs adaptive discovery iterations to find accepted topics.
+  - Executes local discovery steps `2 -> 8` repeatedly.
+  - If brand setup is missing, runs local steps `0 -> 1` once before looping.
   - Stops when enough topics pass fit + SERP gate, or pauses after max iterations.
-  - Can auto-start `content_production` with accepted topics.
-- `content_production`: Runs content generation only.
-  - Executes Step `12 -> 14`.
-  - Can use selected topic IDs + max briefs from discovery output.
+  - Dispatches accepted topics immediately as content tasks.
+- `content`: Runs content generation only.
+  - Executes local content steps `1 -> 3` (maps to brief/templates/article generation).
+  - Can run independently while discovery keeps iterating.
 
 ### Discovery Acceptance Gate
 
-In `discovery_loop`, a topic is accepted only when:
+In `discovery`, a topic is accepted only when:
 
 - Step 7 fit tier is `primary` or `secondary`.
 - For `established_category` topics: primary-keyword SERP gate passes:
@@ -142,6 +146,7 @@ Per-topic accept/reject decisions are persisted per iteration as discovery snaps
 ### Pipeline
 - `POST /api/v1/pipeline/{project_id}/start` - Start pipeline
 - `POST /api/v1/pipeline/{project_id}/pause` - Pause pipeline
+- `POST /api/v1/pipeline/{project_id}/runs/{run_id}/pause` - Pause a specific run
 - `POST /api/v1/pipeline/{project_id}/resume/{run_id}` - Resume pipeline
 - `GET /api/v1/pipeline/{project_id}/runs` - List runs
 - `GET /api/v1/pipeline/{project_id}/runs/{run_id}/progress` - Get progress
@@ -149,11 +154,11 @@ Per-topic accept/reject decisions are persisted per iteration as discovery snaps
 
 ### Pipeline Start Examples
 
-Start discovery loop with adaptive retries and auto-handoff:
+Start discovery with adaptive retries and immediate content task dispatch:
 
 ```json
 {
-  "mode": "discovery_loop",
+  "mode": "discovery",
   "strategy": {
     "fit_threshold_profile": "aggressive",
     "scope_mode": "strict",
@@ -171,7 +176,7 @@ Start discovery loop with adaptive retries and auto-handoff:
     "max_serp_servedness": 0.75,
     "max_serp_competitor_density": 0.7,
     "min_serp_intent_confidence": 0.35,
-    "auto_start_content": true
+    "auto_dispatch_content_tasks": true
   },
   "content": {
     "max_briefs": 20,
@@ -182,11 +187,11 @@ Start discovery loop with adaptive retries and auto-handoff:
 }
 ```
 
-Start content-only pipeline:
+Start content-only module:
 
 ```json
 {
-  "mode": "content_production",
+  "mode": "content",
   "content": {
     "max_briefs": 15,
     "posts_per_week": 2,

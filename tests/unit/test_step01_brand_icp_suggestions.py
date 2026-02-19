@@ -1,6 +1,6 @@
 """Unit tests for Step 1 ICP suggestion merge behavior."""
 
-from app.services.steps.step_01_brand import Step01BrandService
+from app.services.steps.discovery.step_01_brand import Step01BrandService
 
 
 def _empty_target_audience() -> dict[str, list[str]]:

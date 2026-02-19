@@ -1,4 +1,4 @@
-"""In-process task queue for pipeline orchestration jobs."""
+"""In-process task queues for discovery/content pipeline jobs."""
 
 from __future__ import annotations
 
@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.config import settings
+from app.core.exceptions import PipelineAlreadyRunningError
 from app.core.database import get_session_context
-from app.services.pipeline_orchestrator import PipelineOrchestrator
 
 logger = logging.getLogger(__name__)
 
+PipelineModule = Literal["discovery", "content"]
 JobKind = Literal["start", "resume"]
 
 
@@ -23,19 +24,23 @@ class PipelineTaskJob:
     kind: JobKind
     project_id: str
     run_id: str
-    start_step: int | None = None
-    end_step: int | None = None
-    skip_steps: list[int] | None = None
 
 
 class PipelineQueueFullError(RuntimeError):
-    """Raised when the pipeline queue is full."""
+    """Raised when a pipeline queue is full."""
 
 
 class PipelineTaskManager:
-    """Async queue + worker pool for pipeline jobs."""
+    """Async queue + worker pool for a single pipeline module."""
 
-    def __init__(self, *, worker_count: int, queue_size: int) -> None:
+    def __init__(
+        self,
+        *,
+        pipeline_module: PipelineModule,
+        worker_count: int,
+        queue_size: int,
+    ) -> None:
+        self.pipeline_module = pipeline_module
         self._worker_count = max(1, worker_count)
         self._queue: asyncio.Queue[PipelineTaskJob | None] = asyncio.Queue(
             maxsize=max(1, queue_size)
@@ -56,13 +61,14 @@ class PipelineTaskManager:
             self._workers = [
                 asyncio.create_task(
                     self._worker_loop(index + 1),
-                    name=f"pipeline-worker-{index + 1}",
+                    name=f"{self.pipeline_module}-pipeline-worker-{index + 1}",
                 )
                 for index in range(self._worker_count)
             ]
             logger.info(
                 "Pipeline task manager started",
                 extra={
+                    "pipeline_module": self.pipeline_module,
                     "worker_count": self._worker_count,
                     "queue_maxsize": self._queue.maxsize,
                 },
@@ -82,18 +88,21 @@ class PipelineTaskManager:
         results = await asyncio.gather(*workers, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
-                logger.warning("Pipeline worker exited with error: %s", result)
+                logger.warning(
+                    "Pipeline worker exited with error",
+                    extra={
+                        "pipeline_module": self.pipeline_module,
+                        "error": str(result),
+                    },
+                )
 
-        logger.info("Pipeline task manager stopped")
+        logger.info("Pipeline task manager stopped", extra={"pipeline_module": self.pipeline_module})
 
     async def enqueue_start(
         self,
         *,
         project_id: str,
         run_id: str,
-        start_step: int,
-        end_step: int,
-        skip_steps: list[int],
     ) -> None:
         """Queue a start pipeline job."""
         await self.start()
@@ -102,9 +111,6 @@ class PipelineTaskManager:
                 kind="start",
                 project_id=project_id,
                 run_id=run_id,
-                start_step=start_step,
-                end_step=end_step,
-                skip_steps=skip_steps,
             )
         )
 
@@ -128,6 +134,7 @@ class PipelineTaskManager:
         logger.info(
             "Pipeline task queued",
             extra={
+                "pipeline_module": self.pipeline_module,
                 "kind": job.kind,
                 "project_id": job.project_id,
                 "run_id": job.run_id,
@@ -136,7 +143,10 @@ class PipelineTaskManager:
         )
 
     async def _worker_loop(self, worker_index: int) -> None:
-        logger.info("Pipeline worker started", extra={"worker_index": worker_index})
+        logger.info(
+            "Pipeline worker started",
+            extra={"pipeline_module": self.pipeline_module, "worker_index": worker_index},
+        )
         while True:
             job = await self._queue.get()
             if job is None:
@@ -145,10 +155,22 @@ class PipelineTaskManager:
 
             try:
                 await self._execute(job)
+            except PipelineAlreadyRunningError:
+                logger.info(
+                    "Pipeline module busy, requeueing job",
+                    extra={
+                        "pipeline_module": self.pipeline_module,
+                        "project_id": job.project_id,
+                        "run_id": job.run_id,
+                    },
+                )
+                await asyncio.sleep(1.0)
+                self._enqueue(job)
             except Exception:
                 logger.exception(
                     "Pipeline worker job failed",
                     extra={
+                        "pipeline_module": self.pipeline_module,
                         "worker_index": worker_index,
                         "kind": job.kind,
                         "project_id": job.project_id,
@@ -158,34 +180,50 @@ class PipelineTaskManager:
             finally:
                 self._queue.task_done()
 
-        logger.info("Pipeline worker stopped", extra={"worker_index": worker_index})
+        logger.info(
+            "Pipeline worker stopped",
+            extra={"pipeline_module": self.pipeline_module, "worker_index": worker_index},
+        )
 
     async def _execute(self, job: PipelineTaskJob) -> None:
         async with get_session_context() as session:
+            # Local import avoids a circular dependency at module import time.
+            from app.services.pipeline_orchestrator import PipelineOrchestrator
+
             orchestrator = PipelineOrchestrator(session, job.project_id)
             if job.kind == "start":
-                start_step = job.start_step if job.start_step is not None else 0
-                end_step = job.end_step if job.end_step is not None else 14
                 await orchestrator.start_pipeline(
                     run_id=job.run_id,
-                    start_step=start_step,
-                    end_step=end_step,
-                    skip_steps=job.skip_steps or [],
+                    pipeline_module=self.pipeline_module,
                 )
                 return
 
-            await orchestrator.resume_pipeline(job.run_id)
+            await orchestrator.resume_pipeline(job.run_id, pipeline_module=self.pipeline_module)
 
 
-_pipeline_task_manager: PipelineTaskManager | None = None
+_discovery_pipeline_task_manager: PipelineTaskManager | None = None
+_content_pipeline_task_manager: PipelineTaskManager | None = None
 
 
-def get_pipeline_task_manager() -> PipelineTaskManager:
-    """Get singleton pipeline task manager."""
-    global _pipeline_task_manager
-    if _pipeline_task_manager is None:
-        _pipeline_task_manager = PipelineTaskManager(
-            worker_count=settings.pipeline_task_workers,
-            queue_size=settings.pipeline_task_queue_size,
+def get_discovery_pipeline_task_manager() -> PipelineTaskManager:
+    """Get singleton discovery task manager."""
+    global _discovery_pipeline_task_manager
+    if _discovery_pipeline_task_manager is None:
+        _discovery_pipeline_task_manager = PipelineTaskManager(
+            pipeline_module="discovery",
+            worker_count=settings.discovery_pipeline_task_workers,
+            queue_size=settings.discovery_pipeline_task_queue_size,
         )
-    return _pipeline_task_manager
+    return _discovery_pipeline_task_manager
+
+
+def get_content_pipeline_task_manager() -> PipelineTaskManager:
+    """Get singleton content task manager."""
+    global _content_pipeline_task_manager
+    if _content_pipeline_task_manager is None:
+        _content_pipeline_task_manager = PipelineTaskManager(
+            pipeline_module="content",
+            worker_count=settings.content_pipeline_task_workers,
+            queue_size=settings.content_pipeline_task_queue_size,
+        )
+    return _content_pipeline_task_manager

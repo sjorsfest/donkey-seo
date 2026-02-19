@@ -1,6 +1,6 @@
 """Unit tests for Step 5 secondary intent taxonomy and scoring."""
 
-from app.services.steps.step_05_intent import Step05IntentService
+from app.services.steps.discovery.step_05_intent import Step05IntentService
 
 
 def test_derive_intent_layer_workflow_integration() -> None:

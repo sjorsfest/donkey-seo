@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.exceptions import APIKeyMissingError
-from app.services.steps.step_08_serp import Step08SerpValidationService
+from app.services.steps.discovery.step_08_serp import Step08SerpValidationService
 
 
 @pytest.mark.parametrize(
@@ -241,7 +241,7 @@ async def test_fetch_serp_payloads_missing_credentials_returns_warning(
         def __init__(self, *args: object, **kwargs: object) -> None:
             raise APIKeyMissingError("DataForSEO")
 
-    monkeypatch.setattr("app.services.steps.step_08_serp.DataForSEOClient", MissingClient)
+    monkeypatch.setattr("app.services.steps.discovery.step_08_serp.DataForSEOClient", MissingClient)
 
     payloads, api_calls, warnings = await service._fetch_serp_payloads(
         keywords,
@@ -291,7 +291,7 @@ async def test_fetch_serp_payloads_partial_batch_failure_is_best_effort(
                 for keyword in keywords
             ]
 
-    monkeypatch.setattr("app.services.steps.step_08_serp.DataForSEOClient", PartialFailureClient)
+    monkeypatch.setattr("app.services.steps.discovery.step_08_serp.DataForSEOClient", PartialFailureClient)
 
     payloads, api_calls, warnings = await service._fetch_serp_payloads(
         keywords,

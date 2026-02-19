@@ -10,8 +10,8 @@ from app.services.run_strategy import (
     classify_intent_alignment,
     resolve_run_strategy,
 )
-from app.services.steps.step_03_expansion import Step03ExpansionService
-from app.services.steps.step_07_prioritization import Step07PrioritizationService
+from app.services.steps.discovery.step_03_expansion import Step03ExpansionService
+from app.services.steps.discovery.step_07_prioritization import Step07PrioritizationService
 
 
 def test_pipeline_start_request_accepts_strategy_payload() -> None:
@@ -46,7 +46,7 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
     """Pipeline start accepts discovery/content mode payloads."""
     req = PipelineStartRequest.model_validate(
         {
-            "mode": "discovery_loop",
+            "mode": "discovery",
             "strategy": {
                 "fit_threshold_profile": "aggressive",
                 "market_mode_override": "auto",
@@ -61,7 +61,7 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
                 "max_serp_servedness": 0.75,
                 "max_serp_competitor_density": 0.7,
                 "min_serp_intent_confidence": 0.35,
-                "auto_start_content": True,
+                "auto_dispatch_content_tasks": True,
             },
             "content": {
                 "max_briefs": 15,
@@ -72,7 +72,7 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
         }
     )
 
-    assert req.mode == "discovery_loop"
+    assert req.mode == "discovery"
     assert req.discovery is not None
     assert req.discovery.max_iterations == 3
     assert req.discovery.min_eligible_topics == 6
@@ -93,7 +93,7 @@ def test_pipeline_start_request_rejects_invalid_preferred_weekday() -> None:
     with pytest.raises(ValueError):
         PipelineStartRequest.model_validate(
             {
-                "mode": "content_production",
+                "mode": "content",
                 "content": {
                     "max_briefs": 10,
                     "preferred_weekdays": [0, 7],
