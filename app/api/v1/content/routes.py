@@ -92,6 +92,7 @@ def _writer_instructions_payload(instructions: WriterInstructions | None) -> dic
         "internal_linking_minimums": instructions.internal_linking_minimums or {},
         "schema_guidance": instructions.schema_guidance or "",
         "qa_checklist": instructions.qa_checklist or [],
+        "pass_fail_thresholds": instructions.pass_fail_thresholds or {},
         "common_failure_modes": instructions.common_failure_modes or [],
     }
 

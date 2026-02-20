@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Float, ForeignKey, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -65,9 +66,19 @@ class BrandProfile(
     in_scope_topics: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     out_of_scope_topics: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
+    # Visual brand context for image generation
+    brand_assets: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    visual_style_guide: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    visual_prompt_contract: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Extraction metadata
     extraction_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    visual_extraction_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    visual_last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     # Relationships
     project: Mapped[Project] = relationship("Project", back_populates="brand_profile")

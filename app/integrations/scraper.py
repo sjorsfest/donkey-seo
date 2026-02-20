@@ -2,12 +2,11 @@
 
 import asyncio
 import logging
+import re
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +98,8 @@ class WebsiteScraper:
             if parsed.netloc == base_domain:
                 links.append(full_url)
 
+        asset_candidates = self._extract_asset_candidates(soup=soup, page_url=url)
+
         return {
             "url": url,
             "title": title,
@@ -106,6 +107,7 @@ class WebsiteScraper:
             "headings": headings,
             "text_content": text_content[:50000],  # Limit content size
             "links": list(set(links)),
+            "asset_candidates": asset_candidates,
         }
 
     async def scrape_website(self, domain: str) -> dict:
@@ -140,7 +142,10 @@ class WebsiteScraper:
         # Start with homepage
         homepage = await self.scrape_page(domain)
         if "error" in homepage:
-            logger.warning("Homepage scrape failed", extra={"domain": domain, "error": homepage["error"]})
+            logger.warning(
+                "Homepage scrape failed",
+                extra={"domain": domain, "error": homepage["error"]},
+            )
             return {"domain": domain, "error": homepage["error"], "pages": []}
 
         pages = [homepage]
@@ -170,6 +175,7 @@ class WebsiteScraper:
 
         # Combine content for LLM processing
         combined_parts = []
+        aggregated_asset_candidates: dict[str, dict] = {}
         for page in pages:
             if "error" in page:
                 continue
@@ -188,15 +194,145 @@ class WebsiteScraper:
                 combined_parts.append("Content:")
                 combined_parts.append(text[:5000])  # Limit per page
 
+            for candidate in page.get("asset_candidates", []):
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_url = str(candidate.get("url") or "").strip()
+                if not candidate_url:
+                    continue
+
+                existing = aggregated_asset_candidates.get(candidate_url)
+                if not existing:
+                    aggregated_asset_candidates[candidate_url] = candidate
+                    continue
+
+                existing_confidence = float(existing.get("role_confidence") or 0.0)
+                candidate_confidence = float(candidate.get("role_confidence") or 0.0)
+                if candidate_confidence > existing_confidence:
+                    aggregated_asset_candidates[candidate_url] = candidate
+
             combined_parts.append("")
 
-        logger.info("Website scrape complete", extra={"domain": domain, "pages_scraped": len(pages), "urls_found": len(crawled_urls)})
+        logger.info(
+            "Website scrape complete",
+            extra={
+                "domain": domain,
+                "pages_scraped": len(pages),
+                "urls_found": len(crawled_urls),
+            },
+        )
         return {
             "domain": domain,
             "pages": pages,
             "combined_content": "\n".join(combined_parts),
             "source_urls": list(crawled_urls),
+            "asset_candidates": sorted(
+                aggregated_asset_candidates.values(),
+                key=lambda item: float(item.get("role_confidence") or 0.0),
+                reverse=True,
+            ),
         }
+
+    def _extract_asset_candidates(self, *, soup: BeautifulSoup, page_url: str) -> list[dict]:
+        candidates: dict[str, dict] = {}
+
+        def _record_candidate(
+            url: str | None,
+            *,
+            role: str,
+            role_confidence: float,
+            origin: str,
+        ) -> None:
+            if not url:
+                return
+            full_url = urljoin(page_url, url)
+            parsed = urlparse(full_url)
+            if parsed.scheme not in {"http", "https"}:
+                return
+
+            existing = candidates.get(full_url)
+            payload = {
+                "url": full_url,
+                "role": role,
+                "role_confidence": role_confidence,
+                "origin": origin,
+                "source_page": page_url,
+            }
+            if not existing:
+                candidates[full_url] = payload
+                return
+
+            if role_confidence > float(existing.get("role_confidence") or 0.0):
+                candidates[full_url] = payload
+
+        for meta in soup.find_all("meta"):
+            property_name = str(meta.get("property") or "").strip().lower()
+            name_attr = str(meta.get("name") or "").strip().lower()
+            content = str(meta.get("content") or "").strip()
+            if not content:
+                continue
+            if property_name == "og:image":
+                _record_candidate(
+                    content,
+                    role="hero",
+                    role_confidence=0.9,
+                    origin="meta_og_image",
+                )
+            elif name_attr == "twitter:image":
+                _record_candidate(
+                    content,
+                    role="hero",
+                    role_confidence=0.85,
+                    origin="meta_twitter_image",
+                )
+
+        for link in soup.find_all("link"):
+            rel_values = link.get("rel") or []
+            rel_text = " ".join(str(rel).lower() for rel in rel_values)
+            href = str(link.get("href") or "").strip()
+            if not href:
+                continue
+            if "icon" in rel_text:
+                _record_candidate(
+                    href,
+                    role="icon",
+                    role_confidence=0.88,
+                    origin="link_icon",
+                )
+
+        logo_signal_pattern = re.compile(r"(logo|brand|wordmark|logotype)")
+        for image in soup.find_all("img"):
+            src = str(image.get("src") or "").strip()
+            if not src:
+                continue
+
+            attrs = " ".join(
+                [
+                    str(image.get("alt") or ""),
+                    str(image.get("id") or ""),
+                    " ".join(image.get("class") or []),
+                    src,
+                ]
+            ).lower()
+
+            if logo_signal_pattern.search(attrs):
+                _record_candidate(
+                    src,
+                    role="logo",
+                    role_confidence=0.95,
+                    origin="img_logo_signal",
+                )
+                continue
+
+            if "hero" in attrs:
+                _record_candidate(
+                    src,
+                    role="hero",
+                    role_confidence=0.6,
+                    origin="img_hero_signal",
+                )
+
+        return list(candidates.values())
 
 
 async def scrape_website(domain: str, max_pages: int = 10) -> dict:

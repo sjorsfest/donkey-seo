@@ -65,3 +65,45 @@ def test_merge_target_audience_caps_roles_to_20_items() -> None:
     assert len(merged["target_roles"]) == 20
     assert merged["target_roles"][0] == "Role 0"
     assert merged["target_roles"][-1] == "Role 19"
+
+
+def test_normalize_prompt_contract_enforces_required_placeholders() -> None:
+    contract = Step01BrandService._normalize_prompt_contract(
+        {
+            "template": "Brand visual for {article_topic}",
+            "required_variables": ["article_topic"],
+            "forbidden_terms": ["  fake claims  "],
+            "fallback_rules": ["  keep it clean "],
+            "render_targets": [" blog_hero "],
+        }
+    )
+
+    required_variables = contract["required_variables"]
+    for required in (
+        "article_topic",
+        "audience",
+        "intent",
+        "visual_goal",
+        "brand_voice",
+        "asset_refs",
+    ):
+        assert required in required_variables
+        assert f"{{{required}}}" in contract["template"]
+
+    assert contract["forbidden_terms"] == ["fake claims"]
+    assert contract["fallback_rules"] == ["keep it clean"]
+    assert contract["render_targets"] == ["blog_hero"]
+
+
+def test_fallback_visual_confidence_boosts_when_assets_exist() -> None:
+    low_without_assets = Step01BrandService._fallback_visual_confidence(
+        extraction_confidence=0.1,
+        has_assets=False,
+    )
+    low_with_assets = Step01BrandService._fallback_visual_confidence(
+        extraction_confidence=0.1,
+        has_assets=True,
+    )
+
+    assert low_without_assets == 0.05
+    assert low_with_assets == 0.2

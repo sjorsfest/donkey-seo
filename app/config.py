@@ -124,6 +124,16 @@ class Settings(BaseSettings):
     dataforseo_login: str | None = None
     dataforseo_password: str | None = None
 
+    # Cloudflare R2 (private brand assets)
+    cloudflare_r2_account_id: str | None = None
+    cloudflare_r2_access_key_id: str | None = None
+    cloudflare_r2_secret_access_key: str | None = None
+    cloudflare_r2_bucket: str | None = None
+    cloudflare_r2_region: str = "auto"
+    brand_asset_max_bytes: int = 5_000_000
+    brand_assets_max_count: int = 8
+    signed_url_ttl_seconds: int = 90
+
     # Rate Limiting
     keyword_api_calls_per_minute: int = 100
     serp_api_calls_per_minute: int = 60

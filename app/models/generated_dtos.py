@@ -37,8 +37,13 @@ class BrandProfileRow:
     restricted_claims: list[str] | None
     in_scope_topics: list[str] | None
     out_of_scope_topics: list[str] | None
+    brand_assets: list[dict] | None
+    visual_style_guide: dict | None
+    visual_prompt_contract: dict | None
     extraction_model: str | None
     extraction_confidence: float | None
+    visual_extraction_confidence: float | None
+    visual_last_synced_at: datetime | None
     id: str
     created_at: datetime
     updated_at: datetime
@@ -68,8 +73,13 @@ class BrandProfileRow:
             restricted_claims=model.restricted_claims,
             in_scope_topics=model.in_scope_topics,
             out_of_scope_topics=model.out_of_scope_topics,
+            brand_assets=model.brand_assets,
+            visual_style_guide=model.visual_style_guide,
+            visual_prompt_contract=model.visual_prompt_contract,
             extraction_model=model.extraction_model,
             extraction_confidence=model.extraction_confidence,
+            visual_extraction_confidence=model.visual_extraction_confidence,
+            visual_last_synced_at=model.visual_last_synced_at,
             id=model.id,
             created_at=model.created_at,
             updated_at=model.updated_at,
@@ -101,8 +111,13 @@ class BrandProfileCreateDTO:
     restricted_claims: list[str] | None = None
     in_scope_topics: list[str] | None = None
     out_of_scope_topics: list[str] | None = None
+    brand_assets: list[dict] | None = None
+    visual_style_guide: dict | None = None
+    visual_prompt_contract: dict | None = None
     extraction_model: str | None = None
     extraction_confidence: float | None = None
+    visual_extraction_confidence: float | None = None
+    visual_last_synced_at: datetime | None = None
 
     _DROP_NONE_FIELDS: ClassVar[set[str]] = set()
 
@@ -139,8 +154,13 @@ class BrandProfilePatchDTO:
     restricted_claims: list[str] | None = None
     in_scope_topics: list[str] | None = None
     out_of_scope_topics: list[str] | None = None
+    brand_assets: list[dict] | None = None
+    visual_style_guide: dict | None = None
+    visual_prompt_contract: dict | None = None
     extraction_model: str | None = None
     extraction_confidence: float | None = None
+    visual_extraction_confidence: float | None = None
+    visual_last_synced_at: datetime | None = None
     _provided_fields: set[str] = field(
         default_factory=set,
         repr=False,

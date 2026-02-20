@@ -101,6 +101,7 @@ class ArticleWriterInput(BaseModel):
     conversion_intents: list[str] = Field(default_factory=list)
     target_domain: str = ""
     qa_feedback: list[str] = Field(default_factory=list)
+    existing_document: dict | None = None
 
 
 class ArticleWriterOutput(BaseModel):
@@ -131,6 +132,9 @@ Hard requirements:
 7. Add meaningful internal/external links inside block.links where appropriate.
 8. Never output raw HTML in body text.
 9. If QA feedback is provided, revise the draft to specifically fix those failures.
+10. If an existing document is provided, apply minimal targeted edits
+    instead of rewriting from scratch.
+11. Preserve topic, search intent, primary keyword strategy, and ICP hook.
 
 Writing quality:
 - Clear, practical, and audience-aligned.
@@ -152,6 +156,8 @@ Writing quality:
                 "qa_feedback_count": len(input_data.qa_feedback),
             },
         )
+        conversion_intents = ", ".join(input_data.conversion_intents)
+        conversion_intents_text = conversion_intents if conversion_intents else "Not specified"
 
         return (
             "Generate a complete modular article document from these inputs.\n\n"
@@ -164,10 +170,12 @@ Writing quality:
             "## Brand Context\n"
             f"{input_data.brand_context or 'Not provided'}\n\n"
             "## Conversion Intents\n"
-            f"{', '.join(input_data.conversion_intents) if input_data.conversion_intents else 'Not specified'}\n\n"
+            f"{conversion_intents_text}\n\n"
             "## Target Domain\n"
             f"{input_data.target_domain or 'Not specified'}\n\n"
             "## QA Feedback To Fix\n"
             f"{json.dumps(input_data.qa_feedback, ensure_ascii=True)}\n\n"
+            "## Existing Document (for targeted revision)\n"
+            f"{json.dumps(input_data.existing_document, indent=2, ensure_ascii=True)}\n\n"
             "Build the final modular article now."
         )

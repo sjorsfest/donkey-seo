@@ -291,6 +291,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                 "internal_linking_minimums": item.internal_linking_minimums or {},
                 "schema_guidance": item.schema_guidance or "",
                 "qa_checklist": item.qa_checklist or [],
+                "pass_fail_thresholds": item.pass_fail_thresholds or {},
                 "common_failure_modes": item.common_failure_modes or [],
             }
         return payload

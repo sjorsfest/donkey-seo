@@ -279,6 +279,12 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                     },
                     schema_guidance=f"Use {delta_data['schema_type']} schema",
                     qa_checklist=style_guide.base_qa_checklist,
+                    pass_fail_thresholds={
+                        "seo_score_target": 75,
+                        "keyword_density_soft_min": 0.2,
+                        "keyword_density_soft_max": 2.5,
+                        "max_auto_revisions": 1,
+                    },
                     common_failure_modes=[
                         {"mode": fm, "severity": "warning"}
                         for fm in (style_guide.common_failure_modes or [])

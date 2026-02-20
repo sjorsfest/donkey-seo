@@ -5,12 +5,18 @@ Scrapes key pages and extracts brand positioning, products, and audience using L
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
 
 from app.agents.brand_extractor import BrandExtractorAgent, BrandExtractorInput
+from app.agents.brand_visual_guide import (
+    BrandVisualGuideAgent,
+    BrandVisualGuideInput,
+)
 from app.agents.icp_recommender import ICPRecommenderAgent, ICPRecommenderInput
+from app.integrations.asset_store import BrandAssetStore
 from app.integrations.scraper import scrape_website
 from app.models.brand import BrandProfile
 from app.models.generated_dtos import BrandProfileCreateDTO, BrandProfilePatchDTO
@@ -46,6 +52,11 @@ class BrandOutput:
     out_of_scope_topics: list[str]
     source_pages: list[str]
     extraction_confidence: float
+    brand_assets: list[dict[str, Any]]
+    visual_style_guide: dict[str, Any]
+    visual_prompt_contract: dict[str, Any]
+    visual_extraction_confidence: float
+    visual_last_synced_at: datetime
 
 
 class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
@@ -66,6 +77,14 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         "desired_outcomes",
         "objections",
     )
+    _PROMPT_CONTRACT_REQUIRED_VARIABLES = [
+        "article_topic",
+        "audience",
+        "intent",
+        "visual_goal",
+        "brand_voice",
+        "asset_refs",
+    ]
 
     async def _validate_preconditions(self, input_data: BrandInput) -> None:
         """Validate Step 0 is completed."""
@@ -186,6 +205,73 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             suggested_icp_niches=icp_niches,
         )
 
+        await self._update_progress(80, "Discovering and storing brand image assets...")
+
+        existing_brand_result = await self.session.execute(
+            select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
+        )
+        existing_brand = existing_brand_result.scalar_one_or_none()
+
+        brand_assets = list(existing_brand.brand_assets or []) if existing_brand else []
+        asset_candidates = [
+            candidate
+            for candidate in scraped_data.get("asset_candidates", [])
+            if isinstance(candidate, dict)
+        ]
+        if asset_candidates:
+            try:
+                store = BrandAssetStore()
+                brand_assets = await store.ingest_asset_candidates(
+                    project_id=input_data.project_id,
+                    asset_candidates=asset_candidates,
+                    existing_assets=brand_assets,
+                    origin="step_01_auto",
+                )
+            except Exception:
+                logger.exception(
+                    "Brand asset ingestion failed; continuing with textual profile only",
+                    extra={"project_id": input_data.project_id, "domain": domain},
+                )
+
+        await self._update_progress(88, "Generating visual prompt style guide...")
+
+        visual_style_guide = self._default_visual_style_guide(
+            tone_attributes=brand_profile.tone_attributes,
+            differentiators=brand_profile.differentiators,
+        )
+        visual_prompt_contract = self._default_visual_prompt_contract()
+        visual_extraction_confidence = self._fallback_visual_confidence(
+            extraction_confidence=brand_profile.extraction_confidence,
+            has_assets=bool(brand_assets),
+        )
+
+        try:
+            visual_agent = BrandVisualGuideAgent()
+            visual_output = await visual_agent.run(
+                BrandVisualGuideInput(
+                    company_name=brand_profile.company_name,
+                    tagline=brand_profile.tagline,
+                    tone_attributes=brand_profile.tone_attributes,
+                    unique_value_props=brand_profile.unique_value_props,
+                    differentiators=brand_profile.differentiators,
+                    target_roles=merged_target_audience.get("target_roles", []),
+                    target_industries=merged_target_audience.get("target_industries", []),
+                    brand_assets=brand_assets,
+                )
+            )
+            visual_style_guide = visual_output.visual_style_guide.model_dump()
+            visual_prompt_contract = self._normalize_prompt_contract(
+                visual_output.visual_prompt_contract.model_dump()
+            )
+            visual_extraction_confidence = float(visual_output.extraction_confidence)
+        except Exception:
+            logger.exception(
+                "Visual style guide generation failed; storing deterministic fallback",
+                extra={"project_id": input_data.project_id, "domain": domain},
+            )
+
+        visual_last_synced_at = datetime.now(timezone.utc)
+
         await self._update_progress(90, "Finalizing brand profile...")
 
         # Convert agent output to step output
@@ -217,6 +303,11 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             out_of_scope_topics=brand_profile.out_of_scope_topics,
             source_pages=scraped_data.get("source_urls", []),
             extraction_confidence=brand_profile.extraction_confidence,
+            brand_assets=brand_assets,
+            visual_style_guide=visual_style_guide,
+            visual_prompt_contract=visual_prompt_contract,
+            visual_extraction_confidence=visual_extraction_confidence,
+            visual_last_synced_at=visual_last_synced_at,
         )
 
     async def _persist_results(self, result: BrandOutput) -> None:
@@ -250,6 +341,11 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             "out_of_scope_topics": result.out_of_scope_topics,
             "source_pages": result.source_pages,
             "extraction_confidence": result.extraction_confidence,
+            "brand_assets": result.brand_assets,
+            "visual_style_guide": result.visual_style_guide,
+            "visual_prompt_contract": result.visual_prompt_contract,
+            "visual_extraction_confidence": result.visual_extraction_confidence,
+            "visual_last_synced_at": result.visual_last_synced_at,
         }
 
         if brand_profile:
@@ -282,6 +378,11 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
                     out_of_scope_topics=result.out_of_scope_topics,
                     source_pages=result.source_pages,
                     extraction_confidence=result.extraction_confidence,
+                    brand_assets=result.brand_assets,
+                    visual_style_guide=result.visual_style_guide,
+                    visual_prompt_contract=result.visual_prompt_contract,
+                    visual_extraction_confidence=result.visual_extraction_confidence,
+                    visual_last_synced_at=result.visual_last_synced_at,
                 ),
             )
 
@@ -301,6 +402,8 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             "target_roles_count": len(result.target_audience.get("target_roles", [])),
             "extraction_confidence": result.extraction_confidence,
             "source_pages_count": len(result.source_pages),
+            "brand_assets_count": len(result.brand_assets),
+            "visual_extraction_confidence": result.visual_extraction_confidence,
         })
 
         await self.session.commit()
@@ -385,3 +488,108 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             normalized.append(value)
 
         return normalized
+
+    @classmethod
+    def _normalize_prompt_contract(cls, prompt_contract: dict[str, Any]) -> dict[str, Any]:
+        """Ensure prompt contract has deterministic required fields."""
+        required = cls._normalize_string_list(
+            [
+                *cls._PROMPT_CONTRACT_REQUIRED_VARIABLES,
+                *[
+                    str(item)
+                    for item in (prompt_contract.get("required_variables") or [])
+                ],
+            ]
+        )
+        prompt_contract["required_variables"] = required
+
+        template = str(prompt_contract.get("template") or "").strip()
+        if not template:
+            template = cls._default_visual_prompt_contract()["template"]
+
+        for variable in cls._PROMPT_CONTRACT_REQUIRED_VARIABLES:
+            placeholder = "{" + variable + "}"
+            if placeholder not in template:
+                template = f"{template} {placeholder}".strip()
+        prompt_contract["template"] = " ".join(template.split())
+
+        for key in ("forbidden_terms", "fallback_rules", "render_targets"):
+            prompt_contract[key] = cls._normalize_string_list(
+                [str(value) for value in (prompt_contract.get(key) or [])]
+            )
+
+        return prompt_contract
+
+    @staticmethod
+    def _fallback_visual_confidence(
+        *,
+        extraction_confidence: float,
+        has_assets: bool,
+    ) -> float:
+        baseline = min(max(extraction_confidence * 0.5, 0.0), 0.6)
+        if has_assets:
+            baseline = max(baseline, 0.2)
+        return round(baseline, 3)
+
+    @staticmethod
+    def _default_visual_style_guide(
+        *,
+        tone_attributes: list[str],
+        differentiators: list[str],
+    ) -> dict[str, Any]:
+        tone_text = ", ".join(tone_attributes[:4]) if tone_attributes else "professional"
+        differentiators_text = (
+            ", ".join(differentiators[:3])
+            if differentiators
+            else "clear positioning and practical value"
+        )
+        return {
+            "brand_palette": {},
+            "contrast_rules": [
+                "Maintain high contrast between text and background elements.",
+            ],
+            "composition_rules": [
+                "Prefer clean layouts with one dominant focal point.",
+                "Align imagery with a tone that is " + tone_text + ".",
+            ],
+            "subject_rules": [
+                "Center visuals around realistic business scenarios.",
+                "Reinforce differentiators: " + differentiators_text + ".",
+            ],
+            "camera_lighting_rules": [
+                "Use natural lighting and avoid harsh color casts.",
+            ],
+            "logo_usage_rules": [
+                "Place logos in clear space and avoid distortion.",
+            ],
+            "negative_rules": [
+                "Avoid exaggerated claims, misleading visuals, and generic stock look.",
+            ],
+            "accessibility_rules": [
+                "Ensure readable overlays and avoid low-contrast color combinations.",
+            ],
+        }
+
+    @classmethod
+    def _default_visual_prompt_contract(cls) -> dict[str, Any]:
+        return {
+            "template": (
+                "Create an on-brand image for {article_topic} aimed at {audience}. "
+                "Intent: {intent}. Visual goal: {visual_goal}. "
+                "Brand voice: {brand_voice}. Asset references: {asset_refs}."
+            ),
+            "required_variables": list(cls._PROMPT_CONTRACT_REQUIRED_VARIABLES),
+            "forbidden_terms": [
+                "photoreal celebrity likeness",
+                "unverified performance claims",
+            ],
+            "fallback_rules": [
+                "If no logo asset is available, use neutral composition with brand colors only.",
+                "If brand palette is missing, keep palette restrained and high-contrast.",
+            ],
+            "render_targets": [
+                "blog_hero",
+                "social_preview",
+                "feature_callout",
+            ],
+        }
