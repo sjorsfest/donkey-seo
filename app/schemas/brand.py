@@ -25,11 +25,41 @@ class BrandAssetMetadata(BaseModel):
     ingested_at: str
 
 
+class BrandProductServiceMetadata(BaseModel):
+    """Structured product/service metadata extracted in Step 1."""
+
+    name: str
+    description: str | None = None
+    category: str | None = None
+    target_audience: str | None = None
+    core_benefits: list[str] = Field(default_factory=list)
+
+
+class BrandSuggestedICPNiche(BaseModel):
+    """Suggested ICP niche returned from Step 1 recommender."""
+
+    niche_name: str
+    target_roles: list[str] = Field(default_factory=list)
+    target_industries: list[str] = Field(default_factory=list)
+    company_sizes: list[str] = Field(default_factory=list)
+    primary_pains: list[str] = Field(default_factory=list)
+    desired_outcomes: list[str] = Field(default_factory=list)
+    likely_objections: list[str] = Field(default_factory=list)
+    why_good_fit: str | None = None
+
+
 class BrandVisualContextResponse(BaseModel):
     """Brand visual context used for image generation."""
 
     project_id: str
     company_name: str | None = None
+    tagline: str | None = None
+    products_services: list[BrandProductServiceMetadata] = Field(default_factory=list)
+    target_roles: list[str] = Field(default_factory=list)
+    target_industries: list[str] = Field(default_factory=list)
+    differentiators: list[str] = Field(default_factory=list)
+    suggested_icp_niches: list[BrandSuggestedICPNiche] = Field(default_factory=list)
+    extraction_confidence: float | None = None
     brand_assets: list[BrandAssetMetadata] = Field(default_factory=list)
     visual_style_guide: dict[str, Any] = Field(default_factory=dict)
     visual_prompt_contract: dict[str, Any] = Field(default_factory=dict)

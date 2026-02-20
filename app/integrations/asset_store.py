@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
@@ -13,6 +12,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings, settings
+from app.core.ids import generate_cuid
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class BrandAssetStore:
 
             now_iso = datetime.now(timezone.utc).isoformat()
             assets_by_sha[sha256] = {
-                "asset_id": str(uuid.uuid4()),
+                "asset_id": generate_cuid(),
                 "object_key": object_key,
                 "sha256": sha256,
                 "mime_type": mime_type,

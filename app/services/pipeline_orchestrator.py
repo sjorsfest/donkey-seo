@@ -1,9 +1,8 @@
-"""Pipeline orchestrator facade for discovery/content modules."""
+"""Pipeline orchestrator facade for setup/discovery/content modules."""
 
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -24,7 +23,6 @@ from app.models.generated_dtos import (
 from app.models.pipeline import PipelineRun, StepExecution
 from app.models.project import Project
 from app.schemas.pipeline import ContentPipelineConfig
-from app.services.pipelines.discovery.loop import DiscoveryLoopResult, DiscoveryLoopSupervisor
 from app.services.pipeline_task_manager import get_content_pipeline_task_manager
 from app.services.pipelines import (
     CONTENT_DEFAULT_END_STEP,
@@ -39,17 +37,24 @@ from app.services.pipelines import (
     DISCOVERY_LOCAL_STEP_NAMES,
     DISCOVERY_LOCAL_TO_INPUT,
     DISCOVERY_LOCAL_TO_SERVICE,
+    SETUP_DEFAULT_END_STEP,
+    SETUP_DEFAULT_START_STEP,
+    SETUP_LOCAL_STEP_DEPENDENCIES,
+    SETUP_LOCAL_STEP_NAMES,
+    SETUP_LOCAL_TO_INPUT,
+    SETUP_LOCAL_TO_SERVICE,
 )
+from app.services.pipelines.discovery.loop import DiscoveryLoopResult, DiscoveryLoopSupervisor
 from app.services.steps.base_step import BaseStepService
 from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
-PipelineModule = Literal["discovery", "content"]
+PipelineModule = Literal["setup", "discovery", "content"]
 
 
 class PipelineOrchestrator:
-    """Orchestrates execution of discovery/content module runs."""
+    """Orchestrates execution of setup/discovery/content module runs."""
 
     def __init__(self, session: AsyncSession, project_id: str) -> None:
         self.session = session
@@ -84,8 +89,20 @@ class PipelineOrchestrator:
         )
 
         module_cfg = self._module_config(run.pipeline_module)
-        effective_start = start_step if start_step is not None else (run.start_step or module_cfg["default_start"])
-        effective_end = end_step if end_step is not None else (run.end_step or module_cfg["default_end"])
+        effective_start = (
+            start_step
+            if start_step is not None
+            else (
+                run.start_step
+                if run.start_step is not None
+                else module_cfg["default_start"]
+            )
+        )
+        effective_end = (
+            end_step
+            if end_step is not None
+            else (run.end_step if run.end_step is not None else module_cfg["default_end"])
+        )
         effective_skip = skip_steps if skip_steps else (run.skip_steps or [])
         effective_steps_config = self._build_effective_steps_config(
             pipeline_module=run.pipeline_module,
@@ -239,19 +256,40 @@ class PipelineOrchestrator:
             return await self.start_pipeline(
                 run_id=run_id,
                 pipeline_module=run.pipeline_module,
-                start_step=run.start_step or DISCOVERY_DEFAULT_START_STEP,
-                end_step=run.end_step or DISCOVERY_DEFAULT_END_STEP,
+                start_step=(
+                    run.start_step
+                    if run.start_step is not None
+                    else DISCOVERY_DEFAULT_START_STEP
+                ),
+                end_step=(
+                    run.end_step
+                    if run.end_step is not None
+                    else DISCOVERY_DEFAULT_END_STEP
+                ),
                 skip_steps=run.skip_steps or [],
                 steps_config=run.steps_config,
             )
 
+        module_cfg = self._module_config(run.pipeline_module)
         last_completed = await self._get_last_completed_step(str(run.id))
-        start_step = (last_completed + 1) if last_completed is not None else (run.start_step or CONTENT_DEFAULT_START_STEP)
+        start_step = (
+            (last_completed + 1)
+            if last_completed is not None
+            else (
+                run.start_step
+                if run.start_step is not None
+                else module_cfg["default_start"]
+            )
+        )
         return await self.start_pipeline(
             run_id=run_id,
             pipeline_module=run.pipeline_module,
             start_step=start_step,
-            end_step=run.end_step or CONTENT_DEFAULT_END_STEP,
+            end_step=(
+                run.end_step
+                if run.end_step is not None
+                else module_cfg["default_end"]
+            ),
             skip_steps=run.skip_steps or [],
             steps_config=run.steps_config,
         )
@@ -310,7 +348,7 @@ class PipelineOrchestrator:
         if run_id is not None:
             result = await self.session.execute(
                 select(PipelineRun).where(
-                    PipelineRun.id == uuid.UUID(run_id),
+                    PipelineRun.id == run_id,
                     PipelineRun.project_id == self.project_id,
                 )
             )
@@ -719,12 +757,22 @@ class PipelineOrchestrator:
             PipelineRun.status == "running",
         )
         if excluding_run_id:
-            query = query.where(PipelineRun.id != uuid.UUID(excluding_run_id))
+            query = query.where(PipelineRun.id != excluding_run_id)
         result = await self.session.execute(query)
         if result.scalar_one_or_none() is not None:
             raise PipelineAlreadyRunningError(self.project_id)
 
     def _module_config(self, module: str) -> dict[str, Any]:
+        if module == "setup":
+            return {
+                "default_start": SETUP_DEFAULT_START_STEP,
+                "default_end": SETUP_DEFAULT_END_STEP,
+                "step_names": SETUP_LOCAL_STEP_NAMES,
+                "dependencies": SETUP_LOCAL_STEP_DEPENDENCIES,
+                "service_map": SETUP_LOCAL_TO_SERVICE,
+                "input_map": SETUP_LOCAL_TO_INPUT,
+                "optional_steps": set(),
+            }
         if module == "discovery":
             return {
                 "default_start": DISCOVERY_DEFAULT_START_STEP,

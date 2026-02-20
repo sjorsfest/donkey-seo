@@ -6,7 +6,6 @@ Includes URL slug generation and cannibalization guardrails.
 
 import logging
 import re
-import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -122,7 +121,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             topics_result = await self.session.execute(
                 select(Topic).where(
                     Topic.project_id == input_data.project_id,
-                    Topic.id.in_([uuid.UUID(tid) for tid in input_data.topic_ids]),
+                    Topic.id.in_(input_data.topic_ids),
                 )
             )
         else:
@@ -744,9 +743,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         stmt = select(ContentBrief).where(ContentBrief.project_id == input_data.project_id)
         if input_data.topic_ids:
             stmt = stmt.where(
-                ContentBrief.topic_id.in_(
-                    [uuid.UUID(topic_id) for topic_id in input_data.topic_ids]
-                )
+                ContentBrief.topic_id.in_(input_data.topic_ids)
             )
         existing = await self.session.execute(stmt.limit(1))
         if existing.scalars().first():
@@ -895,7 +892,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         result = await self.session.execute(
             select(ContentBrief.topic_id).where(
                 ContentBrief.project_id == self.project_id,
-                ContentBrief.topic_id.in_([uuid.UUID(topic_id) for topic_id in topic_ids]),
+                ContentBrief.topic_id.in_(topic_ids),
             )
         )
         return {str(topic_id) for topic_id in result.scalars().all() if topic_id is not None}
@@ -1106,7 +1103,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
     async def _persist_results(self, result: BriefOutput) -> None:
         """Save content briefs to database."""
         topic_ids = [
-            uuid.UUID(brief_data["topic_id"])
+            brief_data["topic_id"]
             for brief_data in result.briefs
             if brief_data.get("topic_id")
         ]

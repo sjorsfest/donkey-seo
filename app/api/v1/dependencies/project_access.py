@@ -1,6 +1,5 @@
 """Shared dependencies for project ownership access checks."""
 
-import uuid
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -12,7 +11,7 @@ PROJECT_NOT_FOUND_DETAIL = "Project not found"
 
 
 async def get_user_project(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> Project:

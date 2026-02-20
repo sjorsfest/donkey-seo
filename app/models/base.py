@@ -1,17 +1,15 @@
 """Base model and mixins for SQLAlchemy models."""
 
-import uuid
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
 from sqlalchemy import DateTime, func
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.types import TypeDecorator
+from sqlalchemy.types import String, TypeDecorator
 
+from app.core.ids import generate_cuid
 from app.persistence.typed.contracts import CreateDTOProtocol, PatchDTOProtocol
-
 
 CreateDTOT = TypeVar("CreateDTOT", bound=CreateDTOProtocol)
 PatchDTOT = TypeVar("PatchDTOT", bound=PatchDTOProtocol)
@@ -19,9 +17,9 @@ ModelSelfT = TypeVar("ModelSelfT", bound="TypedModelMixin[Any, Any]")
 
 
 class StringUUID(TypeDecorator):
-    """UUID type that stores as PostgreSQL UUID but returns strings in Python."""
+    """String identifier type for CUID values."""
 
-    impl = UUID(as_uuid=True)
+    impl = String(32)
     cache_ok = True
 
     def process_result_value(self, value, dialect):
@@ -31,7 +29,7 @@ class StringUUID(TypeDecorator):
 
     def process_bind_param(self, value, dialect):
         if value is not None:
-            return uuid.UUID(value) if isinstance(value, str) else value
+            return str(value)
         return value
 
 
@@ -48,7 +46,7 @@ class TypedModelMixin(Generic[CreateDTOT, PatchDTOT]):
     async def get(
         cls: type[ModelSelfT],
         session: AsyncSession,
-        model_id: str | uuid.UUID,
+        model_id: str,
     ) -> ModelSelfT | None:
         """Fetch a model by primary key."""
         return await session.get(cls, model_id)
@@ -74,12 +72,12 @@ class TypedModelMixin(Generic[CreateDTOT, PatchDTOT]):
 
 
 class UUIDMixin:
-    """Mixin that adds a UUID primary key."""
+    """Mixin that adds a CUID-style string primary key."""
 
     id: Mapped[str] = mapped_column(
         StringUUID(),
         primary_key=True,
-        default=lambda: str(uuid.uuid4()),
+        default=generate_cuid,
     )
 
 

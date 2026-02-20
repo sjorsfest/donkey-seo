@@ -1,7 +1,6 @@
 """Topics API endpoints."""
 
 import logging
-import uuid
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -45,7 +44,7 @@ router = APIRouter()
     ),
 )
 async def list_topics(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
     page: int = Query(DEFAULT_PAGE, ge=1),
@@ -87,7 +86,7 @@ async def list_topics(
     description="Return prioritized topics for a project ordered by priority rank.",
 )
 async def get_ranked_topics(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
@@ -112,7 +111,7 @@ async def get_ranked_topics(
     description="Return the project topic tree with nested parent-child relationships.",
 )
 async def get_topic_hierarchy(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> list[TopicHierarchyResponse]:
@@ -146,8 +145,8 @@ async def get_topic_hierarchy(
     description="Return detailed information for a single topic.",
 )
 async def get_topic(
-    project_id: uuid.UUID,
-    topic_id: uuid.UUID,
+    project_id: str,
+    topic_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> Topic:
@@ -176,7 +175,7 @@ async def get_topic(
     description="Create a topic within a project, optionally linked to a parent topic.",
 )
 async def create_topic(
-    project_id: uuid.UUID,
+    project_id: str,
     topic_data: TopicCreate,
     current_user: CurrentUser,
     session: DbSession,
@@ -206,8 +205,8 @@ async def create_topic(
     description="Apply partial updates to an existing topic.",
 )
 async def update_topic(
-    project_id: uuid.UUID,
-    topic_id: uuid.UUID,
+    project_id: str,
+    topic_id: str,
     topic_data: TopicUpdate,
     current_user: CurrentUser,
     session: DbSession,
@@ -245,8 +244,8 @@ async def update_topic(
     description="Delete a topic from the project.",
 )
 async def delete_topic(
-    project_id: uuid.UUID,
-    topic_id: uuid.UUID,
+    project_id: str,
+    topic_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> None:
@@ -276,7 +275,7 @@ async def delete_topic(
     ),
 )
 async def merge_topics(
-    project_id: uuid.UUID,
+    project_id: str,
     request: TopicMergeRequest,
     current_user: CurrentUser,
     session: DbSession,
@@ -286,7 +285,7 @@ async def merge_topics(
 
     result = await session.execute(
         select(Topic).where(
-            Topic.id.in_([uuid.UUID(topic_id) for topic_id in request.source_topic_ids]),
+            Topic.id.in_(request.source_topic_ids),
             Topic.project_id == project_id,
         )
     )

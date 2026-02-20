@@ -16,6 +16,7 @@ Keyword research backend service with a 14-step pipeline for programmatic conten
 - **JWT authentication** for secure API access
 - **Configurable LLM providers** (OpenAI & Anthropic)
 - **Dynamic per-agent model selector** with max-price guardrails
+- **Redis-backed pipeline queue** with separate worker process execution
 
 ## Tech Stack
 
@@ -65,13 +66,22 @@ cp .env.example .env
 alembic upgrade head
 ```
 
-### 5. Start the Server
+### 5. Start the API Server
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
 API docs available at: http://localhost:8000/docs
+Queue health: http://localhost:8000/health/queue
+
+### 6. Start the Pipeline Worker
+
+```bash
+python -m app.workers.pipeline_worker
+```
+
+The API process only enqueues jobs; this worker process executes setup/discovery/content pipeline runs.
 
 ## Pipeline Steps
 
@@ -239,6 +249,7 @@ JWT_SECRET_KEY=your-secret-key
 DEFAULT_LLM_MODEL=openai:gpt-4-turbo
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-...
 
 # Dynamic model selector (optional)
 MODEL_SELECTOR_ENABLED=false

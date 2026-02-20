@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from app.core.redis import close_redis
 from app.services.pipeline_task_manager import (
     get_content_pipeline_task_manager,
     get_discovery_pipeline_task_manager,
+    get_setup_pipeline_task_manager,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,14 +48,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await init_db()
         logger.info("Development database initialized")
 
-    await get_discovery_pipeline_task_manager().start()
-    await get_content_pipeline_task_manager().start()
-
     yield
 
     logger.info("Shutting down DonkeySEO")
-    await get_discovery_pipeline_task_manager().stop()
-    await get_content_pipeline_task_manager().stop()
     await close_redis()
     await close_db()
 
@@ -106,6 +103,46 @@ def create_app() -> FastAPI:
     async def health_check() -> dict[str, str]:
         """Health check endpoint."""
         return {"status": "healthy", "version": settings.app_version}
+
+    @app.get(
+        "/health/queue",
+        summary="Queue health check",
+        description="Return Redis-backed queue lengths for setup/discovery/content modules.",
+    )
+    async def queue_health_check() -> dict[str, Any]:
+        """Queue health endpoint."""
+        setup_manager = get_setup_pipeline_task_manager()
+        discovery_manager = get_discovery_pipeline_task_manager()
+        content_manager = get_content_pipeline_task_manager()
+
+        setup_count, discovery_count, content_count = await asyncio.gather(
+            setup_manager.get_queue_size(),
+            discovery_manager.get_queue_size(),
+            content_manager.get_queue_size(),
+        )
+
+        return {
+            "status": "healthy",
+            "version": settings.app_version,
+            "queues": {
+                "setup": {
+                    "queued": setup_count,
+                    "limit": setup_manager.queue_size_limit,
+                    "workers": setup_manager.worker_count,
+                },
+                "discovery": {
+                    "queued": discovery_count,
+                    "limit": discovery_manager.queue_size_limit,
+                    "workers": discovery_manager.worker_count,
+                },
+                "content": {
+                    "queued": content_count,
+                    "limit": content_manager.queue_size_limit,
+                    "workers": content_manager.worker_count,
+                },
+            },
+            "total_queued": setup_count + discovery_count + content_count,
+        }
 
     return app
 

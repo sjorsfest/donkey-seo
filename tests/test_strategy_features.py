@@ -89,6 +89,12 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
     assert req.content.zero_data_fit_score_min == 0.65
 
 
+def test_pipeline_start_request_accepts_setup_mode() -> None:
+    req = PipelineStartRequest.model_validate({"mode": "setup"})
+
+    assert req.mode == "setup"
+
+
 def test_pipeline_start_request_rejects_invalid_preferred_weekday() -> None:
     with pytest.raises(ValueError):
         PipelineStartRequest.model_validate(

@@ -3,6 +3,7 @@
 DEFAULT_RUN_LIMIT = 10
 MAX_RUN_LIMIT = 50
 
+SETUP_PIPELINE_ALREADY_RUNNING_DETAIL = "Setup pipeline is already running for this project"
 DISCOVERY_PIPELINE_ALREADY_RUNNING_DETAIL = "Discovery pipeline is already running for this project"
 CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL = "Content pipeline is already running for this project"
 NO_RUNNING_PIPELINE_DETAIL = "No running pipeline found"

@@ -5,21 +5,18 @@ Implements caching with configurable TTL (default 14 days for metrics).
 """
 
 import logging
-import json
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.integrations.dataforseo import DataForSEOClient, get_location_code
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.services.discovery_capabilities import CAPABILITY_KEYWORD_EXPANSION
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
 

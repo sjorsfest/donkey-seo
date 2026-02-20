@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
@@ -21,7 +21,9 @@ from app.schemas.brand import (
     BrandAssetIngestRequest,
     BrandAssetIngestResponse,
     BrandAssetMetadata,
+    BrandProductServiceMetadata,
     BrandAssetSignedReadUrlResponse,
+    BrandSuggestedICPNiche,
     BrandVisualContextResponse,
     BrandVisualStylePatchRequest,
 )
@@ -36,7 +38,7 @@ router = APIRouter()
     summary="Get brand visual context",
 )
 async def get_brand_visual_context(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> BrandVisualContextResponse:
@@ -44,15 +46,7 @@ async def get_brand_visual_context(
     await get_user_project(project_id, current_user, session)
     brand = await _get_brand_profile_or_404(project_id=project_id, session=session)
 
-    return BrandVisualContextResponse(
-        project_id=str(project_id),
-        company_name=brand.company_name,
-        brand_assets=_asset_models(brand.brand_assets),
-        visual_style_guide=brand.visual_style_guide or {},
-        visual_prompt_contract=brand.visual_prompt_contract or {},
-        visual_extraction_confidence=brand.visual_extraction_confidence,
-        visual_last_synced_at=brand.visual_last_synced_at,
-    )
+    return _to_visual_context_response(project_id=project_id, brand=brand)
 
 
 @router.post(
@@ -61,7 +55,7 @@ async def get_brand_visual_context(
     summary="Ingest brand assets from URLs",
 )
 async def ingest_brand_assets(
-    project_id: uuid.UUID,
+    project_id: str,
     payload: BrandAssetIngestRequest,
     current_user: CurrentUser,
     session: DbSession,
@@ -118,7 +112,7 @@ async def ingest_brand_assets(
     summary="Get signed read URL for a private brand asset",
 )
 async def get_brand_asset_signed_read_url(
-    project_id: uuid.UUID,
+    project_id: str,
     asset_id: str,
     current_user: CurrentUser,
     session: DbSession,
@@ -160,7 +154,7 @@ async def get_brand_asset_signed_read_url(
     summary="Patch visual style guide and prompt contract",
 )
 async def patch_brand_visual_style(
-    project_id: uuid.UUID,
+    project_id: str,
     payload: BrandVisualStylePatchRequest,
     current_user: CurrentUser,
     session: DbSession,
@@ -190,18 +184,10 @@ async def patch_brand_visual_style(
     await session.flush()
     await session.refresh(brand)
 
-    return BrandVisualContextResponse(
-        project_id=str(project_id),
-        company_name=brand.company_name,
-        brand_assets=_asset_models(brand.brand_assets),
-        visual_style_guide=brand.visual_style_guide or {},
-        visual_prompt_contract=brand.visual_prompt_contract or {},
-        visual_extraction_confidence=brand.visual_extraction_confidence,
-        visual_last_synced_at=brand.visual_last_synced_at,
-    )
+    return _to_visual_context_response(project_id=project_id, brand=brand)
 
 
-async def _get_brand_profile_or_404(*, project_id: uuid.UUID, session: DbSession) -> BrandProfile:
+async def _get_brand_profile_or_404(*, project_id: str, session: DbSession) -> BrandProfile:
     result = await session.execute(
         select(BrandProfile).where(BrandProfile.project_id == project_id)
     )
@@ -235,6 +221,84 @@ def _asset_models(raw_assets: list[dict] | None) -> list[BrandAssetMetadata]:
             continue
         models.append(BrandAssetMetadata.model_validate(asset))
     return models
+
+
+def _product_models(raw_products: list[dict] | None) -> list[BrandProductServiceMetadata]:
+    models: list[BrandProductServiceMetadata] = []
+    for product in raw_products or []:
+        if not isinstance(product, dict):
+            continue
+        name = str(product.get("name") or "").strip()
+        if not name:
+            continue
+        core_benefits = [
+            str(item).strip()
+            for item in product.get("core_benefits", [])
+            if str(item).strip()
+        ]
+        models.append(
+            BrandProductServiceMetadata(
+                name=name,
+                description=_to_optional_str(product.get("description")),
+                category=_to_optional_str(product.get("category")),
+                target_audience=_to_optional_str(product.get("target_audience")),
+                core_benefits=core_benefits,
+            )
+        )
+    return models
+
+
+def _icp_niche_models(raw_niches: list[dict] | None) -> list[BrandSuggestedICPNiche]:
+    models: list[BrandSuggestedICPNiche] = []
+    for niche in raw_niches or []:
+        if not isinstance(niche, dict):
+            continue
+        niche_name = str(niche.get("niche_name") or "").strip()
+        if not niche_name:
+            continue
+        models.append(
+            BrandSuggestedICPNiche(
+                niche_name=niche_name,
+                target_roles=_to_str_list(niche.get("target_roles")),
+                target_industries=_to_str_list(niche.get("target_industries")),
+                company_sizes=_to_str_list(niche.get("company_sizes")),
+                primary_pains=_to_str_list(niche.get("primary_pains")),
+                desired_outcomes=_to_str_list(niche.get("desired_outcomes")),
+                likely_objections=_to_str_list(niche.get("likely_objections")),
+                why_good_fit=_to_optional_str(niche.get("why_good_fit")),
+            )
+        )
+    return models
+
+
+def _to_optional_str(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _to_str_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _to_visual_context_response(*, project_id: str, brand: BrandProfile) -> BrandVisualContextResponse:
+    return BrandVisualContextResponse(
+        project_id=str(project_id),
+        company_name=brand.company_name,
+        tagline=brand.tagline,
+        products_services=_product_models(brand.products_services),
+        target_roles=_to_str_list(brand.target_roles),
+        target_industries=_to_str_list(brand.target_industries),
+        differentiators=_to_str_list(brand.differentiators),
+        suggested_icp_niches=_icp_niche_models(brand.suggested_icp_niches),
+        extraction_confidence=brand.extraction_confidence,
+        brand_assets=_asset_models(brand.brand_assets),
+        visual_style_guide=brand.visual_style_guide or {},
+        visual_prompt_contract=brand.visual_prompt_contract or {},
+        visual_extraction_confidence=brand.visual_extraction_confidence,
+        visual_last_synced_at=brand.visual_last_synced_at,
+    )
 
 
 def _find_asset_by_id(raw_assets: list[dict], asset_id: str) -> dict | None:

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -160,7 +159,7 @@ class Step08SerpValidationService(
         if prioritized_primary_ids:
             primary_result = await self.session.execute(
                 select(Keyword).where(
-                    Keyword.id.in_([uuid.UUID(kid) for kid in prioritized_primary_ids])
+                    Keyword.id.in_(prioritized_primary_ids)
                 )
             )
             primary_keywords = list(primary_result.scalars())
@@ -174,7 +173,7 @@ class Step08SerpValidationService(
         if flagged_topic_ids:
             flagged_result = await self.session.execute(
                 select(Keyword).where(
-                    Keyword.topic_id.in_([uuid.UUID(tid) for tid in flagged_topic_ids]),
+                    Keyword.topic_id.in_(flagged_topic_ids),
                     Keyword.status == "active",
                 )
             )
@@ -351,7 +350,7 @@ class Step08SerpValidationService(
 
         result = await self.session.execute(
             select(Keyword).where(
-                Keyword.topic_id.in_([uuid.UUID(topic_id) for topic_id in topic_ids]),
+                Keyword.topic_id.in_(topic_ids),
                 Keyword.status == "active",
             )
         )
@@ -386,7 +385,7 @@ class Step08SerpValidationService(
         topic_ids = list(topic_by_id.keys())
         keywords_result = await self.session.execute(
             select(Keyword).where(
-                Keyword.topic_id.in_([uuid.UUID(topic_id) for topic_id in topic_ids]),
+                Keyword.topic_id.in_(topic_ids),
                 Keyword.status == "active",
             )
         )

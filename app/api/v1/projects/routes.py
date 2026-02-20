@@ -1,22 +1,31 @@
 """Project API endpoints."""
 
 import logging
-import uuid
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.api.v1.dependencies import get_user_project
+from app.api.v1.pipeline.constants import PIPELINE_QUEUE_FULL_DETAIL
 from app.api.v1.projects.constants import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from app.dependencies import CurrentUser, DbSession
-from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
+from app.models.generated_dtos import PipelineRunCreateDTO, ProjectCreateDTO, ProjectPatchDTO
+from app.models.pipeline import PipelineRun
 from app.models.project import Project
 from app.schemas.project import (
     ProjectCreate,
     ProjectListResponse,
+    ProjectOnboardingBootstrapRequest,
+    ProjectOnboardingBootstrapResponse,
     ProjectResponse,
     ProjectUpdate,
 )
+from app.schemas.task import TaskStatusResponse
+from app.services.pipeline_task_manager import (
+    PipelineQueueFullError,
+    get_setup_pipeline_task_manager,
+)
+from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -39,23 +48,11 @@ async def create_project(
     session: DbSession,
 ) -> Project:
     """Create a new keyword research project."""
-    project = Project.create(
-        session,
-        ProjectCreateDTO(
-            user_id=current_user.id,
-            name=project_data.name,
-            domain=project_data.domain,
-            description=project_data.description,
-            primary_language=project_data.primary_language,
-            primary_locale=project_data.primary_locale,
-            secondary_locales=project_data.secondary_locales,
-            primary_goal=project_data.goals.primary_objective if project_data.goals else None,
-            secondary_goals=project_data.goals.secondary_goals if project_data.goals else None,
-            skip_steps=project_data.settings.skip_steps if project_data.settings else None,
-        ),
+    project = await _create_project(
+        session=session,
+        user_id=current_user.id,
+        payload=project_data,
     )
-    await session.flush()
-    await session.refresh(project)
 
     logger.info(
         "Project created",
@@ -67,6 +64,101 @@ async def create_project(
     )
 
     return project
+
+
+@router.post(
+    "/onboarding/bootstrap",
+    response_model=ProjectOnboardingBootstrapResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Bootstrap onboarding project",
+    description=(
+        "Create a project and immediately queue setup pipeline steps 0-1 "
+        "for domain + brand extraction."
+    ),
+)
+async def bootstrap_onboarding_project(
+    request: ProjectOnboardingBootstrapRequest,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> ProjectOnboardingBootstrapResponse:
+    """Create a project and kick off setup pipeline asynchronously."""
+    project = await _create_project(
+        session=session,
+        user_id=current_user.id,
+        payload=request,
+    )
+
+    strategy_payload = request.strategy.model_dump() if request.strategy else None
+    steps_config = {
+        "pipeline_module": "setup",
+        "start": 0,
+        "end": 1,
+        "skip": [],
+        "strategy": strategy_payload,
+        "primary_goal": project.primary_goal,
+        "discovery": None,
+        "content": None,
+        "iteration_index": 0,
+        "selected_topic_ids": [],
+        "step_inputs": {},
+    }
+
+    setup_run = PipelineRun.create(
+        session,
+        PipelineRunCreateDTO(
+            project_id=str(project.id),
+            pipeline_module="setup",
+            status="pending",
+            start_step=0,
+            end_step=1,
+            skip_steps=[],
+            steps_config=steps_config,
+        ),
+    )
+    await session.commit()
+
+    task_manager = TaskManager()
+    task_payload = await task_manager.set_task_state(
+        task_id=str(setup_run.id),
+        status="queued",
+        stage="Queued setup bootstrap",
+        project_id=str(project.id),
+        pipeline_module="setup",
+        source_topic_id=setup_run.source_topic_id,
+        current_step=0,
+        current_step_name="setup",
+        completed_steps=0,
+        total_steps=2,
+        progress_percent=0.0,
+        error_message=None,
+    )
+
+    try:
+        await get_setup_pipeline_task_manager().enqueue_start(
+            project_id=str(project.id),
+            run_id=str(setup_run.id),
+        )
+    except PipelineQueueFullError as exc:
+        setup_run.status = "paused"
+        setup_run.error_message = PIPELINE_QUEUE_FULL_DETAIL
+        await session.flush()
+        await session.commit()
+        await task_manager.set_task_state(
+            task_id=str(setup_run.id),
+            status="paused",
+            stage="Pipeline queue is full",
+            error_message=PIPELINE_QUEUE_FULL_DETAIL,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PIPELINE_QUEUE_FULL_DETAIL,
+        ) from exc
+
+    return ProjectOnboardingBootstrapResponse(
+        project=ProjectResponse.model_validate(project),
+        setup_run_id=str(setup_run.id),
+        setup_task=TaskStatusResponse.model_validate(task_payload),
+    )
 
 
 @router.get(
@@ -115,7 +207,7 @@ async def list_projects(
     description="Return a single project by ID when it belongs to the authenticated user.",
 )
 async def get_project(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> Project:
@@ -130,7 +222,7 @@ async def get_project(
     description="Apply partial updates to editable fields on an existing project.",
 )
 async def update_project(
-    project_id: uuid.UUID,
+    project_id: str,
     project_data: ProjectUpdate,
     current_user: CurrentUser,
     session: DbSession,
@@ -162,7 +254,7 @@ async def update_project(
     description="Delete a project owned by the authenticated user.",
 )
 async def delete_project(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> None:
@@ -175,3 +267,30 @@ async def delete_project(
     )
 
     await project.delete(session)
+
+
+async def _create_project(
+    *,
+    session: DbSession,
+    user_id: str,
+    payload: ProjectCreate | ProjectOnboardingBootstrapRequest,
+) -> Project:
+    """Persist a project from either standard create or onboarding bootstrap payload."""
+    project = Project.create(
+        session,
+        ProjectCreateDTO(
+            user_id=user_id,
+            name=payload.name,
+            domain=payload.domain,
+            description=payload.description,
+            primary_language=payload.primary_language,
+            primary_locale=payload.primary_locale,
+            secondary_locales=payload.secondary_locales,
+            primary_goal=payload.goals.primary_objective if payload.goals else None,
+            secondary_goals=payload.goals.secondary_goals if payload.goals else None,
+            skip_steps=payload.settings.skip_steps if payload.settings else None,
+        ),
+    )
+    await session.flush()
+    await session.refresh(project)
+    return project

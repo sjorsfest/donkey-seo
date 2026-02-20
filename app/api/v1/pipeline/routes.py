@@ -1,7 +1,6 @@
 """Pipeline API endpoints."""
 
 import logging
-import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
@@ -18,6 +17,7 @@ from app.api.v1.pipeline.constants import (
     NO_RUNNING_PIPELINE_DETAIL,
     PIPELINE_QUEUE_FULL_DETAIL,
     PIPELINE_RUN_NOT_FOUND_DETAIL,
+    SETUP_PIPELINE_ALREADY_RUNNING_DETAIL,
 )
 from app.api.v1.pipeline.openapi_docs import PIPELINE_START_OPENAPI_EXTRA
 from app.dependencies import CurrentUser, DbSession
@@ -37,6 +37,7 @@ from app.services.pipeline_task_manager import (
     PipelineQueueFullError,
     get_content_pipeline_task_manager,
     get_discovery_pipeline_task_manager,
+    get_setup_pipeline_task_manager,
 )
 from app.services.task_manager import TaskManager
 
@@ -54,18 +55,22 @@ router = APIRouter()
     openapi_extra=PIPELINE_START_OPENAPI_EXTRA,
 )
 async def start_pipeline(
-    project_id: uuid.UUID,
+    project_id: str,
     request: PipelineStartRequest,
     current_user: CurrentUser,
     session: DbSession,
-) -> PipelineRun:
+) -> PipelineRunResponse:
     """Start a new pipeline run for a project."""
     project = await get_user_project(project_id, current_user, session)
     project_id_str = str(project_id)
     pipeline_module = request.mode
 
-    if pipeline_module == "discovery":
-        start_step = request.start_step or 1
+    if pipeline_module == "setup":
+        start_step = request.start_step or 0
+        end_step = request.end_step or 1
+        skip_steps = request.skip_steps or []
+    elif pipeline_module == "discovery":
+        start_step = request.start_step or 2
         end_step = request.end_step or 8
         skip_steps = request.skip_steps or []
     else:
@@ -81,11 +86,12 @@ async def start_pipeline(
         )
     )
     if running_result.scalar_one_or_none():
-        detail = (
-            DISCOVERY_PIPELINE_ALREADY_RUNNING_DETAIL
-            if pipeline_module == "discovery"
-            else CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL
-        )
+        if pipeline_module == "setup":
+            detail = SETUP_PIPELINE_ALREADY_RUNNING_DETAIL
+        elif pipeline_module == "discovery":
+            detail = DISCOVERY_PIPELINE_ALREADY_RUNNING_DETAIL
+        else:
+            detail = CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
     strategy_payload = request.strategy.model_dump() if request.strategy else None
@@ -158,9 +164,13 @@ async def start_pipeline(
     )
 
     queue = (
-        get_discovery_pipeline_task_manager()
-        if pipeline_module == "discovery"
-        else get_content_pipeline_task_manager()
+        get_setup_pipeline_task_manager()
+        if pipeline_module == "setup"
+        else (
+            get_discovery_pipeline_task_manager()
+            if pipeline_module == "discovery"
+            else get_content_pipeline_task_manager()
+        )
     )
     try:
         await queue.enqueue_start(
@@ -183,7 +193,7 @@ async def start_pipeline(
             detail=PIPELINE_QUEUE_FULL_DETAIL,
         ) from exc
 
-    return pipeline_run
+    return _pipeline_run_response(pipeline_run)
 
 
 @router.get(
@@ -192,11 +202,11 @@ async def start_pipeline(
     summary="List pipeline runs",
 )
 async def list_pipeline_runs(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
     limit: int = Query(DEFAULT_RUN_LIMIT, ge=1, le=MAX_RUN_LIMIT),
-) -> list[PipelineRun]:
+) -> list[PipelineRunResponse]:
     await get_user_project(project_id, current_user, session)
     result = await session.execute(
         select(PipelineRun)
@@ -205,7 +215,7 @@ async def list_pipeline_runs(
         .order_by(PipelineRun.created_at.desc())
         .limit(limit)
     )
-    return list(result.scalars().all())
+    return [_pipeline_run_response(run) for run in result.scalars().all()]
 
 
 @router.get(
@@ -214,11 +224,11 @@ async def list_pipeline_runs(
     summary="Get pipeline run",
 )
 async def get_pipeline_run(
-    project_id: uuid.UUID,
-    run_id: uuid.UUID,
+    project_id: str,
+    run_id: str,
     current_user: CurrentUser,
     session: DbSession,
-) -> PipelineRun:
+) -> PipelineRunResponse:
     await get_user_project(project_id, current_user, session)
     result = await session.execute(
         select(PipelineRun)
@@ -231,7 +241,7 @@ async def get_pipeline_run(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=PIPELINE_RUN_NOT_FOUND_DETAIL,
         )
-    return pipeline_run
+    return _pipeline_run_response(pipeline_run)
 
 
 @router.get(
@@ -240,8 +250,8 @@ async def get_pipeline_run(
     summary="Get pipeline progress",
 )
 async def get_pipeline_progress(
-    project_id: uuid.UUID,
-    run_id: uuid.UUID,
+    project_id: str,
+    run_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> PipelineProgressResponse:
@@ -271,10 +281,20 @@ async def get_pipeline_progress(
     return PipelineProgressResponse(
         run_id=str(pipeline_run.id),
         status=pipeline_run.status,
-        current_step=current_step.step_number if current_step else None,
+        current_step=(
+            _display_step_number(pipeline_run.pipeline_module, current_step.step_number)
+            if current_step
+            else None
+        ),
         current_step_name=current_step.step_name if current_step else None,
         overall_progress=overall_progress,
-        steps=[StepExecutionResponse.model_validate(step) for step in steps],
+        steps=[
+            _step_execution_response(
+                step=step,
+                pipeline_module=pipeline_run.pipeline_module,
+            )
+            for step in steps
+        ],
     )
 
 
@@ -284,8 +304,8 @@ async def get_pipeline_progress(
     summary="List discovery snapshots",
 )
 async def list_discovery_snapshots(
-    project_id: uuid.UUID,
-    run_id: uuid.UUID,
+    project_id: str,
+    run_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> list[DiscoveryTopicSnapshot]:
@@ -323,7 +343,7 @@ async def list_discovery_snapshots(
     summary="Pause running pipeline",
 )
 async def pause_pipeline(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> dict[str, str]:
@@ -358,8 +378,8 @@ async def pause_pipeline(
     summary="Pause run by id",
 )
 async def pause_pipeline_run(
-    project_id: uuid.UUID,
-    run_id: uuid.UUID,
+    project_id: str,
+    run_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> dict[str, str]:
@@ -381,8 +401,8 @@ async def pause_pipeline_run(
     summary="Resume paused pipeline",
 )
 async def resume_pipeline(
-    project_id: uuid.UUID,
-    run_id: uuid.UUID,
+    project_id: str,
+    run_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> dict[str, str]:
@@ -415,9 +435,13 @@ async def resume_pipeline(
     )
 
     queue = (
-        get_discovery_pipeline_task_manager()
-        if pipeline_run.pipeline_module == "discovery"
-        else get_content_pipeline_task_manager()
+        get_setup_pipeline_task_manager()
+        if pipeline_run.pipeline_module == "setup"
+        else (
+            get_discovery_pipeline_task_manager()
+            if pipeline_run.pipeline_module == "discovery"
+            else get_content_pipeline_task_manager()
+        )
     )
     try:
         await queue.enqueue_resume(
@@ -437,3 +461,53 @@ async def resume_pipeline(
         ) from exc
 
     return {"message": "Pipeline resumed"}
+
+
+def _display_step_number(pipeline_module: str, step_number: int | None) -> int | None:
+    if step_number is None:
+        return None
+    if pipeline_module == "discovery":
+        return max(1, step_number - 1)
+    if pipeline_module == "setup":
+        return step_number + 1
+    return step_number
+
+
+def _step_execution_response(
+    *,
+    step: object,
+    pipeline_module: str,
+) -> StepExecutionResponse:
+    response = StepExecutionResponse.model_validate(step)
+    response.step_number = _display_step_number(pipeline_module, response.step_number) or response.step_number
+    return response
+
+
+def _pipeline_run_response(run: PipelineRun) -> PipelineRunResponse:
+    pipeline_module = str(run.pipeline_module)
+    mapped_skip_steps: list[int] | None
+    if run.skip_steps is None:
+        mapped_skip_steps = None
+    else:
+        mapped_skip_steps = [
+            _display_step_number(pipeline_module, step)
+            for step in list(run.skip_steps)
+        ]
+    return PipelineRunResponse(
+        id=str(run.id),
+        project_id=str(run.project_id),
+        pipeline_module=pipeline_module,
+        parent_run_id=str(run.parent_run_id) if run.parent_run_id else None,
+        source_topic_id=str(run.source_topic_id) if run.source_topic_id else None,
+        status=str(run.status),
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        start_step=_display_step_number(pipeline_module, run.start_step),
+        end_step=_display_step_number(pipeline_module, run.end_step),
+        skip_steps=mapped_skip_steps,
+        step_executions=[
+            _step_execution_response(step=step, pipeline_module=pipeline_module)
+            for step in list(run.step_executions or [])
+        ],
+        created_at=run.created_at,
+    )

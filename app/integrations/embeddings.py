@@ -1,6 +1,7 @@
 """Embeddings integration for semantic clustering.
 
-Uses OpenAI embeddings with HDBSCAN for density-aware clustering.
+Uses OpenRouter embeddings (OpenAI-compatible API) with HDBSCAN for density-aware
+clustering.
 """
 
 import logging
@@ -19,11 +20,13 @@ logger = logging.getLogger(__name__)
 class EmbeddingsClient:
     """Client for generating embeddings and clustering.
 
-    Uses OpenAI's text-embedding-3-small model for embeddings.
+    Uses OpenRouter's OpenAI-compatible embeddings endpoint with
+    openai/text-embedding-3-small.
     Implements HDBSCAN for density-aware clustering (no fixed threshold).
     """
 
-    EMBEDDING_MODEL = "text-embedding-3-small"
+    EMBEDDING_MODEL = "openai/text-embedding-3-small"
+    EMBEDDING_URL = "https://openrouter.ai/api/v1/embeddings"
     EMBEDDING_DIMENSIONS = 1536
     MAX_BATCH_SIZE = 100
 
@@ -32,12 +35,12 @@ class EmbeddingsClient:
         api_key: str | None = None,
         timeout: float = 60.0,
     ) -> None:
-        self.api_key = api_key or settings.openai_api_key
+        self.api_key = api_key or settings.openrouter_api_key
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
         if not self.api_key:
-            raise APIKeyMissingError("OpenAI (for embeddings)")
+            raise APIKeyMissingError("OpenRouter (for embeddings)")
 
     async def __aenter__(self) -> "EmbeddingsClient":
         self._client = httpx.AsyncClient(
@@ -85,7 +88,7 @@ class EmbeddingsClient:
 
             try:
                 response = await self.client.post(
-                    "https://api.openai.com/v1/embeddings",
+                    self.EMBEDDING_URL,
                     json={
                         "model": model or self.EMBEDDING_MODEL,
                         "input": batch,
@@ -95,7 +98,7 @@ class EmbeddingsClient:
                 if response.status_code != 200:
                     logger.warning("Embeddings API error", extra={"status": response.status_code})
                     raise ExternalAPIError(
-                        "OpenAI Embeddings",
+                        "OpenRouter Embeddings",
                         f"API error: {response.status_code} - {response.text}"
                     )
 
@@ -109,7 +112,7 @@ class EmbeddingsClient:
 
             except httpx.HTTPError as e:
                 logger.warning("Embeddings HTTP error", extra={"error": str(e)})
-                raise ExternalAPIError("OpenAI Embeddings", str(e)) from e
+                raise ExternalAPIError("OpenRouter Embeddings", str(e)) from e
 
         return all_embeddings
 

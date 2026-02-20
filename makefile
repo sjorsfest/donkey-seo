@@ -1,6 +1,9 @@
 start:
 	@fastapi dev app/main.py
 
+worker:
+	@uv run python -m app.workers.pipeline_worker
+
 migrate-create:
 ifndef message
 	@read -p "Migration message: " msg && alembic revision --autogenerate -m "$$msg"

@@ -8,14 +8,16 @@ from typing import Any
 OPENAPI_PIPELINE_GUIDE_MARKDOWN = """
 ## Pipeline Architecture Guide
 
-This API supports two independent pipeline modules:
+This API supports three independent pipeline modules:
 
-1. `discovery` (local steps 1-8, setup bootstrap step 0 when needed)
-2. `content` (local steps 1-3)
+1. `setup` (local steps 0-1)
+2. `discovery` (local steps 2-8)
+3. `content` (local steps 1-3)
 
 ### Execution Modes
 
-- `discovery`: adaptive topic discovery with per-topic acceptance decisions.
+- `setup`: project/bootstrap + brand profile preparation before the discovery loop.
+- `discovery`: adaptive topic discovery loop with per-topic acceptance decisions.
 - `content`: content production for selected/accepted topics.
 
 ### Dispatch Model
@@ -26,9 +28,12 @@ Dispatch dedupe is tracked in the database per discovery run (`parent_run_id + s
 
 _PIPELINE_GUIDE_JSON_OBJECT: dict[str, Any] = {
     "modules": {
+        "setup": {
+            "local_steps": [0, 1],
+            "purpose": "bootstrap project + brand profile",
+        },
         "discovery": {
-            "local_steps": [1, 8],
-            "bootstrap_step": 0,
+            "local_steps": [2, 8],
             "dispatch_behavior": "accepted topics enqueue content runs immediately",
             "snapshot_endpoint": "/api/v1/pipeline/{project_id}/runs/{run_id}/discovery-snapshots",
         },
@@ -50,18 +55,30 @@ OPENAPI_PIPELINE_GUIDE_JSON = json.dumps(
 )
 
 PIPELINE_TAG_DESCRIPTION = """
-Endpoints for orchestrating and observing discovery/content module runs.
+Endpoints for orchestrating and observing setup/discovery/content module runs.
 
-- `discovery`: adaptive topic discovery loop.
+- `setup`: setup bootstrap and brand profile validation.
+- `discovery`: adaptive topic discovery loop (steps 2-8).
 - `content`: content-only module run.
 """
 
 PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
+    "setup": {
+        "summary": "Setup module",
+        "description": "Runs setup steps 0-1 before discovery loop execution.",
+        "value": {
+            "mode": "setup",
+            "start_step": 0,
+            "end_step": 1,
+        },
+    },
     "discovery": {
         "summary": "Discovery module",
-        "description": "Runs adaptive discovery and dispatches content tasks when topics are accepted.",
+        "description": "Runs adaptive discovery loop (steps 2-8) and dispatches content tasks when topics are accepted.",
         "value": {
             "mode": "discovery",
+            "start_step": 2,
+            "end_step": 8,
             "discovery": {
                 "max_iterations": 3,
                 "min_eligible_topics": 8,

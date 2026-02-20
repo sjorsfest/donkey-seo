@@ -213,11 +213,23 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
         existing_brand = existing_brand_result.scalar_one_or_none()
 
         brand_assets = list(existing_brand.brand_assets or []) if existing_brand else []
-        asset_candidates = [
+        raw_asset_candidates = [
             candidate
             for candidate in scraped_data.get("asset_candidates", [])
             if isinstance(candidate, dict)
         ]
+        asset_candidates = [
+            candidate
+            for candidate in raw_asset_candidates
+            if not self._is_low_quality_icon_candidate(candidate)
+        ]
+        skipped_assets = len(raw_asset_candidates) - len(asset_candidates)
+        if skipped_assets:
+            logger.info(
+                "Skipping low-quality icon asset candidates",
+                extra={"project_id": input_data.project_id, "skipped_assets": skipped_assets},
+            )
+
         if asset_candidates:
             try:
                 store = BrandAssetStore()
@@ -488,6 +500,19 @@ class Step01BrandService(BaseStepService[BrandInput, BrandOutput]):
             normalized.append(value)
 
         return normalized
+
+    @staticmethod
+    def _is_low_quality_icon_candidate(candidate: dict[str, Any]) -> bool:
+        """Skip icon assets that are typically too small for visual guide generation."""
+        role = str(candidate.get("role") or "").strip().lower()
+        origin = str(candidate.get("origin") or "").strip().lower()
+        source_url = str(candidate.get("url") or "").strip().lower()
+
+        if role == "icon" or origin == "link_icon":
+            return True
+
+        low_quality_tokens = ("favicon", "apple-touch-icon", "apple-touch")
+        return any(token in source_url for token in low_quality_tokens)
 
     @classmethod
     def _normalize_prompt_contract(cls, prompt_contract: dict[str, Any]) -> dict[str, Any]:

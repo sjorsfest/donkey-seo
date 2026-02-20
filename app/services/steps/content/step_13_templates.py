@@ -6,7 +6,6 @@ This approach reduces storage by ~80% and ensures consistency.
 
 import asyncio
 import logging
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -141,7 +140,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             briefs_result = await self.session.execute(
                 select(ContentBrief).where(
                     ContentBrief.project_id == input_data.project_id,
-                    ContentBrief.id.in_([uuid.UUID(bid) for bid in input_data.brief_ids]),
+                    ContentBrief.id.in_(input_data.brief_ids),
                 )
             )
         else:

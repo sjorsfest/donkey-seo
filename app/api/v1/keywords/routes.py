@@ -1,7 +1,6 @@
 """Keywords API endpoints."""
 
 import logging
-import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -40,14 +39,14 @@ router = APIRouter()
     ),
 )
 async def list_keywords(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
     page: int = Query(DEFAULT_PAGE, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     intent: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
-    topic_id: uuid.UUID | None = Query(None),
+    topic_id: str | None = Query(None),
     min_volume: int | None = Query(None),
     max_difficulty: float | None = Query(None),
     search: str | None = Query(None),
@@ -97,8 +96,8 @@ async def list_keywords(
     description="Return detailed information for a single keyword in the project.",
 )
 async def get_keyword(
-    project_id: uuid.UUID,
-    keyword_id: uuid.UUID,
+    project_id: str,
+    keyword_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> Keyword:
@@ -127,7 +126,7 @@ async def get_keyword(
     description="Add a new keyword manually to the project.",
 )
 async def create_keyword(
-    project_id: uuid.UUID,
+    project_id: str,
     keyword_data: KeywordCreate,
     current_user: CurrentUser,
     session: DbSession,
@@ -159,8 +158,8 @@ async def create_keyword(
     description="Apply partial updates to an existing keyword in the project.",
 )
 async def update_keyword(
-    project_id: uuid.UUID,
-    keyword_id: uuid.UUID,
+    project_id: str,
+    keyword_id: str,
     keyword_data: KeywordUpdate,
     current_user: CurrentUser,
     session: DbSession,
@@ -198,8 +197,8 @@ async def update_keyword(
     description="Soft-delete a keyword by marking its status as excluded.",
 )
 async def delete_keyword(
-    project_id: uuid.UUID,
-    keyword_id: uuid.UUID,
+    project_id: str,
+    keyword_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> None:
@@ -231,7 +230,7 @@ async def delete_keyword(
     description="Update status, intent, or topic assignment for multiple keywords in one request.",
 )
 async def bulk_update_keywords(
-    project_id: uuid.UUID,
+    project_id: str,
     request: KeywordBulkUpdateRequest,
     current_user: CurrentUser,
     session: DbSession,
@@ -241,7 +240,7 @@ async def bulk_update_keywords(
 
     result = await session.execute(
         select(Keyword).where(
-            Keyword.id.in_([uuid.UUID(keyword_id) for keyword_id in request.keyword_ids]),
+            Keyword.id.in_(request.keyword_ids),
             Keyword.project_id == project_id,
         )
     )

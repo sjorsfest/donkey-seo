@@ -14,7 +14,7 @@ MarketModeOverride = Literal[
     "fragmented_workflow",
     "mixed",
 ]
-PipelineMode = Literal["discovery", "content"]
+PipelineMode = Literal["setup", "discovery", "content"]
 
 
 class PipelineRunStrategy(BaseModel):
@@ -175,7 +175,7 @@ class PipelineStartRequest(BaseModel):
     mode: PipelineMode = Field(
         default="discovery",
         description=(
-            "Pipeline orchestration mode: discovery or content."
+            "Pipeline orchestration mode: setup, discovery, or content."
         ),
     )
     start_step: int | None = None
@@ -196,11 +196,16 @@ class PipelineStartRequest(BaseModel):
             "examples": [
                 {
                     "mode": "discovery",
-                    "start_step": 1,
+                    "start_step": 2,
                     "end_step": 8,
                     "strategy": {
                         "fit_threshold_profile": "aggressive",
                     },
+                },
+                {
+                    "mode": "setup",
+                    "start_step": 0,
+                    "end_step": 1,
                 },
                 {
                     "mode": "discovery",

@@ -130,8 +130,6 @@ class DiscoveryLoopSupervisor:
             error_message=None,
         )
 
-        await self._run_entry_steps_if_needed(execute_step, mark_step_completed, task_id)
-
         accepted_topics_by_key: dict[str, AcceptedTopicState] = {}
         accepted_topic_ids: list[str] = []
         accepted_topic_names: list[str] = []
@@ -247,25 +245,6 @@ class DiscoveryLoopSupervisor:
             f"({final_count}/{target_count} accepted across {iterations_completed} iterations). "
             "Try broadening topic scope, adding include_topics, or lowering difficulty constraints."
         )
-
-    async def _run_entry_steps_if_needed(
-        self,
-        execute_step: ExecuteStepFn,
-        mark_step_completed: MarkStepFn,
-        task_id: str,
-    ) -> None:
-        project = await self._load_project()
-        if project.current_step >= 1:
-            return
-
-        for step_num in (0, 1):
-            execution = await execute_step(self.run, step_num)
-            if execution.status == "completed":
-                await mark_step_completed(
-                    task_id,
-                    step_num,
-                    str(execution.step_name or f"step_{step_num}"),
-                )
 
     async def _load_project(self) -> Project:
         result = await self.session.execute(select(Project).where(Project.id == self.project_id))

@@ -1,5 +1,6 @@
 """Base class for Pydantic AI agents."""
 
+import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -73,6 +74,11 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
                 "temperature": self.temperature,
             },
         )
+
+    @property
+    def timeout_seconds(self) -> int:
+        """LLM call timeout in seconds, resolved from model tier."""
+        return settings.get_llm_timeout(self.model_tier)
 
     @property
     def agent(self) -> Agent[None, OutputT]:
@@ -182,30 +188,51 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
         return result.output
 
     async def _run_with_fallback(self, prompt: str) -> Any:
-        """Run the agent and retry once on rate-limit with fallback model."""
+        """Run the agent with timeout, retrying once with fallback on rate-limit or timeout."""
         try:
-            return await self.agent.run(prompt)
-        except ModelHTTPError as exc:
-            fallback_model = settings.model_selector_fallback_model
-            should_retry = (
-                exc.status_code == 429
-                and isinstance(fallback_model, str)
-                and bool(fallback_model)
-                and fallback_model != self._model
+            return await asyncio.wait_for(
+                self.agent.run(prompt),
+                timeout=self.timeout_seconds,
             )
-            if not should_retry:
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Agent LLM call timed out, retrying with fallback model",
+                extra={
+                    "agent": self.__class__.__name__,
+                    "primary_model": self._model,
+                    "timeout_seconds": self.timeout_seconds,
+                },
+            )
+        except ModelHTTPError as exc:
+            if exc.status_code != 429:
                 raise
-
             logger.warning(
                 "Agent primary model rate-limited, retrying with fallback model",
                 extra={
                     "agent": self.__class__.__name__,
                     "primary_model": self._model,
-                    "fallback_model": fallback_model,
                     "status_code": exc.status_code,
                 },
             )
-            return await self.agent.run(prompt, model=fallback_model)
+
+        fallback_model = settings.model_selector_fallback_model
+        if not isinstance(fallback_model, str) or not fallback_model or fallback_model == self._model:
+            raise TimeoutError(
+                f"Agent {self.__class__.__name__} timed out after {self.timeout_seconds}s "
+                f"and no viable fallback model is configured"
+            )
+
+        logger.info(
+            "Retrying with fallback model",
+            extra={
+                "agent": self.__class__.__name__,
+                "fallback_model": fallback_model,
+            },
+        )
+        return await asyncio.wait_for(
+            self.agent.run(prompt, model=fallback_model),
+            timeout=self.timeout_seconds,
+        )
 
     @abstractmethod
     def _build_prompt(self, input_data: InputT) -> str:

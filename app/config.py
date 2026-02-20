@@ -24,7 +24,11 @@ class Settings(BaseSettings):
 
     # API
     api_v1_prefix: str = "/api/v1"
-    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8000",
+    ]
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/donkeyseo"
@@ -53,11 +57,15 @@ class Settings(BaseSettings):
 
     # LLM Configuration
     default_llm_model: str = "openai:gpt-4-turbo"
-    openai_api_key: str | None = None
-    anthropic_api_key: str | None = None
     openrouter_api_key: str | None = None
     llm_max_retries: int = 3
-    llm_timeout_seconds: int = 60
+    llm_timeout_fast: int = 120
+    llm_timeout_standard: int = 300
+    llm_timeout_reasoning: int = 600
+
+    def get_llm_timeout(self, tier: str = "standard") -> int:
+        """Return the LLM timeout in seconds for a given model tier."""
+        return getattr(self, f"llm_timeout_{tier}", self.llm_timeout_standard)
 
     # Dynamic model selector (OpenRouter/Arena-driven)
     model_selector_enabled: bool = False
@@ -134,15 +142,8 @@ class Settings(BaseSettings):
     brand_assets_max_count: int = 8
     signed_url_ttl_seconds: int = 90
 
-    # Rate Limiting
-    keyword_api_calls_per_minute: int = 100
-    serp_api_calls_per_minute: int = 60
-    llm_calls_per_minute: int = 50
-
-    # Pipeline Defaults
-    default_skip_steps: list[int] = [8, 9, 10, 11]
-    max_keywords_per_project: int = 50000
-    batch_size_keyword_enrichment: int = 100
+    setup_pipeline_task_workers: int = 1
+    setup_pipeline_task_queue_size: int = 50
     discovery_pipeline_task_workers: int = 1
     discovery_pipeline_task_queue_size: int = 100
     content_pipeline_task_workers: int = 1

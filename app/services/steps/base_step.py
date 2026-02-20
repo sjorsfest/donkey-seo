@@ -20,6 +20,7 @@ from app.services.discovery_capabilities import (
     normalize_capability_key,
 )
 from app.services.run_strategy import RunStrategy, resolve_run_strategy
+from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,64 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
         if items_total is not None:
             self.execution.items_total = items_total
         await self.session.commit()
+        await self._publish_task_progress(percent=percent, message=message)
+
+    async def _publish_task_progress(self, *, percent: float, message: str) -> None:
+        """Best-effort mirror of step progress to task status payload."""
+        pipeline_run_id = self.execution.pipeline_run_id
+        if not pipeline_run_id:
+            return
+
+        task_manager = TaskManager()
+        task_id = str(pipeline_run_id)
+        try:
+            current_task = await task_manager.get_task_status(task_id)
+            run_progress = self._estimate_run_progress_percent(
+                task_status=current_task,
+                step_percent=percent,
+            )
+            await task_manager.set_task_state(
+                task_id=task_id,
+                status="running",
+                stage=message,
+                current_step=self.step_number,
+                current_step_name=self.step_name,
+                progress_percent=run_progress,
+                error_message=None,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to mirror step progress to task status",
+                extra={
+                    "project_id": self.project_id,
+                    "pipeline_run_id": task_id,
+                    "step_number": self.step_number,
+                    "step_name": self.step_name,
+                },
+            )
+
+    @staticmethod
+    def _estimate_run_progress_percent(
+        *,
+        task_status: dict[str, Any] | None,
+        step_percent: float,
+    ) -> float | None:
+        """Estimate run-level progress from completed steps + current step percent."""
+        if not isinstance(task_status, dict):
+            return None
+
+        try:
+            completed_steps = int(task_status.get("completed_steps") or 0)
+            total_steps = int(task_status.get("total_steps") or 0)
+        except (TypeError, ValueError):
+            return None
+
+        if total_steps <= 0:
+            return None
+
+        clamped_step = min(max(step_percent, 0.0), 100.0) / 100.0
+        progress = ((completed_steps + clamped_step) / total_steps) * 100
+        return round(min(progress, 100.0), 2)
 
     async def _save_checkpoint(self, checkpoint_data: dict[str, Any]) -> None:
         """Save checkpoint for resumability."""

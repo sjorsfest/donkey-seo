@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -68,7 +67,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         brief_stmt = select(ContentBrief).where(ContentBrief.project_id == input_data.project_id)
         if input_data.brief_ids:
             brief_stmt = brief_stmt.where(
-                ContentBrief.id.in_([uuid.UUID(brief_id) for brief_id in input_data.brief_ids])
+                ContentBrief.id.in_(input_data.brief_ids)
             )
 
         brief_result = await self.session.execute(brief_stmt.limit(1))
@@ -269,7 +268,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         stmt = select(ContentBrief).where(ContentBrief.project_id == input_data.project_id)
         if input_data.brief_ids:
             stmt = stmt.where(
-                ContentBrief.id.in_([uuid.UUID(brief_id) for brief_id in input_data.brief_ids])
+                ContentBrief.id.in_(input_data.brief_ids)
             )
         result = await self.session.execute(stmt.order_by(ContentBrief.created_at.asc()))
         return list(result.scalars())

@@ -1,7 +1,6 @@
 """Content briefs API endpoints."""
 
 import logging
-import uuid
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -152,7 +151,7 @@ def _build_brand_context(brand: BrandProfile | None) -> str:
     ),
 )
 async def list_briefs(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
     page: int = Query(DEFAULT_PAGE, ge=1),
@@ -190,8 +189,8 @@ async def list_briefs(
     description="Return detailed information for a specific content brief.",
 )
 async def get_brief(
-    project_id: uuid.UUID,
-    brief_id: uuid.UUID,
+    project_id: str,
+    brief_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> ContentBrief:
@@ -223,7 +222,7 @@ async def get_brief(
     description="Create a new content brief for a project topic and primary keyword.",
 )
 async def create_brief(
-    project_id: uuid.UUID,
+    project_id: str,
     brief_data: ContentBriefCreate,
     current_user: CurrentUser,
     session: DbSession,
@@ -265,8 +264,8 @@ async def create_brief(
     description="Apply partial updates to an existing content brief.",
 )
 async def update_brief(
-    project_id: uuid.UUID,
-    brief_id: uuid.UUID,
+    project_id: str,
+    brief_id: str,
     brief_data: ContentBriefUpdate,
     current_user: CurrentUser,
     session: DbSession,
@@ -307,8 +306,8 @@ async def update_brief(
     description="Delete a content brief from the project.",
 )
 async def delete_brief(
-    project_id: uuid.UUID,
-    brief_id: uuid.UUID,
+    project_id: str,
+    brief_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> None:
@@ -341,8 +340,8 @@ async def delete_brief(
     ),
 )
 async def get_writer_instructions(
-    project_id: uuid.UUID,
-    brief_id: uuid.UUID,
+    project_id: str,
+    brief_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> WriterInstructions | None:
@@ -377,7 +376,7 @@ async def get_writer_instructions(
     description="Return paginated generated article artifacts for a project.",
 )
 async def list_articles(
-    project_id: uuid.UUID,
+    project_id: str,
     current_user: CurrentUser,
     session: DbSession,
     page: int = Query(DEFAULT_PAGE, ge=1),
@@ -413,8 +412,8 @@ async def list_articles(
     description="Return the canonical generated article for a brief.",
 )
 async def get_article_for_brief(
-    project_id: uuid.UUID,
-    brief_id: uuid.UUID,
+    project_id: str,
+    brief_id: str,
     current_user: CurrentUser,
     session: DbSession,
 ) -> ContentArticle:
@@ -444,8 +443,8 @@ async def get_article_for_brief(
     description="Regenerate article content for a brief and increment article version.",
 )
 async def regenerate_article(
-    project_id: uuid.UUID,
-    brief_id: uuid.UUID,
+    project_id: str,
+    brief_id: str,
     payload: RegenerateArticleRequest,
     current_user: CurrentUser,
     session: DbSession,
@@ -558,8 +557,8 @@ async def regenerate_article(
     description="Fetch an immutable article version snapshot by version number.",
 )
 async def get_article_version(
-    project_id: uuid.UUID,
-    article_id: uuid.UUID,
+    project_id: str,
+    article_id: str,
     version_number: int,
     current_user: CurrentUser,
     session: DbSession,
