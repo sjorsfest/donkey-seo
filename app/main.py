@@ -9,6 +9,7 @@ from typing import Any, cast
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.integration import integration_app
 from app.api.v1.pipeline.openapi_docs import (
     OPENAPI_PIPELINE_GUIDE_JSON,
     OPENAPI_PIPELINE_GUIDE_MARKDOWN,
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
 
     # Include API router
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+    app.mount(settings.integration_api_prefix, integration_app)
 
     @app.get(
         "/health",

@@ -108,7 +108,13 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
                 "Step failed",
                 extra={**step_info, "error": str(e)},
             )
-            await self._handle_error(e)
+            try:
+                await self._handle_error(e)
+            except Exception:
+                logger.exception(
+                    "Failed to persist step error state",
+                    extra={**step_info, "original_error": str(e)},
+                )
             return StepResult(success=False, error=str(e))
 
     @abstractmethod
@@ -238,10 +244,24 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
 
     async def _handle_error(self, error: Exception) -> None:
         """Handle and log errors."""
+        try:
+            await self.session.rollback()
+        except Exception:
+            logger.warning(
+                "Rollback failed while handling step error",
+                extra={
+                    "step": self.step_number,
+                    "step_name": self.step_name,
+                    "project_id": self.project_id,
+                },
+            )
+
         self.execution.status = "failed"
         self.execution.completed_at = datetime.now(timezone.utc)
         self.execution.error_message = str(error)
         self.execution.error_traceback = traceback.format_exc()
+        # Rollback can detach pending entities; re-add to guarantee persistence attempt.
+        self.session.add(self.execution)
         await self.session.commit()
 
     async def request_stop(self) -> None:

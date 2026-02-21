@@ -42,10 +42,19 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except InterfaceError:
-            # Connection closed server-side (e.g. during long background tasks).
-            # If the caller already committed, this is harmless.
-            logger.debug("Session connection already closed during cleanup, ignoring")
+        except InterfaceError as e:
+            has_active_transaction = session.in_transaction()
+            has_pending_state = bool(session.new or session.dirty or session.deleted)
+            if not has_active_transaction and not has_pending_state:
+                # Connection closed after work already committed/rolled back.
+                logger.debug("Session connection already closed during cleanup, ignoring")
+                return
+            logger.warning(f"Database interface error with active transaction: {repr(e)}, rolling back")
+            try:
+                await session.rollback()
+            except Exception:
+                logger.warning("Rollback also failed (connection likely closed)")
+            raise
         except Exception as e:
             logger.warning(f"Database session error: {repr(e)}, rolling back")
             try:
@@ -62,8 +71,18 @@ async def get_session_context() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
-        except InterfaceError:
-            logger.debug("Session connection already closed during cleanup, ignoring")
+        except InterfaceError as e:
+            has_active_transaction = session.in_transaction()
+            has_pending_state = bool(session.new or session.dirty or session.deleted)
+            if not has_active_transaction and not has_pending_state:
+                logger.debug("Session connection already closed during cleanup, ignoring")
+                return
+            logger.warning(f"Database interface error with active transaction: {repr(e)}, rolling back")
+            try:
+                await session.rollback()
+            except Exception:
+                logger.warning("Rollback also failed (connection likely closed)")
+            raise
         except Exception as e:
             logger.warning(f"Database session error: {repr(e)}, rolling back")
             try:

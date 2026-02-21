@@ -24,11 +24,15 @@ class Settings(BaseSettings):
 
     # API
     api_v1_prefix: str = "/api/v1"
+    integration_api_prefix: str = "/api/integration"
     cors_origins: list[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:8000",
     ]
+
+    # External integration API key auth
+    integration_api_keys: str = ""
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/donkeyseo"
@@ -58,6 +62,9 @@ class Settings(BaseSettings):
     # LLM Configuration
     default_llm_model: str = "openai:gpt-4-turbo"
     openrouter_api_key: str | None = None
+    embeddings_model: str = "qwen/qwen3-embedding-8b"
+    embeddings_provider: str | None = "nebius"
+    embeddings_allow_fallbacks: bool = False
     llm_max_retries: int = 3
     llm_timeout_fast: int = 120
     llm_timeout_standard: int = 300
@@ -142,12 +149,20 @@ class Settings(BaseSettings):
     brand_assets_max_count: int = 8
     signed_url_ttl_seconds: int = 90
 
-    setup_pipeline_task_workers: int = 1
-    setup_pipeline_task_queue_size: int = 50
-    discovery_pipeline_task_workers: int = 1
-    discovery_pipeline_task_queue_size: int = 100
-    content_pipeline_task_workers: int = 1
-    content_pipeline_task_queue_size: int = 200
+    setup_pipeline_task_workers: int = 2
+    setup_pipeline_task_queue_size: int = 100
+    discovery_pipeline_task_workers: int = 2
+    discovery_pipeline_task_queue_size: int = 200
+    content_pipeline_task_workers: int = 3
+    content_pipeline_task_queue_size: int = 300
+
+    def get_integration_api_keys(self) -> set[str]:
+        """Return configured integration API keys from comma-separated env value."""
+        return {
+            value.strip()
+            for value in self.integration_api_keys.split(",")
+            if value and value.strip()
+        }
 
 
 @lru_cache

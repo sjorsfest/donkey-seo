@@ -21,13 +21,12 @@ class EmbeddingsClient:
     """Client for generating embeddings and clustering.
 
     Uses OpenRouter's OpenAI-compatible embeddings endpoint with
-    openai/text-embedding-3-small.
+    qwen/qwen3-embedding-8b.
     Implements HDBSCAN for density-aware clustering (no fixed threshold).
     """
 
-    EMBEDDING_MODEL = "openai/text-embedding-3-small"
+    EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
     EMBEDDING_URL = "https://openrouter.ai/api/v1/embeddings"
-    EMBEDDING_DIMENSIONS = 1536
     MAX_BATCH_SIZE = 100
 
     def __init__(
@@ -36,6 +35,10 @@ class EmbeddingsClient:
         timeout: float = 60.0,
     ) -> None:
         self.api_key = api_key or settings.openrouter_api_key
+        self.default_model = settings.embeddings_model or self.EMBEDDING_MODEL
+        configured_provider = (settings.embeddings_provider or "").strip().lower()
+        self.provider = configured_provider or None
+        self.allow_fallbacks = settings.embeddings_allow_fallbacks
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
@@ -76,7 +79,15 @@ class EmbeddingsClient:
         Returns:
             List of embedding vectors (each is a list of floats)
         """
-        logger.info("Generating embeddings", extra={"text_count": len(texts), "model": model or self.EMBEDDING_MODEL})
+        resolved_model = model or self.default_model
+        logger.info(
+            "Generating embeddings",
+            extra={
+                "text_count": len(texts),
+                "model": resolved_model,
+                "provider": self.provider,
+            },
+        )
         if not texts:
             return []
 
@@ -87,12 +98,19 @@ class EmbeddingsClient:
             batch = texts[i:i + self.MAX_BATCH_SIZE]
 
             try:
+                payload: dict[str, Any] = {
+                    "model": resolved_model,
+                    "input": batch,
+                }
+                if self.provider:
+                    payload["provider"] = {
+                        "order": [self.provider],
+                        "allow_fallbacks": self.allow_fallbacks,
+                    }
+
                 response = await self.client.post(
                     self.EMBEDDING_URL,
-                    json={
-                        "model": model or self.EMBEDDING_MODEL,
-                        "input": batch,
-                    },
+                    json=payload,
                 )
 
                 if response.status_code != 200:

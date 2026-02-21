@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -33,8 +34,8 @@ from app.models.generated_dtos import (
 )
 
 if TYPE_CHECKING:
-    from app.models.project import Project
     from app.models.keyword import Keyword
+    from app.models.project import Project
     from app.models.topic import Topic
 
 
@@ -47,6 +48,13 @@ class ContentBrief(
     """Content brief for a topic (Step 12 output)."""
 
     __tablename__ = "content_briefs"
+    __table_args__ = (
+        Index(
+            "ix_content_briefs_project_publication_date",
+            "project_id",
+            "proposed_publication_date",
+        ),
+    )
 
     project_id: Mapped[str] = mapped_column(
         StringUUID(),
@@ -200,6 +208,13 @@ class ContentArticle(
     qa_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False, index=True)
+    publish_status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    published_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     current_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     generation_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     generation_temperature: Mapped[float | None] = mapped_column(Float, nullable=True)

@@ -186,6 +186,9 @@ class ContentArticleResponse(BaseModel):
     slug: str
     primary_keyword: str
     status: str
+    publish_status: str | None
+    published_at: datetime | None
+    published_url: str | None
     current_version: int
     generation_model: str | None
     generated_at: datetime
@@ -233,3 +236,39 @@ class ContentArticleListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+ContentCalendarItemState = Literal[
+    "brief_ready",
+    "writer_instructions_ready",
+    "article_ready",
+    "article_needs_review",
+    "published",
+]
+
+
+class ContentCalendarItemResponse(BaseModel):
+    """Content calendar item for a proposed publication date."""
+
+    date: date
+    brief_id: str
+    topic_id: str
+    primary_keyword: str
+    working_title: str | None
+    brief_status: str
+    has_writer_instructions: bool
+    article_id: str | None
+    article_title: str | None
+    article_slug: str | None
+    article_status: str | None
+    article_current_version: int | None
+    publish_status: str | None
+    published_at: datetime | None
+    published_url: str | None
+    calendar_state: ContentCalendarItemState
+
+
+class ContentCalendarResponse(BaseModel):
+    """Content calendar response."""
+
+    items: list[ContentCalendarItemResponse]

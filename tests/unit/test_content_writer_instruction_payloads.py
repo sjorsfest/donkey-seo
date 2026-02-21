@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.content.routes import _writer_instructions_payload
 from app.services.steps.content.step_14_article_writer import Step14ArticleWriterService
@@ -73,3 +74,23 @@ async def test_step14_load_writer_instructions_includes_pass_fail_thresholds() -
     payload = await service._load_writer_instructions([SimpleNamespace(id="brief-1")])
 
     assert payload["brief-1"]["pass_fail_thresholds"] == {"seo_score_target": 70}
+
+
+def test_step14_duplicate_article_error_detection() -> None:
+    duplicate_error = IntegrityError(
+        statement="INSERT INTO content_articles ...",
+        params={},
+        orig=Exception(
+            'duplicate key value violates unique constraint "ix_content_articles_brief_id"'
+        ),
+    )
+    non_duplicate_error = IntegrityError(
+        statement="INSERT INTO content_article_versions ...",
+        params={},
+        orig=Exception(
+            'duplicate key value violates unique constraint "uq_content_article_versions_article_version"'
+        ),
+    )
+
+    assert Step14ArticleWriterService._is_duplicate_article_for_brief_error(duplicate_error)
+    assert not Step14ArticleWriterService._is_duplicate_article_for_brief_error(non_duplicate_error)

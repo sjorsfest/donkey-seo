@@ -201,6 +201,13 @@ class Step08SerpValidationService(
                 extra={"skipped": len(already_validated), "remaining": len(candidate_keywords)},
             )
 
+        # Order candidates so API budget favors higher-priority topics first,
+        # then higher-volume keywords within those topics.
+        candidate_keywords = self._sort_keyword_candidates(
+            candidate_keywords,
+            prioritized_topics=prioritized_topics,
+        )
+
         # Enforce API call cap
         if len(candidate_keywords) > self.MAX_API_CALLS:
             logger.warning(
@@ -341,6 +348,30 @@ class Step08SerpValidationService(
         for keyword_model in primary_keywords + flagged_keywords:
             deduped[str(keyword_model.id)] = keyword_model
         return list(deduped.values())
+
+    def _sort_keyword_candidates(
+        self,
+        keyword_models: list[Keyword],
+        *,
+        prioritized_topics: list[Topic],
+    ) -> list[Keyword]:
+        """Sort keyword candidates by topic priority rank, then by volume."""
+        topic_rank_by_id = {
+            str(topic.id): topic.priority_rank
+            for topic in prioritized_topics
+            if topic.id is not None and topic.priority_rank is not None
+        }
+        default_rank = 10_000
+
+        return sorted(
+            keyword_models,
+            key=lambda item: (
+                topic_rank_by_id.get(str(item.topic_id), default_rank),
+                -(item.search_volume or 0),
+                item.keyword,
+                str(item.id),
+            ),
+        )
 
     async def _load_alternate_keywords(self, prioritized_topics: list[Topic]) -> list[Keyword]:
         """Load one alternate keyword per topic for SERP fallback evidence."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,12 +17,12 @@ from app.core.exceptions import (
 )
 from app.models.generated_dtos import (
     PipelineRunCreateDTO,
-    PipelineRunPatchDTO,
     StepExecutionCreateDTO,
 )
 from app.models.pipeline import PipelineRun, StepExecution
 from app.models.project import Project
-from app.schemas.pipeline import ContentPipelineConfig
+from app.repositories.pipeline_run_repository import PipelineRunRepository
+from app.schemas.pipeline import ContentPipelineConfig, DiscoveryLoopConfig
 from app.services.pipeline_task_manager import get_content_pipeline_task_manager
 from app.services.pipelines import (
     CONTENT_DEFAULT_END_STEP,
@@ -44,7 +44,12 @@ from app.services.pipelines import (
     SETUP_LOCAL_TO_INPUT,
     SETUP_LOCAL_TO_SERVICE,
 )
-from app.services.pipelines.discovery.loop import DiscoveryLoopResult, DiscoveryLoopSupervisor
+from app.services.pipelines.discovery.loop import (
+    DISCOVERY_STEPS,
+    AcceptedTopicState,
+    DiscoveryLoopResult,
+    DiscoveryLoopSupervisor,
+)
 from app.services.steps.base_step import BaseStepService
 from app.services.task_manager import TaskManager
 
@@ -59,8 +64,11 @@ class PipelineOrchestrator:
     def __init__(self, session: AsyncSession, project_id: str) -> None:
         self.session = session
         self.project_id = project_id
+        self.pipeline_run_repository = PipelineRunRepository(project_id=project_id)
         self.task_manager = TaskManager()
         self._current_run: PipelineRun | None = None
+        self._discovery_loop_state_key = "loop_state"
+        self._discovery_loop_mode = "stepwise_discovery"
 
     async def start_pipeline(
         self,
@@ -82,13 +90,14 @@ class PipelineOrchestrator:
             skip_steps=skip_steps,
             steps_config=steps_config,
         )
+        run_module = self._as_pipeline_module(run.pipeline_module)
 
         await self._assert_can_start_module(
-            pipeline_module=run.pipeline_module,
+            pipeline_module=run_module,
             excluding_run_id=str(run.id),
         )
 
-        module_cfg = self._module_config(run.pipeline_module)
+        module_cfg = self._module_config(run_module)
         effective_start = (
             start_step
             if start_step is not None
@@ -105,7 +114,7 @@ class PipelineOrchestrator:
         )
         effective_skip = skip_steps if skip_steps else (run.skip_steps or [])
         effective_steps_config = self._build_effective_steps_config(
-            pipeline_module=run.pipeline_module,
+            pipeline_module=run_module,
             start_step=effective_start,
             end_step=effective_end,
             skip_steps=effective_skip,
@@ -113,24 +122,18 @@ class PipelineOrchestrator:
             overrides=steps_config,
         )
 
-        run.patch(
-            self.session,
-            PipelineRunPatchDTO.from_partial(
-                {
-                    "status": "running",
-                    "started_at": datetime.now(timezone.utc),
-                    "completed_at": None,
-                    "error_message": None,
-                    "paused_at_step": None,
-                    "start_step": effective_start,
-                    "end_step": effective_end,
-                    "skip_steps": effective_skip,
-                    "steps_config": effective_steps_config,
-                }
-            ),
+        await self._patch_run(
+            run,
+            status="running",
+            started_at=datetime.now(timezone.utc),
+            completed_at=None,
+            error_message=None,
+            paused_at_step=None,
+            start_step=effective_start,
+            end_step=effective_end,
+            skip_steps=effective_skip,
+            steps_config=effective_steps_config,
         )
-
-        await self.session.commit()
         self._current_run = run
 
         task_id = str(run.id)
@@ -140,9 +143,9 @@ class PipelineOrchestrator:
         await self.task_manager.set_task_state(
             task_id=task_id,
             status="running",
-            stage=f"{run.pipeline_module.capitalize()} pipeline started",
+            stage=f"{run_module.capitalize()} pipeline started",
             project_id=self.project_id,
-            pipeline_module=run.pipeline_module,
+            pipeline_module=run_module,
             source_topic_id=run.source_topic_id,
             current_step=effective_start,
             current_step_name=module_cfg["step_names"].get(effective_start),
@@ -153,7 +156,7 @@ class PipelineOrchestrator:
         )
 
         try:
-            if run.pipeline_module == "discovery":
+            if run_module == "discovery":
                 discovery_result = await self._run_discovery_loop(run)
                 await self._update_run_status(
                     run.id,
@@ -171,7 +174,7 @@ class PipelineOrchestrator:
                         "Discovery completed "
                         f"({discovery_result.accepted_count}/{discovery_result.target_count} accepted topics)"
                     ),
-                    pipeline_module=run.pipeline_module,
+                    pipeline_module=run_module,
                     source_topic_id=run.source_topic_id,
                     current_step=effective_end,
                     current_step_name=module_cfg["step_names"].get(effective_end),
@@ -182,7 +185,7 @@ class PipelineOrchestrator:
 
             await self._run_step_range(
                 run=run,
-                module=run.pipeline_module,
+                module=run_module,
                 start_step=effective_start,
                 end_step=effective_end,
                 skip_steps=effective_skip,
@@ -200,8 +203,8 @@ class PipelineOrchestrator:
             await self.task_manager.set_task_state(
                 task_id=task_id,
                 status="completed",
-                stage=f"{run.pipeline_module.capitalize()} pipeline completed",
-                pipeline_module=run.pipeline_module,
+                stage=f"{run_module.capitalize()} pipeline completed",
+                pipeline_module=run_module,
                 source_topic_id=run.source_topic_id,
                 current_step=effective_end,
                 current_step_name=module_cfg["step_names"].get(effective_end),
@@ -223,8 +226,8 @@ class PipelineOrchestrator:
             await self.task_manager.set_task_state(
                 task_id=task_id,
                 status="paused",
-                stage=f"{run.pipeline_module.capitalize()} pipeline paused",
-                pipeline_module=run.pipeline_module,
+                stage=f"{run_module.capitalize()} pipeline paused",
+                pipeline_module=run_module,
                 source_topic_id=run.source_topic_id,
                 current_step=paused_at_step,
                 current_step_name=module_cfg["step_names"].get(paused_at_step),
@@ -249,13 +252,14 @@ class PipelineOrchestrator:
         run = result.scalar_one_or_none()
         if run is None:
             raise ValueError("No paused pipeline found")
-        if pipeline_module is not None and run.pipeline_module != pipeline_module:
+        run_module = self._as_pipeline_module(run.pipeline_module)
+        if pipeline_module is not None and run_module != pipeline_module:
             raise ValueError("Paused run module does not match requested module")
 
-        if run.pipeline_module == "discovery":
+        if run_module == "discovery":
             return await self.start_pipeline(
                 run_id=run_id,
-                pipeline_module=run.pipeline_module,
+                pipeline_module=run_module,
                 start_step=(
                     run.start_step
                     if run.start_step is not None
@@ -270,7 +274,7 @@ class PipelineOrchestrator:
                 steps_config=run.steps_config,
             )
 
-        module_cfg = self._module_config(run.pipeline_module)
+        module_cfg = self._module_config(run_module)
         last_completed = await self._get_last_completed_step(str(run.id))
         start_step = (
             (last_completed + 1)
@@ -283,7 +287,7 @@ class PipelineOrchestrator:
         )
         return await self.start_pipeline(
             run_id=run_id,
-            pipeline_module=run.pipeline_module,
+            pipeline_module=run_module,
             start_step=start_step,
             end_step=(
                 run.end_step
@@ -307,11 +311,7 @@ class PipelineOrchestrator:
         if run is None:
             raise ValueError("No running pipeline found")
 
-        run.patch(
-            self.session,
-            PipelineRunPatchDTO.from_partial({"status": "paused"}),
-        )
-        await self.session.commit()
+        await self._patch_run(run, status="paused")
         await self.task_manager.set_task_state(
             task_id=str(run.id),
             status="paused",
@@ -334,6 +334,655 @@ class PipelineOrchestrator:
         await self._verify_dependencies(run_id=str(run.id), module=pipeline_module, step_number=step_number)
         execution = await self._execute_step(run, pipeline_module, step_number)
         return execution
+
+    async def run_queued_job_slice(
+        self,
+        *,
+        run_id: str,
+        pipeline_module: PipelineModule,
+        job_kind: str,
+    ) -> bool:
+        """Execute one fair-scheduling slice for a queued run.
+
+        Returns:
+            True when more work remains and the job should be requeued.
+        """
+        result = await self.session.execute(
+            select(PipelineRun).where(
+                PipelineRun.id == run_id,
+                PipelineRun.project_id == self.project_id,
+            )
+        )
+        run = result.scalar_one_or_none()
+        if run is None:
+            logger.warning(
+                "Queued run missing, dropping job",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": run_id,
+                    "pipeline_module": pipeline_module,
+                    "job_kind": job_kind,
+                },
+            )
+            return False
+
+        run_module = self._as_pipeline_module(run.pipeline_module)
+        if run_module != pipeline_module:
+            logger.warning(
+                "Queued run module mismatch, dropping job",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": run_id,
+                    "expected_module": pipeline_module,
+                    "actual_module": run_module,
+                    "job_kind": job_kind,
+                },
+            )
+            return False
+
+        if run.status == "completed":
+            return False
+
+        if run.status == "paused" and job_kind != "resume":
+            logger.info(
+                "Ignoring stale non-resume job for paused run",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": run_id,
+                    "pipeline_module": pipeline_module,
+                    "job_kind": job_kind,
+                },
+            )
+            return False
+
+        if run.status in {"pending", "paused"}:
+            await self._assert_can_start_module(
+                pipeline_module=run_module,
+                excluding_run_id=str(run.id),
+            )
+            await self._mark_run_running_for_slice(
+                run=run,
+                resumed=(run.status == "paused"),
+            )
+        elif run.status != "running":
+            logger.info(
+                "Skipping queued run with terminal/non-runnable status",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": run_id,
+                    "pipeline_module": pipeline_module,
+                    "status": run.status,
+                },
+            )
+            return False
+
+        run_id_str = str(run.id)
+        run_source_topic_id = run.source_topic_id
+        run_start_step = run.start_step
+
+        try:
+            if run_module == "discovery":
+                return await self._run_discovery_slice(run)
+            return await self._run_standard_slice(run)
+        except Exception as exc:
+            await self._rollback_failed_slice_session(
+                run_id=run_id_str,
+                pipeline_module=run_module,
+                job_kind=job_kind,
+            )
+            logger.exception(
+                "Queued pipeline slice failed; pausing run",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": run_id,
+                    "pipeline_module": run_module,
+                    "job_kind": job_kind,
+                },
+            )
+            module_cfg = self._module_config(run_module)
+            run_state = run.__dict__ if isinstance(run.__dict__, dict) else {}
+            paused_at_step: int | None = None
+            for candidate in (
+                run_state.get("paused_at_step"),
+                run_state.get("start_step"),
+                run_start_step,
+                module_cfg["default_start"],
+            ):
+                if candidate is None:
+                    continue
+                try:
+                    paused_at_step = int(candidate)
+                    break
+                except (TypeError, ValueError):
+                    continue
+            if paused_at_step is None:
+                paused_at_step = module_cfg["default_start"]
+            error_message = str(exc)
+            await self._update_run_status_with_retry(
+                run_id=run_id_str,
+                status="paused",
+                paused_at_step=paused_at_step,
+                error_message=error_message,
+            )
+            await self.task_manager.set_task_state(
+                task_id=run_id_str,
+                status="paused",
+                stage=f"{run_module.capitalize()} pipeline paused",
+                pipeline_module=run_module,
+                source_topic_id=run_source_topic_id,
+                current_step=paused_at_step,
+                current_step_name=module_cfg["step_names"].get(paused_at_step),
+                error_message=error_message,
+            )
+            return False
+
+    async def _rollback_failed_slice_session(
+        self,
+        *,
+        run_id: str,
+        pipeline_module: PipelineModule,
+        job_kind: str,
+    ) -> None:
+        in_transaction = getattr(self.session, "in_transaction", None)
+        if callable(in_transaction):
+            try:
+                if not in_transaction():
+                    return
+            except Exception:
+                pass
+        try:
+            await self.session.rollback()
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if "connection is closed" in error_text or "underlying connection is closed" in error_text:
+                logger.warning(
+                    "Skipping rollback after slice failure because session connection is already closed",
+                    extra={
+                        "project_id": self.project_id,
+                        "run_id": run_id,
+                        "pipeline_module": pipeline_module,
+                        "job_kind": job_kind,
+                    },
+                )
+                return
+            logger.exception(
+                "Failed to rollback session after slice failure",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": run_id,
+                    "pipeline_module": pipeline_module,
+                    "job_kind": job_kind,
+                },
+            )
+
+    async def _update_run_status_with_retry(
+        self,
+        *,
+        run_id: Any,
+        status: str,
+        paused_at_step: int | None,
+        error_message: str | None,
+        attempts: int = 2,
+    ) -> None:
+        await self._update_run_status(
+            run_id,
+            attempts=attempts,
+            status=status,
+            paused_at_step=paused_at_step,
+            error_message=error_message,
+        )
+
+    async def _mark_run_running_for_slice(
+        self,
+        *,
+        run: PipelineRun,
+        resumed: bool,
+    ) -> None:
+        module_cfg = self._module_config(run.pipeline_module)
+        start_step = run.start_step if run.start_step is not None else module_cfg["default_start"]
+        await self._patch_run(
+            run,
+            status="running",
+            started_at=datetime.now(timezone.utc),
+            completed_at=None,
+            error_message=None,
+        )
+        stage = (
+            f"{run.pipeline_module.capitalize()} pipeline resumed"
+            if resumed
+            else f"{run.pipeline_module.capitalize()} pipeline started"
+        )
+        await self.task_manager.set_task_state(
+            task_id=str(run.id),
+            status="running",
+            stage=stage,
+            project_id=self.project_id,
+            pipeline_module=run.pipeline_module,
+            source_topic_id=run.source_topic_id,
+            current_step=start_step,
+            current_step_name=module_cfg["step_names"].get(start_step),
+            error_message=None,
+        )
+
+    async def _run_standard_slice(self, run: PipelineRun) -> bool:
+        module = self._as_pipeline_module(run.pipeline_module)
+        module_cfg = self._module_config(module)
+        next_step = await self._next_standard_step(run=run, module=module)
+        if next_step is None:
+            await self._mark_run_completed(
+                run=run,
+                completion_stage=f"{module.capitalize()} pipeline completed",
+            )
+            return False
+
+        skip_steps = run.skip_steps or []
+        if next_step in skip_steps and next_step in module_cfg["optional_steps"]:
+            await self._create_skipped_execution(run, module, next_step)
+            await self._set_step_skipped_task_state(
+                task_id=str(run.id),
+                module=module,
+                step_num=next_step,
+            )
+        else:
+            await self._verify_dependencies(run_id=str(run.id), module=module, step_number=next_step)
+            execution = await self._execute_step(run, module, next_step)
+            await self._patch_run(run, paused_at_step=next_step)
+            if execution.status == "completed":
+                await self.task_manager.mark_step_completed(
+                    task_id=str(run.id),
+                    step_number=next_step,
+                    step_name=module_cfg["step_names"].get(next_step, f"step_{next_step}"),
+                )
+            elif execution.status == "skipped":
+                await self._set_step_skipped_task_state(
+                    task_id=str(run.id),
+                    module=module,
+                    step_num=next_step,
+                )
+
+        has_more = await self._next_standard_step(run=run, module=module) is not None
+        if not has_more:
+            await self._mark_run_completed(
+                run=run,
+                completion_stage=f"{module.capitalize()} pipeline completed",
+            )
+            return False
+        return True
+
+    async def _next_standard_step(
+        self,
+        *,
+        run: PipelineRun,
+        module: PipelineModule,
+    ) -> int | None:
+        module_cfg = self._module_config(module)
+        start_step = run.start_step if run.start_step is not None else module_cfg["default_start"]
+        end_step = run.end_step if run.end_step is not None else module_cfg["default_end"]
+        skip_steps = run.skip_steps or []
+
+        completed_result = await self.session.execute(
+            select(StepExecution.step_number).where(
+                StepExecution.pipeline_run_id == str(run.id),
+                StepExecution.status.in_(["completed", "skipped"]),
+            )
+        )
+        completed_steps = {int(step_num) for step_num in completed_result.scalars().all()}
+
+        for step_num in range(start_step, end_step + 1):
+            if step_num in completed_steps:
+                continue
+            if step_num in skip_steps and step_num in module_cfg["optional_steps"]:
+                return step_num
+            return step_num
+        return None
+
+    async def _mark_run_completed(
+        self,
+        *,
+        run: PipelineRun,
+        completion_stage: str,
+    ) -> None:
+        module_cfg = self._module_config(run.pipeline_module)
+        effective_end = run.end_step if run.end_step is not None else module_cfg["default_end"]
+        now = datetime.now(timezone.utc)
+        await self._update_run_status(
+            run.id,
+            status="completed",
+            completed_at=now,
+            paused_at_step=None,
+            error_message=None,
+        )
+        run.status = "completed"
+        run.completed_at = now
+        run.paused_at_step = None
+        run.error_message = None
+        await self.task_manager.set_task_state(
+            task_id=str(run.id),
+            status="completed",
+            stage=completion_stage,
+            pipeline_module=run.pipeline_module,
+            source_topic_id=run.source_topic_id,
+            current_step=effective_end,
+            current_step_name=module_cfg["step_names"].get(effective_end),
+            progress_percent=100.0,
+            error_message=None,
+        )
+
+    async def _run_discovery_slice(self, run: PipelineRun) -> bool:
+        steps_config = dict(run.steps_config or {})
+        supervisor = DiscoveryLoopSupervisor(
+            session=self.session,
+            project_id=self.project_id,
+            run=run,
+            task_manager=self.task_manager,
+        )
+        discovery_cfg = DiscoveryLoopConfig.model_validate(steps_config.get("discovery") or {})
+        content_cfg = ContentPipelineConfig.model_validate(steps_config.get("content") or {})
+
+        state = self._get_discovery_loop_state(steps_config)
+        if state is None:
+            state = await self._initialize_discovery_loop_state(
+                run=run,
+                steps_config=steps_config,
+                supervisor=supervisor,
+                discovery_cfg=discovery_cfg,
+            )
+
+        current_iteration = int(state.get("current_iteration", 1))
+        step_cursor = int(state.get("step_cursor", 0))
+        task_id = str(run.id)
+
+        if step_cursor < len(DISCOVERY_STEPS):
+            step_num = DISCOVERY_STEPS[step_cursor]
+            execution: StepExecution
+            module_cfg = self._module_config("discovery")
+            skip_steps = run.skip_steps or []
+            if step_num in skip_steps and step_num in module_cfg["optional_steps"]:
+                execution = await self._create_skipped_execution(run, "discovery", step_num)
+                await self._set_step_skipped_task_state(
+                    task_id=task_id,
+                    module="discovery",
+                    step_num=step_num,
+                )
+            else:
+                await self._verify_dependencies(
+                    run_id=task_id,
+                    module="discovery",
+                    step_number=step_num,
+                )
+                execution = await self._execute_step(run, "discovery", step_num)
+                await self._patch_run(run, paused_at_step=step_num)
+                if execution.status == "completed":
+                    await self.task_manager.mark_step_completed(
+                        task_id=task_id,
+                        step_number=step_num,
+                        step_name=module_cfg["step_names"].get(step_num, f"step_{step_num}"),
+                    )
+                elif execution.status == "skipped":
+                    await self._set_step_skipped_task_state(
+                        task_id=task_id,
+                        module="discovery",
+                        step_num=step_num,
+                    )
+
+            summaries_raw = state.get("step_summaries")
+            summaries_in = summaries_raw if isinstance(summaries_raw, dict) else {}
+            summaries_typed: dict[int, dict[str, Any]] = {}
+            for key, value in summaries_in.items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    summaries_typed[int(key)] = value
+                except (TypeError, ValueError):
+                    continue
+            summaries_typed = supervisor._collect_iteration_step_summaries(
+                summaries_typed,
+                step_num=step_num,
+                execution=execution,
+            )
+            state["step_cursor"] = step_cursor + 1
+            state["step_summaries"] = {str(key): value for key, value in summaries_typed.items()}
+            await self._save_discovery_loop_state(
+                run=run,
+                steps_config=steps_config,
+                state=state,
+            )
+            return True
+
+        decisions = await supervisor._evaluate_topic_decisions(
+            iteration_index=current_iteration,
+            discovery=discovery_cfg,
+        )
+        await supervisor._persist_snapshots(current_iteration, decisions)
+
+        summaries_state = state.get("step_summaries")
+        summaries_raw = summaries_state if isinstance(summaries_state, dict) else {}
+        step_summaries: dict[int, dict[str, Any]] = {}
+        for key, value in summaries_raw.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                step_summaries[int(key)] = value
+            except (TypeError, ValueError):
+                continue
+        await supervisor._persist_iteration_learnings(
+            iteration_index=current_iteration,
+            decisions=decisions,
+            step_summaries=step_summaries,
+        )
+
+        accepted_pool = self._deserialize_accepted_topics(state.get("accepted_topics"))
+        accepted_pool = supervisor._merge_accepted_topics(
+            current_pool=accepted_pool,
+            decisions=decisions,
+        )
+        accepted_topic_ids = supervisor._collect_selected_topic_ids(accepted_pool)
+        accepted_topic_names = supervisor._collect_selected_topic_names(accepted_pool)
+
+        steps_config["selected_topic_ids"] = accepted_topic_ids
+        steps_config["selected_topic_names"] = accepted_topic_names
+        steps_config["accepted_topic_count"] = len(accepted_pool)
+        steps_config["iteration_index"] = current_iteration
+        await self._persist_run_steps_config(run=run, steps_config=steps_config)
+
+        await self._dispatch_new_topics_from_discovery(
+            run=run,
+            accepted_topic_ids=accepted_topic_ids,
+            content_config=content_cfg,
+        )
+
+        accepted_count = len(accepted_pool)
+        target_count = int(state.get("target_count", 1))
+        if accepted_count >= target_count:
+            await self._mark_run_completed(
+                run=run,
+                completion_stage=(
+                    "Discovery completed "
+                    f"({accepted_count}/{target_count} accepted topics)"
+                ),
+            )
+            return False
+
+        if current_iteration >= discovery_cfg.max_iterations:
+            raise RuntimeError(
+                "Insufficient accepted topics after discovery loop "
+                f"({accepted_count}/{target_count} accepted across {current_iteration} iterations). "
+                "Try broadening topic scope, adding include_topics, or lowering difficulty constraints."
+            )
+
+        immutable_excludes_raw = state.get("immutable_excludes")
+        immutable_excludes = (
+            {str(item).strip().lower() for item in immutable_excludes_raw if str(item).strip()}
+            if isinstance(immutable_excludes_raw, list)
+            else set()
+        )
+        dynamic_excludes = supervisor._next_dynamic_excludes(
+            current_dynamic_excludes=[
+                str(item)
+                for item in state.get("dynamic_excludes", [])
+                if str(item).strip()
+            ],
+            decisions=decisions,
+            immutable_excludes=immutable_excludes,
+        )
+
+        base_strategy_payload_raw = state.get("base_strategy_payload")
+        base_strategy_payload = (
+            dict(base_strategy_payload_raw)
+            if isinstance(base_strategy_payload_raw, dict)
+            else {}
+        )
+        next_iteration = current_iteration + 1
+        strategy_payload = supervisor._build_iteration_strategy_payload(
+            base_strategy_payload=base_strategy_payload,
+            iteration=next_iteration,
+            dynamic_excludes=dynamic_excludes,
+        )
+
+        steps_config["strategy"] = strategy_payload
+        steps_config["iteration_index"] = next_iteration
+        state["current_iteration"] = next_iteration
+        state["step_cursor"] = 0
+        state["dynamic_excludes"] = dynamic_excludes
+        state["accepted_topics"] = self._serialize_accepted_topics(accepted_pool)
+        state["step_summaries"] = {}
+        await self._save_discovery_loop_state(
+            run=run,
+            steps_config=steps_config,
+            state=state,
+        )
+
+        await self.task_manager.set_task_state(
+            task_id=task_id,
+            status="running",
+            stage=f"Discovery loop iteration {next_iteration}/{discovery_cfg.max_iterations}",
+            current_step=2,
+            current_step_name="seed_topics",
+            error_message=None,
+        )
+        return True
+
+    async def _initialize_discovery_loop_state(
+        self,
+        *,
+        run: PipelineRun,
+        steps_config: dict[str, Any],
+        supervisor: DiscoveryLoopSupervisor,
+        discovery_cfg: DiscoveryLoopConfig,
+    ) -> dict[str, Any]:
+        base_strategy_payload = dict(steps_config.get("strategy") or {})
+        immutable_excludes = [
+            str(topic).strip().lower()
+            for topic in base_strategy_payload.get("exclude_topics", [])
+            if str(topic).strip()
+        ]
+        target_count = await supervisor._resolve_target_count(discovery_cfg, base_strategy_payload)
+        strategy_payload = supervisor._build_iteration_strategy_payload(
+            base_strategy_payload=base_strategy_payload,
+            iteration=1,
+            dynamic_excludes=[],
+        )
+
+        steps_config["strategy"] = strategy_payload
+        steps_config["iteration_index"] = 1
+        steps_config.setdefault("selected_topic_ids", [])
+        steps_config.setdefault("selected_topic_names", [])
+        steps_config.setdefault("accepted_topic_count", 0)
+
+        state: dict[str, Any] = {
+            "mode": self._discovery_loop_mode,
+            "target_count": target_count,
+            "current_iteration": 1,
+            "step_cursor": 0,
+            "dynamic_excludes": [],
+            "immutable_excludes": immutable_excludes,
+            "accepted_topics": [],
+            "step_summaries": {},
+            "base_strategy_payload": base_strategy_payload,
+        }
+        await self._save_discovery_loop_state(
+            run=run,
+            steps_config=steps_config,
+            state=state,
+        )
+        await self.task_manager.set_task_state(
+            task_id=str(run.id),
+            status="running",
+            stage=(
+                f"Discovery loop started: target {target_count} accepted topics "
+                f"in <= {discovery_cfg.max_iterations} iterations"
+            ),
+            project_id=self.project_id,
+            current_step=2,
+            current_step_name="seed_topics",
+            error_message=None,
+        )
+        return state
+
+    async def _save_discovery_loop_state(
+        self,
+        *,
+        run: PipelineRun,
+        steps_config: dict[str, Any],
+        state: dict[str, Any],
+    ) -> None:
+        normalized = dict(steps_config)
+        normalized[self._discovery_loop_state_key] = state
+        await self._persist_run_steps_config(run=run, steps_config=normalized)
+
+    def _get_discovery_loop_state(self, steps_config: dict[str, Any]) -> dict[str, Any] | None:
+        raw = steps_config.get(self._discovery_loop_state_key)
+        if not isinstance(raw, dict):
+            return None
+        if raw.get("mode") != self._discovery_loop_mode:
+            return None
+        return dict(raw)
+
+    async def _persist_run_steps_config(
+        self,
+        *,
+        run: PipelineRun,
+        steps_config: dict[str, Any],
+    ) -> None:
+        await self._patch_run(run, steps_config=steps_config)
+
+    def _serialize_accepted_topics(
+        self,
+        topics: dict[str, AcceptedTopicState],
+    ) -> list[dict[str, str | None]]:
+        serialized: list[dict[str, str | None]] = []
+        for key, state in topics.items():
+            serialized.append(
+                {
+                    "key": key,
+                    "topic_name": state.topic_name,
+                    "source_topic_id": state.source_topic_id,
+                }
+            )
+        return serialized
+
+    def _deserialize_accepted_topics(self, raw: Any) -> dict[str, AcceptedTopicState]:
+        if not isinstance(raw, list):
+            return {}
+        parsed: dict[str, AcceptedTopicState] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip().lower()
+            topic_name = str(item.get("topic_name") or "").strip()
+            source_topic_id_raw = item.get("source_topic_id")
+            source_topic_id = (
+                str(source_topic_id_raw).strip()
+                if source_topic_id_raw is not None and str(source_topic_id_raw).strip()
+                else None
+            )
+            if not key:
+                continue
+            parsed[key] = AcceptedTopicState(
+                topic_name=topic_name,
+                source_topic_id=source_topic_id,
+            )
+        return parsed
 
     async def _load_or_create_run(
         self,
@@ -540,13 +1189,13 @@ class PipelineOrchestrator:
 
     async def _is_step_completed(self, *, run_id: str, step_number: int) -> bool:
         result = await self.session.execute(
-            select(StepExecution).where(
+            select(StepExecution.id).where(
                 StepExecution.pipeline_run_id == run_id,
                 StepExecution.step_number == step_number,
                 StepExecution.status == "completed",
-            )
+            ).limit(1)
         )
-        return result.scalar_one_or_none() is not None
+        return result.scalar() is not None
 
     async def _execute_step(
         self,
@@ -647,11 +1296,27 @@ class PipelineOrchestrator:
         except Exception:
             return base_input
 
-    async def _update_run_status(self, run_id: Any, **updates: Any) -> None:
-        async with get_session_context() as fresh_session:
-            result = await fresh_session.execute(select(PipelineRun).where(PipelineRun.id == run_id))
-            run = result.scalar_one()
-            run.patch(fresh_session, PipelineRunPatchDTO.from_partial(updates))
+    async def _patch_run(self, run: PipelineRun, *, attempts: int = 3, **updates: Any) -> None:
+        await self.pipeline_run_repository.patch(
+            run_id=str(run.id),
+            updates=updates,
+            attempts=attempts,
+        )
+        for field, value in updates.items():
+            setattr(run, field, value)
+
+    async def _update_run_status(
+        self,
+        run_id: Any,
+        *,
+        attempts: int = 3,
+        **updates: Any,
+    ) -> None:
+        await self.pipeline_run_repository.patch(
+            run_id=str(run_id),
+            updates=updates,
+            attempts=attempts,
+        )
 
     async def _create_skipped_execution(
         self,
@@ -761,6 +1426,11 @@ class PipelineOrchestrator:
         result = await self.session.execute(query)
         if result.scalar_one_or_none() is not None:
             raise PipelineAlreadyRunningError(self.project_id)
+
+    def _as_pipeline_module(self, module: str) -> PipelineModule:
+        if module not in {"setup", "discovery", "content"}:
+            raise ValueError(f"Unknown pipeline module: {module}")
+        return cast(PipelineModule, module)
 
     def _module_config(self, module: str) -> dict[str, Any]:
         if module == "setup":

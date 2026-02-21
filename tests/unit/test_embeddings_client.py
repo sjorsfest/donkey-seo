@@ -47,7 +47,11 @@ async def test_embeddings_client_uses_openrouter_endpoint_and_model(
         vectors = await client.get_embeddings(["alpha", "beta"])
 
     assert captured["post"]["url"] == EmbeddingsClient.EMBEDDING_URL
-    assert captured["post"]["json"]["model"] == EmbeddingsClient.EMBEDDING_MODEL
+    assert captured["post"]["json"]["model"] == settings.embeddings_model
+    assert captured["post"]["json"]["provider"] == {
+        "order": [settings.embeddings_provider],
+        "allow_fallbacks": settings.embeddings_allow_fallbacks,
+    }
     assert vectors == [[0.1, 0.2], [0.2, 0.3]]
 
 

@@ -1,9 +1,10 @@
 """Content briefs API endpoints."""
 
 import logging
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from app.api.v1.content.constants import (
     CONTENT_ARTICLE_NOT_FOUND_DETAIL,
@@ -39,6 +40,8 @@ from app.schemas.content import (
     ContentBriefListResponse,
     ContentBriefResponse,
     ContentBriefUpdate,
+    ContentCalendarItemState,
+    ContentCalendarResponse,
     RegenerateArticleRequest,
     WriterInstructionsResponse,
 )
@@ -142,6 +145,22 @@ def _build_brand_context(brand: BrandProfile | None) -> str:
     return "\n".join(parts)
 
 
+def _resolve_calendar_state(
+    *,
+    has_writer_instructions: bool,
+    article: ContentArticle | None,
+) -> ContentCalendarItemState:
+    if article and (article.publish_status == "published" or article.published_at is not None):
+        return "published"
+    if article and article.status == "needs_review":
+        return "article_needs_review"
+    if article:
+        return "article_ready"
+    if has_writer_instructions:
+        return "writer_instructions_ready"
+    return "brief_ready"
+
+
 @router.get(
     "/{project_id}/briefs",
     response_model=ContentBriefListResponse,
@@ -180,6 +199,90 @@ async def list_briefs(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/{project_id}/calendar",
+    response_model=ContentCalendarResponse,
+    summary="Get content calendar",
+    description=(
+        "Return scheduled content items keyed by proposed publication date with "
+        "current production/publish state."
+    ),
+)
+async def get_content_calendar(
+    project_id: str,
+    current_user: CurrentUser,
+    session: DbSession,
+    date_from: date | None = Query(None, description="Inclusive lower date bound (YYYY-MM-DD)."),
+    date_to: date | None = Query(None, description="Inclusive upper date bound (YYYY-MM-DD)."),
+) -> ContentCalendarResponse:
+    """Return content calendar entries for scheduled briefs."""
+    await get_user_project(project_id, current_user, session)
+
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="date_from must be earlier than or equal to date_to",
+        )
+
+    query = (
+        select(ContentBrief, WriterInstructions.id, ContentArticle)
+        .outerjoin(WriterInstructions, WriterInstructions.brief_id == ContentBrief.id)
+        .outerjoin(
+            ContentArticle,
+            and_(
+                ContentArticle.brief_id == ContentBrief.id,
+                ContentArticle.project_id == ContentBrief.project_id,
+            ),
+        )
+        .where(
+            ContentBrief.project_id == project_id,
+            ContentBrief.proposed_publication_date.is_not(None),
+        )
+    )
+    if date_from is not None:
+        query = query.where(ContentBrief.proposed_publication_date >= date_from)
+    if date_to is not None:
+        query = query.where(ContentBrief.proposed_publication_date <= date_to)
+
+    query = query.order_by(
+        ContentBrief.proposed_publication_date.asc(),
+        ContentBrief.created_at.asc(),
+    )
+    result = await session.execute(query)
+
+    items: list[dict[str, object | None]] = []
+    for brief, writer_instruction_id, article in result.all():
+        has_writer_instructions = writer_instruction_id is not None
+        calendar_state = _resolve_calendar_state(
+            has_writer_instructions=has_writer_instructions,
+            article=article,
+        )
+        working_title = (brief.working_titles or [None])[0]
+        article_id = str(article.id) if article else None
+        items.append(
+            {
+                "date": brief.proposed_publication_date,
+                "brief_id": str(brief.id),
+                "topic_id": str(brief.topic_id),
+                "primary_keyword": brief.primary_keyword,
+                "working_title": str(working_title) if working_title is not None else None,
+                "brief_status": brief.status,
+                "has_writer_instructions": has_writer_instructions,
+                "article_id": article_id,
+                "article_title": article.title if article else None,
+                "article_slug": article.slug if article else None,
+                "article_status": article.status if article else None,
+                "article_current_version": article.current_version if article else None,
+                "publish_status": article.publish_status if article else None,
+                "published_at": article.published_at if article else None,
+                "published_url": article.published_url if article else None,
+                "calendar_state": calendar_state,
+            }
+        )
+
+    return ContentCalendarResponse(items=items)
 
 
 @router.get(

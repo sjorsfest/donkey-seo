@@ -489,10 +489,12 @@ def _pipeline_run_response(run: PipelineRun) -> PipelineRunResponse:
     if run.skip_steps is None:
         mapped_skip_steps = None
     else:
-        mapped_skip_steps = [
-            _display_step_number(pipeline_module, step)
-            for step in list(run.skip_steps)
-        ]
+        mapped_skip_steps = []
+        for step in list(run.skip_steps):
+            mapped_step = _display_step_number(pipeline_module, step)
+            if mapped_step is None:
+                continue
+            mapped_skip_steps.append(mapped_step)
     return PipelineRunResponse(
         id=str(run.id),
         project_id=str(run.project_id),

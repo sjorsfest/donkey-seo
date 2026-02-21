@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.brand import BrandProfile
 from app.models.content import (
@@ -170,6 +171,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         failed = len(missing_instruction_failures)
         failures = list(missing_instruction_failures)
         article_ids: list[str] = []
+        skipped_due_duplicate = 0
 
         for brief, artifact, error in results:
             if artifact is None:
@@ -182,50 +184,62 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                 )
                 continue
 
-            article = ContentArticle.create(
-                self.session,
-                ContentArticleCreateDTO(
-                    project_id=self.project_id,
-                    brief_id=str(brief.id),
-                    title=artifact.title,
-                    slug=artifact.slug,
-                    primary_keyword=artifact.primary_keyword,
-                    modular_document=artifact.modular_document,
-                    rendered_html=artifact.rendered_html,
-                    qa_report=artifact.qa_report,
-                    status=artifact.status,
-                    current_version=1,
-                    generation_model=artifact.generation_model,
-                    generation_temperature=artifact.generation_temperature,
-                ),
-            )
-            await self.session.flush()
+            try:
+                async with self.session.begin_nested():
+                    article = ContentArticle.create(
+                        self.session,
+                        ContentArticleCreateDTO(
+                            project_id=self.project_id,
+                            brief_id=str(brief.id),
+                            title=artifact.title,
+                            slug=artifact.slug,
+                            primary_keyword=artifact.primary_keyword,
+                            modular_document=artifact.modular_document,
+                            rendered_html=artifact.rendered_html,
+                            qa_report=artifact.qa_report,
+                            status=artifact.status,
+                            current_version=1,
+                            generation_model=artifact.generation_model,
+                            generation_temperature=artifact.generation_temperature,
+                        ),
+                    )
+                    await self.session.flush()
 
-            ContentArticleVersion.create(
-                self.session,
-                ContentArticleVersionCreateDTO(
-                    article_id=str(article.id),
-                    version_number=1,
-                    title=artifact.title,
-                    slug=artifact.slug,
-                    primary_keyword=artifact.primary_keyword,
-                    modular_document=artifact.modular_document,
-                    rendered_html=artifact.rendered_html,
-                    qa_report=artifact.qa_report,
-                    status=artifact.status,
-                    change_reason="initial_generation",
-                    generation_model=artifact.generation_model,
-                    generation_temperature=artifact.generation_temperature,
-                    created_by_regeneration=False,
-                ),
-            )
+                    ContentArticleVersion.create(
+                        self.session,
+                        ContentArticleVersionCreateDTO(
+                            article_id=str(article.id),
+                            version_number=1,
+                            title=artifact.title,
+                            slug=artifact.slug,
+                            primary_keyword=artifact.primary_keyword,
+                            modular_document=artifact.modular_document,
+                            rendered_html=artifact.rendered_html,
+                            qa_report=artifact.qa_report,
+                            status=artifact.status,
+                            change_reason="initial_generation",
+                            generation_model=artifact.generation_model,
+                            generation_temperature=artifact.generation_temperature,
+                            created_by_regeneration=False,
+                        ),
+                    )
+            except IntegrityError as exc:
+                if self._is_duplicate_article_for_brief_error(exc):
+                    skipped_existing += 1
+                    skipped_due_duplicate += 1
+                    logger.info(
+                        "Skipping article persistence because brief already has an article",
+                        extra={"brief_id": str(brief.id)},
+                    )
+                    continue
+                raise
 
             generated += 1
             article_ids.append(str(article.id))
             if artifact.status == "needs_review":
                 needs_review += 1
 
-        if eligible_briefs and generated == 0:
+        if eligible_briefs and (generated + skipped_due_duplicate) == 0:
             raise ValueError("Step 14 generated 0 articles for eligible briefs")
 
         await self._update_progress(100, "Article generation complete")
@@ -386,3 +400,18 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
             parts.append(f"Restricted Claims: {', '.join(brand.restricted_claims[:6])}")
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _is_duplicate_article_for_brief_error(exc: IntegrityError) -> bool:
+        error_text = str(exc.orig or exc).lower()
+        markers = (
+            "ix_content_articles_brief_id",
+            "content_articles_brief_id_key",
+        )
+        if any(marker in error_text for marker in markers):
+            return True
+        return (
+            "content_articles" in error_text
+            and "brief_id" in error_text
+            and ("duplicate key" in error_text or "unique" in error_text)
+        )

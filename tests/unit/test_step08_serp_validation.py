@@ -130,6 +130,27 @@ def test_merge_keyword_candidates_includes_primary_and_dedupes() -> None:
     assert len(merged) == 2
 
 
+def test_sort_keyword_candidates_orders_by_priority_then_volume() -> None:
+    service = Step08SerpValidationService.__new__(Step08SerpValidationService)
+    prioritized_topics = [
+        SimpleNamespace(id="topic-1", priority_rank=2),
+        SimpleNamespace(id="topic-2", priority_rank=1),
+    ]
+    keyword_models = [
+        SimpleNamespace(id="kw-1", topic_id="topic-1", search_volume=300, keyword="topic1 high"),
+        SimpleNamespace(id="kw-2", topic_id="topic-2", search_volume=100, keyword="topic2 low"),
+        SimpleNamespace(id="kw-3", topic_id="topic-2", search_volume=250, keyword="topic2 high"),
+        SimpleNamespace(id="kw-4", topic_id=None, search_volume=1000, keyword="unranked"),
+    ]
+
+    sorted_keywords = service._sort_keyword_candidates(
+        keyword_models,  # type: ignore[arg-type]
+        prioritized_topics=prioritized_topics,  # type: ignore[arg-type]
+    )
+
+    assert [kw.id for kw in sorted_keywords] == ["kw-3", "kw-2", "kw-1", "kw-4"]
+
+
 def test_topic_needs_serp_validation_by_note_or_coherence() -> None:
     service = Step08SerpValidationService.__new__(Step08SerpValidationService)
     by_note = SimpleNamespace(

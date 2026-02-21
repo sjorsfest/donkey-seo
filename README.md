@@ -14,6 +14,7 @@ Keyword research backend service with a 14-step pipeline for programmatic conten
 - **Content brief generation** enriched with SERP validation signals
 - **Publication date manager** with configurable cadence for content calendar planning
 - **JWT authentication** for secure API access
+- **Integration API key auth** for machine-to-machine external clients
 - **Configurable LLM providers** (OpenAI & Anthropic)
 - **Dynamic per-agent model selector** with max-price guardrails
 - **Redis-backed pipeline queue** with separate worker process execution
@@ -82,6 +83,43 @@ python -m app.workers.pipeline_worker
 ```
 
 The API process only enqueues jobs; this worker process executes setup/discovery/content pipeline runs.
+Each worker pop executes one pipeline step slice, then requeues unfinished runs for fair sharing.
+
+### 7. Tune Worker Parallelism
+
+Default parallelism per worker process:
+- setup: `2`
+- discovery: `2`
+- content: `3`
+
+Override via environment variables:
+
+```bash
+SETUP_PIPELINE_TASK_WORKERS=2
+DISCOVERY_PIPELINE_TASK_WORKERS=2
+CONTENT_PIPELINE_TASK_WORKERS=3
+```
+
+You can monitor live queue depth and configured workers at `GET /health/queue`.
+
+## Database Connection Resilience
+
+Long-running step execution can leave an orchestrator-held DB session idle long enough for
+the underlying connection to be dropped. To avoid state-update failures after a completed step,
+pipeline run state writes now use:
+
+- short-lived sessions (`get_session_context`) instead of long-lived session commits
+- transient connection retry handling (`app/core/db_retry.py`)
+- a dedicated run-state repository (`app/repositories/pipeline_run_repository.py`)
+
+Current scope: `PipelineRun` status/state patching in the orchestrator is routed through this
+repository path, so updates such as `paused_at_step`, `status`, and `steps_config` are retried
+with a fresh session when connections are dropped.
+
+When adding new long-running orchestration logic, follow the same pattern:
+- keep read/query sessions local and short-lived where possible
+- persist run/task state via repository methods with retry
+- avoid relying on a single session that stays open across LLM/API-heavy steps
 
 ## Pipeline Steps
 
@@ -234,11 +272,25 @@ Start content-only module:
 - `POST /api/v1/content/{project_id}/briefs/{brief_id}/article/regenerate` - Regenerate article version
 - `GET /api/v1/content/{project_id}/articles/{article_id}/versions/{version_number}` - Get article version
 
+### Integration API (Public docs + API-key protected data routes)
+- `GET /api/integration/docs` - Integration Swagger docs (unprotected)
+- `GET /api/integration/openapi.json` - Integration OpenAPI schema (unprotected)
+- `GET /api/integration/guide/donkey-client` - Client implementation guide (unprotected)
+- `GET /api/integration/guide/donkey-client.md` - Same guide as markdown (unprotected)
+- `GET /api/integration/article/{article_id}?project_id={project_id}` - Latest article version
+- `GET /api/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
+  - Specific immutable article version
+
 ## Configuration
 
 Key environment variables:
 
 ```env
+# API
+API_V1_PREFIX=/api/v1
+INTEGRATION_API_PREFIX=/api/integration
+INTEGRATION_API_KEYS=comma,separated,long,random,keys
+
 # Database
 DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/donkeyseo
 
@@ -250,6 +302,9 @@ DEFAULT_LLM_MODEL=openai:gpt-4-turbo
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 OPENROUTER_API_KEY=sk-or-...
+EMBEDDINGS_MODEL=qwen/qwen3-embedding-8b
+EMBEDDINGS_PROVIDER=nebius
+EMBEDDINGS_ALLOW_FALLBACKS=false
 
 # Dynamic model selector (optional)
 MODEL_SELECTOR_ENABLED=false

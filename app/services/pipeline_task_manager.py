@@ -11,7 +11,7 @@ from typing import Literal
 from app.config import settings
 from app.core.database import get_session_context
 from app.core.exceptions import PipelineAlreadyRunningError
-from app.core.redis import get_redis_client
+from app.core.redis import RedisQueueClient, get_redis_queue_client
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class PipelineTaskManager:
         self.pipeline_module = pipeline_module
         self._worker_count = max(1, worker_count)
         self._queue_size_limit = max(1, queue_size)
-        self._redis = get_redis_client()
+        self._redis: RedisQueueClient = get_redis_queue_client()
 
     @property
     def worker_count(self) -> int:
@@ -59,7 +59,7 @@ class PipelineTaskManager:
 
     async def get_queue_size(self) -> int:
         """Get current queue length from Redis."""
-        return int(await self._redis.llen(self._queue_key()))
+        return await self._redis.llen(self._queue_key())
 
     async def start(self) -> None:
         """Compatibility no-op for producer-only API process."""
@@ -109,11 +109,11 @@ class PipelineTaskManager:
         enforce_capacity: bool,
     ) -> None:
         if enforce_capacity:
-            pending = int(await self._redis.llen(self._queue_key()))
+            pending = await self._redis.llen(self._queue_key())
             if pending >= self._queue_size_limit:
                 raise PipelineQueueFullError("Pipeline task queue is full")
         payload = self._serialize_job(job)
-        queue_size = int(await self._redis.rpush(self._queue_key(), payload))
+        queue_size = await self._redis.rpush(self._queue_key(), payload)
         logger.info(
             "Pipeline task queued",
             extra={
@@ -181,6 +181,7 @@ class PipelineTaskWorker:
         self.requeue_delay_seconds = max(0.1, float(requeue_delay_seconds))
         self._workers: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
+        self._run_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
         """Start worker tasks if not already running."""
@@ -226,26 +227,34 @@ class PipelineTaskWorker:
         )
         try:
             while not self._stopping.is_set():
-                job = await self.manager.pop_next(timeout_seconds=self.poll_timeout_seconds)
-                if job is None:
-                    continue
                 try:
-                    await self._execute(job)
-                except PipelineAlreadyRunningError:
-                    logger.info(
-                        "Pipeline module busy, requeueing job",
+                    job = await self.manager.pop_next(timeout_seconds=self.poll_timeout_seconds)
+                except Exception:
+                    logger.exception(
+                        "Pipeline worker dequeue failed; retrying",
                         extra={
                             "pipeline_module": self.manager.pipeline_module,
-                            "project_id": job.project_id,
-                            "run_id": job.run_id,
                             "worker_index": worker_index,
                         },
                     )
                     await asyncio.sleep(self.requeue_delay_seconds)
-                    await self.manager.requeue(job)
-                except Exception:
-                    logger.exception(
-                        "Pipeline worker job failed",
+                    continue
+                if job is None:
+                    continue
+                logger.info(
+                    "Pipeline task dequeued",
+                    extra={
+                        "pipeline_module": self.manager.pipeline_module,
+                        "worker_index": worker_index,
+                        "kind": job.kind,
+                        "project_id": job.project_id,
+                        "run_id": job.run_id,
+                    },
+                )
+                run_lock = self._run_locks.setdefault(job.run_id, asyncio.Lock())
+                if run_lock.locked():
+                    logger.info(
+                        "Run already in progress; requeueing duplicate job",
                         extra={
                             "pipeline_module": self.manager.pipeline_module,
                             "worker_index": worker_index,
@@ -254,6 +263,81 @@ class PipelineTaskWorker:
                             "run_id": job.run_id,
                         },
                     )
+                    await asyncio.sleep(self.requeue_delay_seconds)
+                    try:
+                        await self.manager.requeue(job)
+                    except Exception:
+                        logger.exception(
+                            "Failed to requeue duplicate job",
+                            extra={
+                                "pipeline_module": self.manager.pipeline_module,
+                                "worker_index": worker_index,
+                                "kind": job.kind,
+                                "project_id": job.project_id,
+                                "run_id": job.run_id,
+                            },
+                        )
+                    continue
+                await run_lock.acquire()
+                should_requeue = False
+                requeue_delay = 0.0
+                try:
+                    try:
+                        should_requeue = await self._execute(job)
+                        if should_requeue:
+                            logger.info(
+                                "Pipeline job slice complete; scheduling continuation",
+                                extra={
+                                    "pipeline_module": self.manager.pipeline_module,
+                                    "worker_index": worker_index,
+                                    "kind": job.kind,
+                                    "project_id": job.project_id,
+                                    "run_id": job.run_id,
+                                },
+                            )
+                    except PipelineAlreadyRunningError:
+                        logger.info(
+                            "Pipeline module busy, requeueing job",
+                            extra={
+                                "pipeline_module": self.manager.pipeline_module,
+                                "project_id": job.project_id,
+                                "run_id": job.run_id,
+                                "worker_index": worker_index,
+                            },
+                        )
+                        should_requeue = True
+                        requeue_delay = self.requeue_delay_seconds
+                    except Exception:
+                        logger.exception(
+                            "Pipeline worker job failed",
+                            extra={
+                                "pipeline_module": self.manager.pipeline_module,
+                                "worker_index": worker_index,
+                                "kind": job.kind,
+                                "project_id": job.project_id,
+                                "run_id": job.run_id,
+                            },
+                        )
+                finally:
+                    run_lock.release()
+                    if not run_lock.locked():
+                        self._run_locks.pop(job.run_id, None)
+                if should_requeue:
+                    if requeue_delay > 0:
+                        await asyncio.sleep(requeue_delay)
+                    try:
+                        await self.manager.requeue(job)
+                    except Exception:
+                        logger.exception(
+                            "Failed to requeue pipeline job",
+                            extra={
+                                "pipeline_module": self.manager.pipeline_module,
+                                "worker_index": worker_index,
+                                "kind": job.kind,
+                                "project_id": job.project_id,
+                                "run_id": job.run_id,
+                            },
+                        )
         except asyncio.CancelledError:
             pass
         finally:
@@ -265,21 +349,16 @@ class PipelineTaskWorker:
                 },
             )
 
-    async def _execute(self, job: PipelineTaskJob) -> None:
+    async def _execute(self, job: PipelineTaskJob) -> bool:
         async with get_session_context() as session:
             # Local import avoids a circular dependency at module import time.
             from app.services.pipeline_orchestrator import PipelineOrchestrator
 
             orchestrator = PipelineOrchestrator(session, job.project_id)
-            if job.kind == "start":
-                await orchestrator.start_pipeline(
-                    run_id=job.run_id,
-                    pipeline_module=self.manager.pipeline_module,
-                )
-                return
-            await orchestrator.resume_pipeline(
-                job.run_id,
+            return await orchestrator.run_queued_job_slice(
+                run_id=job.run_id,
                 pipeline_module=self.manager.pipeline_module,
+                job_kind=job.kind,
             )
 
 

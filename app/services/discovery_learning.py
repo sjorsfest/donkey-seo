@@ -379,6 +379,14 @@ class DiscoveryLearningService:
             rejected_total = max(1, len(rejected))
             rate = count / rejected_total
             capability = self._capability_for_rejection_reason(reason)
+            applies_to_agents = [
+                agent
+                for agent in [
+                    DEFAULT_AGENT_BY_CAPABILITY.get(capability),
+                    DEFAULT_AGENT_BY_CAPABILITY.get(CAPABILITY_PRIORITIZATION),
+                ]
+                if agent is not None
+            ]
             candidates.append(
                 LearningCandidate(
                     learning_key=f"bottleneck:{reason}",
@@ -395,10 +403,7 @@ class DiscoveryLearningService:
                     confidence=self._confidence_from_count(rejected_total),
                     current_metric=rate,
                     applies_to_capabilities=[capability, CAPABILITY_PRIORITIZATION],
-                    applies_to_agents=[
-                        DEFAULT_AGENT_BY_CAPABILITY.get(capability),
-                        DEFAULT_AGENT_BY_CAPABILITY.get(CAPABILITY_PRIORITIZATION),
-                    ],
+                    applies_to_agents=applies_to_agents,
                     evidence={
                         "reason": reason,
                         "count": count,

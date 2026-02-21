@@ -290,6 +290,9 @@ class ContentArticleRow:
     rendered_html: str
     qa_report: dict | None
     status: str
+    publish_status: str | None
+    published_at: datetime | None
+    published_url: str | None
     current_version: int
     generation_model: str | None
     generation_temperature: float | None
@@ -310,6 +313,9 @@ class ContentArticleRow:
             rendered_html=model.rendered_html,
             qa_report=model.qa_report,
             status=model.status,
+            publish_status=model.publish_status,
+            published_at=model.published_at,
+            published_url=model.published_url,
             current_version=model.current_version,
             generation_model=model.generation_model,
             generation_temperature=model.generation_temperature,
@@ -332,6 +338,9 @@ class ContentArticleCreateDTO:
     rendered_html: str
     qa_report: dict | None = None
     status: str | None = None
+    publish_status: str | None = None
+    published_at: datetime | None = None
+    published_url: str | None = None
     current_version: int | None = None
     generation_model: str | None = None
     generation_temperature: float | None = None
@@ -363,6 +372,9 @@ class ContentArticlePatchDTO:
     rendered_html: str | None = None
     qa_report: dict | None = None
     status: str | None = None
+    publish_status: str | None = None
+    published_at: datetime | None = None
+    published_url: str | None = None
     current_version: int | None = None
     generation_model: str | None = None
     generation_temperature: float | None = None
