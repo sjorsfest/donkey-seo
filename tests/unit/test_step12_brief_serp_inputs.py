@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date
 from types import SimpleNamespace
 
@@ -183,6 +184,37 @@ def test_select_proposed_publication_date_falls_back_when_out_of_range() -> None
     )
 
     assert selected == date(2026, 2, 24)
+
+
+def test_resolve_unique_publication_date_shifts_when_reserved() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    reserved_dates = Counter({
+        date(2026, 2, 24): 1,
+        date(2026, 2, 25): 1,
+    })
+
+    selected = service._resolve_unique_publication_date(
+        desired_date=date(2026, 2, 24),
+        existing_date=None,
+        reserved_date_counts=reserved_dates,
+    )
+
+    assert selected == date(2026, 2, 26)
+
+
+def test_resolve_unique_publication_date_shifts_existing_duplicate() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    duplicate_date = date(2026, 3, 2)
+    reserved_dates = Counter({duplicate_date: 2})
+
+    service._decrement_reserved_date_count(reserved_dates, duplicate_date)
+    selected = service._resolve_unique_publication_date(
+        desired_date=None,
+        existing_date=duplicate_date,
+        reserved_date_counts=reserved_dates,
+    )
+
+    assert selected == date(2026, 3, 3)
 
 
 def test_select_topics_for_briefs_reserves_zero_data_slots() -> None:

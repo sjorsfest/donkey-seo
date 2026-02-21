@@ -6,6 +6,7 @@ Includes URL slug generation and cannibalization guardrails.
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -978,23 +979,27 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         topic: Topic,
         keywords: list[Keyword],
     ) -> list[dict[str, str]]:
-        """Build internal link recommendations."""
+        """Build internal link recommendations.
+
+        Note: This now only creates basic pillar links. Step 2 (interlinking_enrichment)
+        will add semantic cross-links and sitemap-based links.
+        """
         links = []
 
         # Link to pillar page
         if topic.pillar_seed_topic_id:
             links.append({
-                "target": "pillar",
-                "anchor_suggestion": topic.name,
-                "context": "In introduction, link to pillar content",
+                "target_type": "pillar_page",
+                "target_url": None,
+                "target_brief_id": None,
+                "anchor_text": topic.name,
+                "placement_section": "In introduction",
+                "relevance_score": 1.0,
+                "intent_alignment": "pillar_link",
+                "funnel_relationship": "pillar_link",
             })
 
-        # Link to related topics (based on same funnel stage)
-        links.append({
-            "target": "related_topic",
-            "anchor_suggestion": "related content",
-            "context": "In conclusion or sidebar, link to related topics",
-        })
+        # Generic "related content" placeholder removed - Step 2 will add semantic links
 
         return links
 
@@ -1102,11 +1107,14 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
     async def _persist_results(self, result: BriefOutput) -> None:
         """Save content briefs to database."""
+        await self._lock_project_publication_schedule()
+
         topic_ids = [
             brief_data["topic_id"]
             for brief_data in result.briefs
             if brief_data.get("topic_id")
         ]
+
         existing_by_topic_id: dict[str, ContentBrief] = {}
         if topic_ids:
             existing_result = await self.session.execute(
@@ -1118,7 +1126,20 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             existing_by_topic_id = {
                 str(brief.topic_id): brief
                 for brief in existing_result.scalars().all()
+                if brief.topic_id is not None
             }
+
+        reserved_dates_result = await self.session.execute(
+            select(ContentBrief.proposed_publication_date).where(
+                ContentBrief.project_id == self.project_id,
+                ContentBrief.proposed_publication_date.isnot(None),
+            )
+        )
+        reserved_publication_dates = Counter(
+            publication_date
+            for publication_date in reserved_dates_result.scalars().all()
+            if publication_date is not None
+        )
 
         for brief_data in result.briefs:
             topic_id = self._optional_str(brief_data.get("topic_id"))
@@ -1126,6 +1147,16 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 continue
 
             existing = existing_by_topic_id.get(topic_id)
+            existing_publication_date = (
+                existing.proposed_publication_date
+                if existing is not None
+                else None
+            )
+            if existing_publication_date is not None:
+                self._decrement_reserved_date_count(
+                    reserved_publication_dates,
+                    existing_publication_date,
+                )
             target_word_count_raw = brief_data.get("target_word_count")
             target_word_count = (
                 target_word_count_raw
@@ -1157,6 +1188,14 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             proposed_publication_date = self._optional_date(
                 brief_data.get("proposed_publication_date")
             )
+            assigned_publication_date = self._resolve_unique_publication_date(
+                desired_date=proposed_publication_date,
+                existing_date=existing_publication_date,
+                reserved_date_counts=reserved_publication_dates,
+            )
+            brief_data["proposed_publication_date"] = assigned_publication_date
+            if assigned_publication_date is not None:
+                reserved_publication_dates[assigned_publication_date] += 1
             payload = {
                 "primary_keyword": primary_keyword,
                 "search_intent": search_intent,
@@ -1178,7 +1217,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 "target_word_count_min": target_word_count_min,
                 "target_word_count_max": target_word_count_max,
                 "must_include_sections": must_include_sections,
-                "proposed_publication_date": proposed_publication_date,
+                "proposed_publication_date": assigned_publication_date,
                 "status": "draft",
             }
             if existing:
@@ -1211,7 +1250,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 target_word_count_min=target_word_count_min,
                 target_word_count_max=target_word_count_max,
                 must_include_sections=must_include_sections,
-                proposed_publication_date=proposed_publication_date,
+                proposed_publication_date=assigned_publication_date,
                 status="draft",
             )
 
@@ -1243,3 +1282,51 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         })
 
         await self.session.commit()
+
+    async def _lock_project_publication_schedule(self) -> None:
+        """Serialize publication-date allocation per project."""
+        lock_result = await self.session.execute(
+            select(Project.id).where(Project.id == self.project_id).with_for_update()
+        )
+        if lock_result.scalar_one_or_none() is None:
+            raise ValueError(f"Project not found: {self.project_id}")
+
+    def _decrement_reserved_date_count(
+        self,
+        reserved_date_counts: Counter[date],
+        assigned_date: date,
+    ) -> None:
+        current_count = reserved_date_counts.get(assigned_date, 0)
+        if current_count <= 1:
+            reserved_date_counts.pop(assigned_date, None)
+            return
+        reserved_date_counts[assigned_date] = current_count - 1
+
+    def _resolve_unique_publication_date(
+        self,
+        *,
+        desired_date: date | None,
+        existing_date: date | None,
+        reserved_date_counts: Counter[date],
+    ) -> date | None:
+        candidate = desired_date or existing_date
+        if candidate is None:
+            return None
+        return self._next_available_publication_date(
+            candidate,
+            reserved_date_counts=reserved_date_counts,
+        )
+
+    def _next_available_publication_date(
+        self,
+        candidate: date,
+        *,
+        reserved_date_counts: Counter[date],
+    ) -> date:
+        max_shift_days = 365 * 3
+        current = candidate
+        for _ in range(max_shift_days):
+            if reserved_date_counts.get(current, 0) == 0:
+                return current
+            current += timedelta(days=1)
+        return current
