@@ -35,7 +35,7 @@ ExecuteStepFn = Callable[[PipelineRun, int], Awaitable[StepExecution]]
 MarkStepFn = Callable[[str, int, str], Awaitable[dict[str, Any]]]
 DispatchTopicsFn = Callable[[list[str], ContentPipelineConfig], Awaitable[None]]
 
-DISCOVERY_STEPS = (2, 3, 4, 5, 6, 7, 8)
+DISCOVERY_STEPS = (1, 2, 3, 4, 5, 6, 7)
 SCOPE_SEQUENCE = ("strict", "balanced_adjacent", "broad_education")
 FIT_PROFILE_SEQUENCE = ("aggressive", "moderate", "lenient")
 LOW_ICP_THRESHOLD = 0.10
@@ -81,7 +81,7 @@ class AcceptedTopicState:
 
 
 class DiscoveryLoopSupervisor:
-    """Runs Step 2-8 in adaptive loops until enough accepted topics exist."""
+    """Runs step 1-7 in adaptive loops until enough accepted topics exist."""
 
     def __init__(
         self,
@@ -125,7 +125,7 @@ class DiscoveryLoopSupervisor:
                 f"in <= {discovery.max_iterations} iterations"
             ),
             project_id=self.project_id,
-            current_step=2,
+            current_step=1,
             current_step_name="seed_topics",
             error_message=None,
         )
@@ -151,7 +151,7 @@ class DiscoveryLoopSupervisor:
                 task_id=task_id,
                 status="running",
                 stage=f"Discovery loop iteration {iteration}/{discovery.max_iterations}",
-                current_step=2,
+                current_step=1,
                 current_step_name="seed_topics",
                 error_message=None,
             )
@@ -208,7 +208,7 @@ class DiscoveryLoopSupervisor:
                         f"Discovery complete in iteration {iteration}: "
                         f"{accepted_count}/{target_count} accepted"
                     ),
-                    current_step=8,
+                    current_step=7,
                     current_step_name="serp_validation",
                     error_message=None,
                 )

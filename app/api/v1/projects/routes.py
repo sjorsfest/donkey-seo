@@ -72,7 +72,7 @@ async def create_project(
     status_code=status.HTTP_201_CREATED,
     summary="Bootstrap onboarding project",
     description=(
-        "Create a project and immediately queue setup pipeline steps 0-1 "
+        "Create a project and immediately queue setup pipeline steps 1-5 "
         "for domain + brand extraction."
     ),
 )
@@ -91,8 +91,8 @@ async def bootstrap_onboarding_project(
     strategy_payload = request.strategy.model_dump() if request.strategy else None
     steps_config = {
         "pipeline_module": "setup",
-        "start": 0,
-        "end": 1,
+        "start": 1,
+        "end": 5,
         "skip": [],
         "strategy": strategy_payload,
         "primary_goal": project.primary_goal,
@@ -109,8 +109,8 @@ async def bootstrap_onboarding_project(
             project_id=str(project.id),
             pipeline_module="setup",
             status="pending",
-            start_step=0,
-            end_step=1,
+            start_step=1,
+            end_step=5,
             skip_steps=[],
             steps_config=steps_config,
         ),
@@ -125,10 +125,10 @@ async def bootstrap_onboarding_project(
         project_id=str(project.id),
         pipeline_module="setup",
         source_topic_id=setup_run.source_topic_id,
-        current_step=0,
-        current_step_name="setup",
+        current_step=1,
+        current_step_name="setup_project",
         completed_steps=0,
-        total_steps=2,
+        total_steps=5,
         progress_percent=0.0,
         error_message=None,
     )

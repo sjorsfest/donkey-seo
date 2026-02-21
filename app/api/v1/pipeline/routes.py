@@ -66,12 +66,12 @@ async def start_pipeline(
     pipeline_module = request.mode
 
     if pipeline_module == "setup":
-        start_step = request.start_step or 0
-        end_step = request.end_step or 1
+        start_step = request.start_step or 1
+        end_step = request.end_step or 5
         skip_steps = request.skip_steps or []
     elif pipeline_module == "discovery":
-        start_step = request.start_step or 2
-        end_step = request.end_step or 8
+        start_step = request.start_step or 1
+        end_step = request.end_step or 7
         skip_steps = request.skip_steps or []
     else:
         start_step = request.start_step or 1
@@ -464,12 +464,7 @@ async def resume_pipeline(
 
 
 def _display_step_number(pipeline_module: str, step_number: int | None) -> int | None:
-    if step_number is None:
-        return None
-    if pipeline_module == "discovery":
-        return max(1, step_number - 1)
-    if pipeline_module == "setup":
-        return step_number + 1
+    _ = pipeline_module
     return step_number
 
 

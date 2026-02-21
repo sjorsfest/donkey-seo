@@ -65,7 +65,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
     - Ensures consistency across all briefs
     """
 
-    step_number = 13
+    step_number = 2
     step_name = "writer_templates"
     is_optional = False
 
@@ -86,7 +86,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             ).limit(1)
         )
         if not briefs_result.scalars().first():
-            raise ValueError("No content briefs found. Run Step 12 first.")
+            raise ValueError("No content briefs found. Run Step 1 first.")
 
     async def _execute(self, input_data: TemplatesInput) -> TemplatesOutput:
         """Execute writer template generation."""
@@ -446,7 +446,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 13)
+        project.current_step = max(project.current_step, self.step_number)
 
         # Set result summary
         self.set_result_summary({

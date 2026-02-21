@@ -61,7 +61,7 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
     - api_calls_per_step: Max API calls per step run (default 50)
     """
 
-    step_number = 3
+    step_number = 2
     step_name = "keyword_expansion"
     capability_key = CAPABILITY_KEYWORD_EXPANSION
     is_optional = False
@@ -120,15 +120,12 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
 
-        if project.current_step < 2:
-            raise ValueError("Step 2 (Seed Topics) must be completed first")
-
         # Check seed topics exist
         seeds_result = await self.session.execute(
             select(SeedTopic).where(SeedTopic.project_id == input_data.project_id)
         )
         if not seeds_result.scalars().first():
-            raise ValueError("No seed topics found. Run Step 2 first.")
+            raise ValueError("No seed topics found. Run Step 1 first.")
 
     async def _execute(self, input_data: ExpansionInput) -> ExpansionOutput:
         """Execute keyword expansion with budget control."""
@@ -710,7 +707,7 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 3)
+        project.current_step = max(project.current_step, self.step_number)
 
         # Set result summary
         self.set_result_summary({

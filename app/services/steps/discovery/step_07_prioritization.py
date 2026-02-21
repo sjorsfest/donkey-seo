@@ -68,7 +68,7 @@ EXTREME_DIFFICULTY_THRESHOLD = 90.0
 class Step07PrioritizationService(BaseStepService[PrioritizationInput, PrioritizationOutput]):
     """Step 7: Topic Prioritization with fit gating."""
 
-    step_number = 7
+    step_number = 6
     step_name = "prioritization"
     capability_key = CAPABILITY_PRIORITIZATION
     is_optional = False
@@ -87,14 +87,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
 
-        if project.current_step < 6:
-            raise ValueError("Step 6 (Clustering) must be completed first")
-
         topics_result = await self.session.execute(
             select(Topic).where(Topic.project_id == input_data.project_id).limit(1)
         )
         if not topics_result.scalars().first():
-            raise ValueError("No topics found. Run Step 6 first.")
+            raise ValueError("No topics found. Run Step 5 first.")
 
     async def _execute(self, input_data: PrioritizationInput) -> PrioritizationOutput:
         """Execute topic prioritization with hybrid scoring and fit gating."""
@@ -1117,7 +1114,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 7)
+        project.current_step = max(project.current_step, self.step_number)
 
         summary: dict[str, Any] = {
             "topics_ranked": result.topics_ranked,

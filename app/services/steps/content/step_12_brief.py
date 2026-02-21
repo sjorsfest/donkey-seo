@@ -80,7 +80,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
     - Overlap status indicates if Step 10 ran
     """
 
-    step_number = 12
+    step_number = 1
     step_name = "content_brief"
     is_optional = False
 
@@ -102,7 +102,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             ).limit(1)
         )
         if not topics_result.scalars().first():
-            raise ValueError("No prioritized topics found. Run Step 7 first.")
+            raise ValueError("No prioritized topics found. Run discovery step 6 first.")
 
     async def _execute(self, input_data: BriefInput) -> BriefOutput:
         """Execute content brief generation."""
@@ -1264,7 +1264,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 12)
+        project.current_step = max(project.current_step, self.step_number)
 
         # Set result summary
         self.set_result_summary({

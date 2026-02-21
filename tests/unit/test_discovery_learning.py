@@ -253,7 +253,7 @@ async def test_build_learning_context_reads_capabilities_and_legacy_steps() -> N
             confidence=0.8,
             applies_to_capabilities=[],
             applies_to_agents=[],
-            evidence={"applies_to_steps": [7]},
+            evidence={"applies_to_steps": [6]},
         ),
     ]
 

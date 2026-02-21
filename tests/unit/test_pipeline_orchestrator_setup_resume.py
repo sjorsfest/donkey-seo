@@ -31,8 +31,8 @@ async def test_resume_setup_pipeline_keeps_step_zero_when_no_completed_steps() -
     run = SimpleNamespace(
         id="run-1",
         pipeline_module="setup",
-        start_step=0,
-        end_step=1,
+        start_step=1,
+        end_step=5,
         skip_steps=[],
         steps_config={},
     )
@@ -43,6 +43,6 @@ async def test_resume_setup_pipeline_keeps_step_zero_when_no_completed_steps() -
     await orchestrator.resume_pipeline("run-1", pipeline_module="setup")
 
     kwargs = orchestrator.start_pipeline.await_args.kwargs
-    assert kwargs["start_step"] == 0
-    assert kwargs["end_step"] == 1
+    assert kwargs["start_step"] == 1
+    assert kwargs["end_step"] == 5
     assert kwargs["pipeline_module"] == "setup"

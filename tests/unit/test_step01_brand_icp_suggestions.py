@@ -1,6 +1,10 @@
 """Unit tests for Step 1 ICP suggestion merge behavior."""
 
-from app.services.steps.discovery.step_01_brand import Step01BrandService
+from app.services.steps.setup.brand_shared import (
+    fallback_visual_confidence,
+    merge_target_audience,
+    normalize_prompt_contract,
+)
 
 
 def _empty_target_audience() -> dict[str, list[str]]:
@@ -15,7 +19,7 @@ def _empty_target_audience() -> dict[str, list[str]]:
 
 
 def test_merge_target_audience_deduplicates_and_merges_niches() -> None:
-    merged = Step01BrandService._merge_target_audience(
+    merged = merge_target_audience(
         extracted_target_audience={
             "target_roles": ["Support Manager", "Operations Lead"],
             "target_industries": ["SaaS"],
@@ -57,7 +61,7 @@ def test_merge_target_audience_caps_roles_to_20_items() -> None:
         }
     ]
 
-    merged = Step01BrandService._merge_target_audience(
+    merged = merge_target_audience(
         extracted_target_audience=extracted,
         suggested_icp_niches=suggested,
     )
@@ -68,7 +72,7 @@ def test_merge_target_audience_caps_roles_to_20_items() -> None:
 
 
 def test_normalize_prompt_contract_enforces_required_placeholders() -> None:
-    contract = Step01BrandService._normalize_prompt_contract(
+    contract = normalize_prompt_contract(
         {
             "template": "Brand visual for {article_topic}",
             "required_variables": ["article_topic"],
@@ -96,11 +100,11 @@ def test_normalize_prompt_contract_enforces_required_placeholders() -> None:
 
 
 def test_fallback_visual_confidence_boosts_when_assets_exist() -> None:
-    low_without_assets = Step01BrandService._fallback_visual_confidence(
+    low_without_assets = fallback_visual_confidence(
         extraction_confidence=0.1,
         has_assets=False,
     )
-    low_with_assets = Step01BrandService._fallback_visual_confidence(
+    low_with_assets = fallback_visual_confidence(
         extraction_confidence=0.1,
         has_assets=True,
     )

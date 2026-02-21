@@ -50,7 +50,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
     - Configurable via METRICS_CACHE_TTL_DAYS env var
     """
 
-    step_number = 4
+    step_number = 3
     step_name = "keyword_metrics"
     capability_key = CAPABILITY_KEYWORD_EXPANSION
     is_optional = False
@@ -69,9 +69,6 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
 
-        if project.current_step < 3:
-            raise ValueError("Step 3 (Keyword Expansion) must be completed first")
-
         # Check keywords exist
         keywords_result = await self.session.execute(
             select(Keyword).where(
@@ -80,7 +77,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
             ).limit(1)
         )
         if not keywords_result.scalars().first():
-            raise ValueError("No active keywords found. Run Step 3 first.")
+            raise ValueError("No active keywords found. Run Step 2 first.")
 
     async def _execute(self, input_data: MetricsInput) -> MetricsOutput:
         """Execute keyword metrics enrichment."""
@@ -284,7 +281,7 @@ class Step04MetricsService(BaseStepService[MetricsInput, MetricsOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 4)
+        project.current_step = max(project.current_step, self.step_number)
 
         # Set result summary
         self.set_result_summary({

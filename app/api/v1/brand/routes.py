@@ -27,7 +27,7 @@ from app.schemas.brand import (
     BrandVisualContextResponse,
     BrandVisualStylePatchRequest,
 )
-from app.services.steps.discovery.step_01_brand import Step01BrandService
+from app.services.steps.setup.brand_shared import normalize_prompt_contract
 
 router = APIRouter()
 
@@ -176,9 +176,7 @@ async def patch_brand_visual_style(
             brand.visual_prompt_contract or {},
             payload.visual_prompt_contract,
         )
-        update_data["visual_prompt_contract"] = Step01BrandService._normalize_prompt_contract(
-            dict(merged_contract)
-        )
+        update_data["visual_prompt_contract"] = normalize_prompt_contract(dict(merged_contract))
 
     brand.patch(session, BrandProfilePatchDTO.from_partial(update_data))
     await session.flush()

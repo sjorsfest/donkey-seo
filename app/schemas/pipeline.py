@@ -196,16 +196,16 @@ class PipelineStartRequest(BaseModel):
             "examples": [
                 {
                     "mode": "discovery",
-                    "start_step": 2,
-                    "end_step": 8,
+                    "start_step": 1,
+                    "end_step": 7,
                     "strategy": {
                         "fit_threshold_profile": "aggressive",
                     },
                 },
                 {
                     "mode": "setup",
-                    "start_step": 0,
-                    "end_step": 1,
+                    "start_step": 1,
+                    "end_step": 5,
                 },
                 {
                     "mode": "discovery",

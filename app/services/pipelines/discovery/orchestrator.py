@@ -17,45 +17,45 @@ from app.services.steps.discovery.step_08_serp import (
 )
 
 DISCOVERY_LOCAL_STEP_NAMES: dict[int, str] = {
-    2: "seed_topics",
-    3: "keyword_expansion",
-    4: "keyword_metrics",
-    5: "intent_labeling",
-    6: "clustering",
-    7: "prioritization",
-    8: "serp_validation",
+    1: "seed_topics",
+    2: "keyword_expansion",
+    3: "keyword_metrics",
+    4: "intent_labeling",
+    5: "clustering",
+    6: "prioritization",
+    7: "serp_validation",
 }
 
 DISCOVERY_LOCAL_STEP_DEPENDENCIES: dict[int, list[int]] = {
-    2: [],
+    1: [],
+    2: [1],
     3: [2],
     4: [3],
     5: [4],
     6: [5],
     7: [6],
-    8: [7],
 }
 
 DISCOVERY_LOCAL_TO_SERVICE = {
-    2: Step02SeedsService,
-    3: Step03ExpansionService,
-    4: Step04MetricsService,
-    5: Step05IntentService,
-    6: Step06ClusteringService,
-    7: Step07PrioritizationService,
-    8: Step08SerpValidationService,
+    1: Step02SeedsService,
+    2: Step03ExpansionService,
+    3: Step04MetricsService,
+    4: Step05IntentService,
+    5: Step06ClusteringService,
+    6: Step07PrioritizationService,
+    7: Step08SerpValidationService,
 }
 
 DISCOVERY_LOCAL_TO_INPUT = {
-    2: SeedsInput,
-    3: ExpansionInput,
-    4: MetricsInput,
-    5: IntentInput,
-    6: ClusteringInput,
-    7: PrioritizationInput,
-    8: SerpValidationInput,
+    1: SeedsInput,
+    2: ExpansionInput,
+    3: MetricsInput,
+    4: IntentInput,
+    5: ClusteringInput,
+    6: PrioritizationInput,
+    7: SerpValidationInput,
 }
 
-DISCOVERY_DEFAULT_START_STEP = 2
-DISCOVERY_DEFAULT_END_STEP = 8
-DISCOVERY_ITERATION_STEPS = (2, 3, 4, 5, 6, 7, 8)
+DISCOVERY_DEFAULT_START_STEP = 1
+DISCOVERY_DEFAULT_END_STEP = 7
+DISCOVERY_ITERATION_STEPS = (1, 2, 3, 4, 5, 6, 7)

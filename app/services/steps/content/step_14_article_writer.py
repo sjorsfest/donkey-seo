@@ -52,7 +52,7 @@ class ArticleWriterOutput:
 class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWriterOutput]):
     """Step 14: Generate publish-ready modular content artifacts."""
 
-    step_number = 14
+    step_number = 3
     step_name = "article_generation"
     is_optional = False
 
@@ -73,7 +73,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
 
         brief_result = await self.session.execute(brief_stmt.limit(1))
         if not brief_result.scalars().first():
-            raise ValueError("No content briefs found. Run Step 12 first.")
+            raise ValueError("No content briefs found. Run Step 1 first.")
 
         instructions_result = await self.session.execute(
             select(WriterInstructions)
@@ -82,7 +82,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
             .limit(1)
         )
         if not instructions_result.scalars().first():
-            raise ValueError("No writer instructions found. Run Step 13 first.")
+            raise ValueError("No writer instructions found. Run Step 2 first.")
 
     async def _execute(self, input_data: ArticleWriterInput) -> ArticleWriterOutput:
         project = await self._load_project(input_data.project_id)
@@ -255,7 +255,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
 
     async def _persist_results(self, result: ArticleWriterOutput) -> None:
         project = await self._load_project(self.project_id)
-        project.current_step = max(project.current_step, 14)
+        project.current_step = max(project.current_step, self.step_number)
 
         self.set_result_summary(
             {

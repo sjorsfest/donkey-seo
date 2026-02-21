@@ -135,12 +135,7 @@ class TaskManager:
         pipeline_module: str | None,
         current_step: int | None,
     ) -> int | None:
-        if current_step is None:
-            return None
-        if pipeline_module == "discovery":
-            return max(1, current_step - 1)
-        if pipeline_module == "setup":
-            return current_step + 1
+        _ = pipeline_module
         return current_step
 
     @staticmethod

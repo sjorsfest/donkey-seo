@@ -49,7 +49,7 @@ class Step08SerpValidationService(
 ):
     """Step 8: Validate keyword intent/page type with live SERP signals."""
 
-    step_number = 8
+    step_number = 7
     step_name = "serp_validation"
     capability_key = CAPABILITY_SERP_VALIDATION
     is_optional = True
@@ -104,9 +104,6 @@ class Step08SerpValidationService(
         project = result.scalar_one_or_none()
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
-        if project.current_step < 7:
-            raise ValueError("Step 7 (Prioritization) must be completed first")
-
     async def _execute(self, input_data: SerpValidationInput) -> SerpValidationOutput:
         """Execute SERP validation against selected keywords."""
         await self._update_progress(5, "Loading prioritized topics...")
@@ -885,7 +882,7 @@ class Step08SerpValidationService(
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 8)
+        project.current_step = max(project.current_step, self.step_number)
 
         self.set_result_summary({
             "keywords_candidate": result.keywords_candidate,

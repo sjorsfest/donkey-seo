@@ -10,8 +10,8 @@ OPENAPI_PIPELINE_GUIDE_MARKDOWN = """
 
 This API supports three independent pipeline modules:
 
-1. `setup` (local steps 0-1)
-2. `discovery` (local steps 2-8)
+1. `setup` (local steps 1-5)
+2. `discovery` (local steps 1-7)
 3. `content` (local steps 1-3)
 
 ### Execution Modes
@@ -29,11 +29,11 @@ Dispatch dedupe is tracked in the database per discovery run (`parent_run_id + s
 _PIPELINE_GUIDE_JSON_OBJECT: dict[str, Any] = {
     "modules": {
         "setup": {
-            "local_steps": [0, 1],
+            "local_steps": [1, 5],
             "purpose": "bootstrap project + brand profile",
         },
         "discovery": {
-            "local_steps": [2, 8],
+            "local_steps": [1, 7],
             "dispatch_behavior": "accepted topics enqueue content runs immediately",
             "snapshot_endpoint": "/api/v1/pipeline/{project_id}/runs/{run_id}/discovery-snapshots",
         },
@@ -58,27 +58,27 @@ PIPELINE_TAG_DESCRIPTION = """
 Endpoints for orchestrating and observing setup/discovery/content module runs.
 
 - `setup`: setup bootstrap and brand profile validation.
-- `discovery`: adaptive topic discovery loop (steps 2-8).
+- `discovery`: adaptive topic discovery loop (steps 1-7).
 - `content`: content-only module run.
 """
 
 PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
     "setup": {
         "summary": "Setup module",
-        "description": "Runs setup steps 0-1 before discovery loop execution.",
+        "description": "Runs setup steps 1-5 before discovery loop execution.",
         "value": {
             "mode": "setup",
-            "start_step": 0,
-            "end_step": 1,
+            "start_step": 1,
+            "end_step": 5,
         },
     },
     "discovery": {
         "summary": "Discovery module",
-        "description": "Runs adaptive discovery loop (steps 2-8) and dispatches content tasks when topics are accepted.",
+        "description": "Runs adaptive discovery loop (steps 1-7) and dispatches content tasks when topics are accepted.",
         "value": {
             "mode": "discovery",
-            "start_step": 2,
-            "end_step": 8,
+            "start_step": 1,
+            "end_step": 7,
             "discovery": {
                 "max_iterations": 3,
                 "min_eligible_topics": 8,

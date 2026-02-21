@@ -1,129 +1,106 @@
-"""Step 0: Project Setup & Isolation.
+"""Step 1: Project setup and isolation checks."""
 
-Validates domain accessibility, detects language/locale, estimates site maturity,
-and sets up project configuration.
-"""
+from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.pipeline import StepExecution
 from app.models.project import Project
-from app.services.steps.base_step import BaseStepService, StepResult
+from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SetupInput:
-    """Input for Step 0."""
+class SetupProjectInput:
+    """Input for setup step 1."""
 
     project_id: str
 
 
 @dataclass
-class SetupOutput:
-    """Output from Step 0."""
+class SetupProjectOutput:
+    """Output for setup step 1."""
 
     project_id: str
     domain: str
-    final_url: str  # After redirects
-    redirect_chain: list[str]  # Track redirect hops
+    final_url: str
+    redirect_chain: list[str]
     domain_accessible: bool
-    robots_allowed: bool  # Can we crawl based on robots.txt?
+    robots_allowed: bool
     primary_language: str
     primary_locale: str
     site_maturity: str
     maturity_signals: dict[str, Any]
     sitemap_url: str | None
     sitemap_page_count: int
-    compliance_suggestions: list[str]  # SUGGESTED flags (user can override)
+    compliance_suggestions: list[str]
 
 
-class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
-    """Step 0: Project Setup & Isolation.
+class Step01SetupProjectService(BaseStepService[SetupProjectInput, SetupProjectOutput]):
+    """Step 1: Validate and initialize project setup metadata."""
 
-    Validates and configures a new project:
-    1. Verify domain is accessible
-    2. Detect language from HTML
-    3. Check for sitemap.xml
-    4. Estimate site maturity
-    5. Set up default configurations
-    """
-
-    step_number = 0
-    step_name = "setup"
+    step_number = 1
+    step_name = "setup_project"
     is_optional = False
 
-    async def _validate_preconditions(self, input_data: SetupInput) -> None:
-        """No preconditions for Step 0."""
-        pass
+    async def _validate_preconditions(self, input_data: SetupProjectInput) -> None:
+        """No preconditions for setup step 1."""
+        return None
 
-    async def _execute(self, input_data: SetupInput) -> SetupOutput:
+    async def _execute(self, input_data: SetupProjectInput) -> SetupProjectOutput:
         """Execute project setup validation."""
-        # Load project
         result = await self.session.execute(
             select(Project).where(Project.id == input_data.project_id)
         )
         project = result.scalar_one()
         domain = project.domain
-        logger.info("Setting up project", extra={"project_id": input_data.project_id, "domain": domain})
 
         await self._update_progress(10, "Validating domain accessibility...")
 
-        # Ensure domain has scheme
         if not domain.startswith(("http://", "https://")):
             domain = f"https://{domain}"
 
-        # Validate domain accessibility with redirect tracking
         access_result = await self._check_domain_accessible(domain)
         domain_accessible = access_result["accessible"]
         html_content = access_result["html"]
         final_url = access_result["final_url"]
         redirect_chain = access_result["redirect_chain"]
-        logger.info("Domain check complete", extra={"domain": domain, "accessible": domain_accessible, "final_url": final_url, "redirect_count": len(redirect_chain) - 1})
+        logger.info(
+            "Domain check complete",
+            extra={
+                "domain": domain,
+                "accessible": domain_accessible,
+                "final_url": final_url,
+                "redirect_count": len(redirect_chain) - 1,
+            },
+        )
 
         await self._update_progress(30, "Detecting language and locale...")
-
-        # Detect language
         primary_language, primary_locale = self._detect_language(html_content, domain)
-        logger.info("Language detected", extra={"language": primary_language, "locale": primary_locale})
 
         await self._update_progress(50, "Checking sitemap...")
-
-        # Check sitemap
         sitemap_url, sitemap_page_count = await self._check_sitemap(final_url)
-        logger.info("Sitemap check complete", extra={"sitemap_url": sitemap_url, "page_count": sitemap_page_count})
 
         await self._update_progress(70, "Checking robots.txt...")
-
-        # Check robots.txt and determine if we're allowed to crawl
         robots_allowed = await self._check_robots_allowed(final_url)
-        logger.info("Robots.txt check", extra={"robots_allowed": robots_allowed})
 
         await self._update_progress(85, "Estimating site maturity...")
-
-        # Estimate site maturity
         site_maturity, maturity_signals = self._estimate_maturity(
             sitemap_page_count,
             html_content,
         )
-        logger.info("Site maturity estimated", extra={"maturity": site_maturity, "maturity_score": maturity_signals.get("maturity_score")})
-
-        # Infer compliance SUGGESTIONS (not hard flags - user can override)
         compliance_suggestions = self._infer_compliance_suggestions(html_content)
 
-        await self._update_progress(100, "Setup complete")
+        await self._update_progress(100, "Setup checks complete")
 
-        return SetupOutput(
+        return SetupProjectOutput(
             project_id=input_data.project_id,
             domain=domain,
             final_url=final_url,
@@ -139,14 +116,13 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
             compliance_suggestions=compliance_suggestions,
         )
 
-    async def _persist_results(self, result: SetupOutput) -> None:
-        """Update project with setup results."""
+    async def _persist_results(self, result: SetupProjectOutput) -> None:
+        """Update project with setup step results."""
         db_result = await self.session.execute(
             select(Project).where(Project.id == result.project_id)
         )
         project = db_result.scalar_one()
 
-        # Update project fields
         project.primary_language = result.primary_language
         project.primary_locale = result.primary_locale
         project.site_maturity = result.site_maturity
@@ -157,37 +133,29 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
             "robots_allowed": result.robots_allowed,
             "compliance_suggestions": result.compliance_suggestions,
         }
-        project.current_step = max(project.current_step, 0)
+        project.current_step = max(project.current_step, self.step_number)
         project.status = "running"
 
-        # Set result summary
-        self.set_result_summary({
-            "domain_accessible": result.domain_accessible,
-            "final_url": result.final_url,
-            "redirect_count": len(result.redirect_chain) - 1,
-            "robots_allowed": result.robots_allowed,
-            "primary_language": result.primary_language,
-            "primary_locale": result.primary_locale,
-            "site_maturity": result.site_maturity,
-            "sitemap_page_count": result.sitemap_page_count,
-            "compliance_suggestions": result.compliance_suggestions,
-        })
+        self.set_result_summary(
+            {
+                "domain_accessible": result.domain_accessible,
+                "final_url": result.final_url,
+                "redirect_count": len(result.redirect_chain) - 1,
+                "robots_allowed": result.robots_allowed,
+                "primary_language": result.primary_language,
+                "primary_locale": result.primary_locale,
+                "site_maturity": result.site_maturity,
+                "sitemap_page_count": result.sitemap_page_count,
+                "compliance_suggestions": result.compliance_suggestions,
+            }
+        )
 
         await self.session.commit()
 
     async def _check_domain_accessible(self, domain: str) -> dict[str, Any]:
-        """Check if domain is accessible using GET (not HEAD - many sites block HEAD).
-
-        Returns dict with:
-        - accessible: bool
-        - html: str
-        - final_url: str (after redirects)
-        - redirect_chain: list[str]
-        """
+        """Check if domain is accessible and track redirects."""
         redirect_chain = [domain]
         try:
-            # Use GET with small timeout and max bytes
-            # follow_redirects=True but track the chain via history
             async with httpx.AsyncClient(
                 timeout=10.0,
                 follow_redirects=True,
@@ -195,7 +163,6 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
             ) as client:
                 response = await client.get(domain)
 
-                # Build redirect chain from response history
                 for resp in response.history:
                     if str(resp.url) not in redirect_chain:
                         redirect_chain.append(str(resp.url))
@@ -204,7 +171,6 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
                 if final_url not in redirect_chain:
                     redirect_chain.append(final_url)
 
-                # Only read first 50KB to avoid memory issues
                 html = response.text[:50000] if response.text else ""
 
                 return {
@@ -224,15 +190,14 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
 
     def _detect_language(self, html: str, domain: str) -> tuple[str, str]:
         """Detect language and locale from HTML content."""
-        # Default values
+        _ = domain
         language = "en"
         locale = "en-US"
 
         if not html:
             return language, locale
 
-        # Check <html lang="...">
-        lang_match = re.search(r'<html[^>]*\slang=["\']([^"\']+)["\']', html, re.I)
+        lang_match = re.search(r'<html[^>]*\\slang=["\']([^"\']+)["\']', html, re.I)
         if lang_match:
             lang_value = lang_match.group(1)
             if "-" in lang_value:
@@ -243,7 +208,6 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
                 language = lang_value.lower()
                 locale = f"{language}-{language.upper()}"
 
-        # Check hreflang tags
         hreflang_match = re.search(
             r'<link[^>]*hreflang=["\']([^"\']+)["\'][^>]*rel=["\']alternate["\']',
             html,
@@ -282,45 +246,32 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
         """Count URLs in sitemap XML."""
         try:
             root = ET.fromstring(sitemap_content)
-            # Handle namespace
             ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
-            # Try with namespace
             urls = root.findall(".//sm:url", ns)
             if urls:
                 return len(urls)
 
-            # Try without namespace
             urls = root.findall(".//url")
             if urls:
                 return len(urls)
 
-            # Check for sitemap index
             sitemaps = root.findall(".//sm:sitemap", ns) or root.findall(".//sitemap")
-            return len(sitemaps) * 100  # Estimate
+            return len(sitemaps) * 100
 
         except ET.ParseError:
             return 0
 
     async def _check_robots_allowed(self, domain: str) -> bool:
-        """Check if robots.txt allows crawling.
-
-        Returns True if:
-        - No robots.txt exists (default allow)
-        - robots.txt exists and allows our user-agent
-        """
+        """Check whether robots.txt permits crawling."""
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 response = await client.get(f"{domain}/robots.txt")
                 if response.status_code != 200:
-                    return True  # No robots.txt = allowed
+                    return True
 
                 robots_content = response.text.lower()
-
-                # Check for blanket disallow
-                # This is a simple check - a full parser would be more accurate
                 if "disallow: /" in robots_content:
-                    # Check if there's a user-agent: * section with disallow: /
                     lines = robots_content.split("\n")
                     in_star_section = False
                     for line in lines:
@@ -328,53 +279,75 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
                         if line.startswith("user-agent:"):
                             in_star_section = "*" in line
                         elif in_star_section and line == "disallow: /":
-                            return False  # Blanket disallow for all bots
+                            return False
 
-                return True  # Allowed by default
+                return True
         except httpx.HTTPError:
-            return True  # Assume allowed if we can't fetch
+            return True
 
     def _infer_compliance_suggestions(self, html: str) -> list[str]:
-        """Infer compliance SUGGESTIONS from content.
-
-        These are SUGGESTIONS only - user can override in project settings.
-        Returns list of suggested compliance flags.
-        """
+        """Infer compliance suggestion flags from page content."""
         if not html:
             return []
 
         suggestions = []
         html_lower = html.lower()
 
-        # Medical/health indicators
         medical_terms = [
-            "medical", "health", "doctor", "patient", "diagnosis",
-            "treatment", "symptom", "disease", "medication", "clinical",
-            "hospital", "healthcare", "medicine"
+            "medical",
+            "health",
+            "doctor",
+            "patient",
+            "diagnosis",
+            "treatment",
+            "symptom",
+            "disease",
+            "medication",
+            "clinical",
+            "hospital",
+            "healthcare",
+            "medicine",
         ]
         if any(term in html_lower for term in medical_terms):
             suggestions.append("medical_ymyl")
 
-        # Financial indicators
         finance_terms = [
-            "investment", "financial", "banking", "insurance", "mortgage",
-            "loan", "credit", "tax", "retirement", "stock", "trading"
+            "investment",
+            "financial",
+            "banking",
+            "insurance",
+            "mortgage",
+            "loan",
+            "credit",
+            "tax",
+            "retirement",
+            "stock",
+            "trading",
         ]
         if any(term in html_lower for term in finance_terms):
             suggestions.append("finance_ymyl")
 
-        # Legal indicators
         legal_terms = [
-            "legal", "attorney", "lawyer", "law firm", "litigation",
-            "lawsuit", "court", "legal advice"
+            "legal",
+            "attorney",
+            "lawyer",
+            "law firm",
+            "litigation",
+            "lawsuit",
+            "court",
+            "legal advice",
         ]
         if any(term in html_lower for term in legal_terms):
             suggestions.append("legal_ymyl")
 
-        # E-commerce indicators
         ecommerce_terms = [
-            "add to cart", "checkout", "buy now", "shopping cart",
-            "payment", "shipping", "order"
+            "add to cart",
+            "checkout",
+            "buy now",
+            "shopping cart",
+            "payment",
+            "shipping",
+            "order",
         ]
         if any(term in html_lower for term in ecommerce_terms):
             suggestions.append("ecommerce")
@@ -386,12 +359,7 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
         sitemap_count: int,
         html: str,
     ) -> tuple[str, dict[str, Any]]:
-        """Estimate site maturity based on signals.
-
-        Returns:
-            Tuple of (maturity_level, signals_dict)
-            maturity_level: "new" | "mid" | "strong"
-        """
+        """Estimate site maturity based on simple site-wide signals."""
         signals = {
             "sitemap_pages": sitemap_count,
             "has_blog": False,
@@ -399,17 +367,13 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
             "has_about": False,
         }
 
-        # Check for common page indicators in navigation/links
         if html:
             html_lower = html.lower()
             signals["has_blog"] = "/blog" in html_lower or "blog" in html_lower
             signals["has_pricing"] = "/pricing" in html_lower
             signals["has_about"] = "/about" in html_lower
 
-        # Calculate maturity score
         score = 0
-
-        # Sitemap size scoring
         if sitemap_count > 500:
             score += 3
         elif sitemap_count > 100:
@@ -417,7 +381,6 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
         elif sitemap_count > 20:
             score += 1
 
-        # Page type scoring
         if signals["has_blog"]:
             score += 1
         if signals["has_pricing"]:
@@ -425,7 +388,6 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
         if signals["has_about"]:
             score += 1
 
-        # Determine maturity level
         if score >= 5:
             maturity = "strong"
         elif score >= 2:
@@ -434,5 +396,4 @@ class Step00SetupService(BaseStepService[SetupInput, SetupOutput]):
             maturity = "new"
 
         signals["maturity_score"] = score
-
         return maturity, signals

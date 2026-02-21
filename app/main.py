@@ -59,8 +59,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     base_description = (
-        "Keyword research backend service with a 14-step pipeline for "
-        "programmatic content planning and modular article generation"
+        "Keyword research backend service with modular setup/discovery/content pipelines "
+        "for programmatic content planning and article generation"
     )
     full_description = (
         f"{base_description}\n\n"

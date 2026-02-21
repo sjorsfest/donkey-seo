@@ -19,13 +19,13 @@ def test_pipeline_run_response_maps_discovery_steps_to_one_based() -> None:
         status="running",
         started_at=now,
         completed_at=None,
-        start_step=2,
-        end_step=8,
-        skip_steps=[8],
+        start_step=1,
+        end_step=7,
+        skip_steps=[7],
         step_executions=[
             SimpleNamespace(
                 id="exec-1",
-                step_number=2,
+                step_number=1,
                 step_name="seed_topics",
                 status="running",
                 progress_percent=30.0,

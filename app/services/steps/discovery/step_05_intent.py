@@ -140,7 +140,7 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
     3. Assign funnel stage based on intent
     """
 
-    step_number = 5
+    step_number = 4
     step_name = "intent_labeling"
     capability_key = CAPABILITY_INTENT_CLASSIFICATION
     is_optional = False
@@ -157,9 +157,6 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
 
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
-
-        if project.current_step < 4:
-            raise ValueError("Step 4 (Metrics) must be completed first")
 
     async def _execute(self, input_data: IntentInput) -> IntentOutput:
         """Execute intent classification."""
@@ -526,7 +523,7 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 5)
+        project.current_step = max(project.current_step, self.step_number)
 
         # Set result summary
         self.set_result_summary({

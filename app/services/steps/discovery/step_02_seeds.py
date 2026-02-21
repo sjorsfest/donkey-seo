@@ -52,7 +52,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
     based on the brand profile from Step 1.
     """
 
-    step_number = 2
+    step_number = 1
     step_name = "seed_keywords"
     capability_key = CAPABILITY_SEED_GENERATION
     is_optional = False
@@ -86,15 +86,12 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
 
-        if project.current_step < 1:
-            raise ValueError("Step 1 (Brand Profile) must be completed first")
-
         # Check brand profile exists
         brand_result = await self.session.execute(
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         if not brand_result.scalar_one_or_none():
-            raise ValueError("Brand profile not found. Run Step 1 first.")
+            raise ValueError("Brand profile not found. Run setup pipeline first.")
 
     async def _execute(self, input_data: SeedsInput) -> SeedsOutput:
         """Execute seed keyword generation."""
@@ -278,7 +275,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             select(Project).where(Project.id == self.project_id)
         )
         project = project_result.scalar_one()
-        project.current_step = max(project.current_step, 2)
+        project.current_step = max(project.current_step, self.step_number)
 
         # Set result summary
         self.set_result_summary({

@@ -189,12 +189,14 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
 
     async def _run_with_fallback(self, prompt: str) -> Any:
         """Run the agent with timeout, retrying once with fallback on rate-limit or timeout."""
+        fallback_trigger_error: ModelHTTPError | asyncio.TimeoutError | None = None
         try:
             return await asyncio.wait_for(
                 self.agent.run(prompt),
                 timeout=self.timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
+            fallback_trigger_error = exc
             logger.warning(
                 "Agent LLM call timed out, retrying with fallback model",
                 extra={
@@ -206,6 +208,7 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
         except ModelHTTPError as exc:
             if exc.status_code != 429:
                 raise
+            fallback_trigger_error = exc
             logger.warning(
                 "Agent primary model rate-limited, retrying with fallback model",
                 extra={
@@ -217,6 +220,8 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
 
         fallback_model = settings.model_selector_fallback_model
         if not isinstance(fallback_model, str) or not fallback_model or fallback_model == self._model:
+            if isinstance(fallback_trigger_error, ModelHTTPError):
+                raise fallback_trigger_error
             raise TimeoutError(
                 f"Agent {self.__class__.__name__} timed out after {self.timeout_seconds}s "
                 f"and no viable fallback model is configured"

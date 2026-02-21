@@ -856,7 +856,7 @@ class PipelineOrchestrator:
             task_id=task_id,
             status="running",
             stage=f"Discovery loop iteration {next_iteration}/{discovery_cfg.max_iterations}",
-            current_step=2,
+            current_step=1,
             current_step_name="seed_topics",
             error_message=None,
         )
@@ -913,7 +913,7 @@ class PipelineOrchestrator:
                 f"in <= {discovery_cfg.max_iterations} iterations"
             ),
             project_id=self.project_id,
-            current_step=2,
+            current_step=1,
             current_step_name="seed_topics",
             error_message=None,
         )
@@ -1451,7 +1451,7 @@ class PipelineOrchestrator:
                 "dependencies": DISCOVERY_LOCAL_STEP_DEPENDENCIES,
                 "service_map": DISCOVERY_LOCAL_TO_SERVICE,
                 "input_map": DISCOVERY_LOCAL_TO_INPUT,
-                "optional_steps": {8},
+                "optional_steps": {7},
             }
         if module == "content":
             return {

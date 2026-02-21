@@ -254,7 +254,7 @@ class PipelineTaskWorker:
                 run_lock = self._run_locks.setdefault(job.run_id, asyncio.Lock())
                 if run_lock.locked():
                     logger.info(
-                        "Run already in progress; requeueing duplicate job",
+                        "Run already in progress; dropping duplicate job",
                         extra={
                             "pipeline_module": self.manager.pipeline_module,
                             "worker_index": worker_index,
@@ -263,20 +263,6 @@ class PipelineTaskWorker:
                             "run_id": job.run_id,
                         },
                     )
-                    await asyncio.sleep(self.requeue_delay_seconds)
-                    try:
-                        await self.manager.requeue(job)
-                    except Exception:
-                        logger.exception(
-                            "Failed to requeue duplicate job",
-                            extra={
-                                "pipeline_module": self.manager.pipeline_module,
-                                "worker_index": worker_index,
-                                "kind": job.kind,
-                                "project_id": job.project_id,
-                                "run_id": job.run_id,
-                            },
-                        )
                     continue
                 await run_lock.acquire()
                 should_requeue = False

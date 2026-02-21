@@ -34,7 +34,7 @@ async def test_get_step_service_returns_step08_service() -> None:
 
     service = await orchestrator._get_step_service(
         module="discovery",
-        step_number=8,
+        step_number=7,
         execution=execution,
         session=_FakeSession(),
     )
@@ -50,7 +50,7 @@ async def test_get_step_input_returns_step08_input() -> None:
 
     input_data = await orchestrator._get_step_input(
         module="discovery",
-        step_number=8,
+        step_number=7,
         pipeline_run_id=str(uuid.uuid4()),
         session=session,
     )
