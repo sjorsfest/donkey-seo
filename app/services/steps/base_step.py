@@ -93,6 +93,7 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
             # Execute main logic
             result = await self._execute(input_data)
             logger.info("Step execution finished, validating output", extra=step_info)
+            await self._release_read_only_transaction()
 
             # Validate output is usable downstream
             await self._validate_output(result, input_data)

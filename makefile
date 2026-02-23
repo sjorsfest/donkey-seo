@@ -14,6 +14,10 @@ endif
 migrate:
 	@alembic upgrade head
 
+db-reset:
+	@uv run python scripts/db_reset.py
+	@alembic upgrade head
+
 typecheck:
 	@uv run python scripts/generate_model_dtos.py
 	@uv run python scripts/check_typed_writes.py

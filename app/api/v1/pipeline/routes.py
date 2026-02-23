@@ -367,7 +367,7 @@ async def pause_pipeline(
         )
 
     pipeline_run = runs[0]
-    orchestrator = PipelineOrchestrator(session, str(project_id))
+    orchestrator = PipelineOrchestrator(None, str(project_id))
     await orchestrator.pause_pipeline(str(pipeline_run.id))
     return {"message": "Pipeline paused"}
 
@@ -384,7 +384,7 @@ async def pause_pipeline_run(
     session: DbSession,
 ) -> dict[str, str]:
     await get_user_project(project_id, current_user, session)
-    orchestrator = PipelineOrchestrator(session, str(project_id))
+    orchestrator = PipelineOrchestrator(None, str(project_id))
     try:
         await orchestrator.pause_pipeline(str(run_id))
     except ValueError as exc:

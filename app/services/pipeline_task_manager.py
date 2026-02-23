@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.config import settings
-from app.core.database import get_session_context
 from app.core.exceptions import (
     PipelineAlreadyRunningError,
     PipelineDelayedResumeRequested,
@@ -358,16 +357,15 @@ class PipelineTaskWorker:
             )
 
     async def _execute(self, job: PipelineTaskJob) -> bool:
-        async with get_session_context(commit_on_exit=False) as session:
-            # Local import avoids a circular dependency at module import time.
-            from app.services.pipeline_orchestrator import PipelineOrchestrator
+        # Local import avoids a circular dependency at module import time.
+        from app.services.pipeline_orchestrator import PipelineOrchestrator
 
-            orchestrator = PipelineOrchestrator(session, job.project_id)
-            return await orchestrator.run_queued_job_slice(
-                run_id=job.run_id,
-                pipeline_module=self.manager.pipeline_module,
-                job_kind=job.kind,
-            )
+        orchestrator = PipelineOrchestrator(None, job.project_id)
+        return await orchestrator.run_queued_job_slice(
+            run_id=job.run_id,
+            pipeline_module=self.manager.pipeline_module,
+            job_kind=job.kind,
+        )
 
 
 _discovery_pipeline_task_manager: PipelineTaskManager | None = None

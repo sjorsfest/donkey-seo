@@ -67,6 +67,12 @@ cp .env.example .env
 alembic upgrade head
 ```
 
+Development reset (drops and recreates the public schema, then migrates):
+
+```bash
+make db-reset
+```
+
 ### 5. Start the API Server
 
 ```bash

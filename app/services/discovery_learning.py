@@ -16,6 +16,7 @@ from app.agents.discovery_learning_summarizer import (
     LearningDraft,
 )
 from app.core.database import rollback_read_only_transaction
+from app.core.db_kernel import db_write
 from app.models.discovery_learning import DiscoveryIterationLearning
 from app.models.generated_dtos import DiscoveryIterationLearningCreateDTO
 from app.models.keyword import Keyword, SeedTopic
@@ -116,7 +117,7 @@ class DiscoveryLearningService:
         )
         await self._rewrite_candidates(project_id=project_id, candidates=candidates)
 
-        persisted: list[DiscoveryIterationLearning] = []
+        payloads: list[DiscoveryIterationLearningCreateDTO] = []
         for candidate in candidates:
             applies_to_capabilities = [
                 str(item).strip()
@@ -128,35 +129,48 @@ class DiscoveryLearningService:
                 for item in (candidate.applies_to_agents or [])
                 if str(item).strip()
             ]
-            persisted.append(
-                DiscoveryIterationLearning.create(
-                    self.session,
-                    DiscoveryIterationLearningCreateDTO(
-                        project_id=project_id,
-                        pipeline_run_id=pipeline_run_id,
-                        iteration_index=iteration_index,
-                        source_capability=candidate.source_capability,
-                        source_agent=candidate.source_agent,
-                        learning_key=candidate.learning_key,
-                        learning_type=candidate.learning_type,
-                        polarity=candidate.polarity,
-                        status=candidate.status,
-                        title=candidate.title,
-                        detail=candidate.detail,
-                        recommendation=candidate.recommendation,
-                        confidence=candidate.confidence,
-                        novelty_score=candidate.novelty_score,
-                        baseline_metric=candidate.baseline_metric,
-                        current_metric=candidate.current_metric,
-                        delta_metric=candidate.delta_metric,
-                        applies_to_capabilities=applies_to_capabilities or None,
-                        applies_to_agents=applies_to_agents or None,
-                        evidence=candidate.evidence,
-                    ),
+            payloads.append(
+                DiscoveryIterationLearningCreateDTO(
+                    project_id=project_id,
+                    pipeline_run_id=pipeline_run_id,
+                    iteration_index=iteration_index,
+                    source_capability=candidate.source_capability,
+                    source_agent=candidate.source_agent,
+                    learning_key=candidate.learning_key,
+                    learning_type=candidate.learning_type,
+                    polarity=candidate.polarity,
+                    status=candidate.status,
+                    title=candidate.title,
+                    detail=candidate.detail,
+                    recommendation=candidate.recommendation,
+                    confidence=candidate.confidence,
+                    novelty_score=candidate.novelty_score,
+                    baseline_metric=candidate.baseline_metric,
+                    current_metric=candidate.current_metric,
+                    delta_metric=candidate.delta_metric,
+                    applies_to_capabilities=applies_to_capabilities or None,
+                    applies_to_agents=applies_to_agents or None,
+                    evidence=candidate.evidence,
                 )
             )
 
-        await self.session.commit()
+        async def _persist_once(session: AsyncSession) -> list[DiscoveryIterationLearning]:
+            persisted_rows: list[DiscoveryIterationLearning] = []
+            for payload in payloads:
+                persisted_rows.append(
+                    DiscoveryIterationLearning.create(
+                        session,
+                        payload,
+                    )
+                )
+            await session.flush()
+            return persisted_rows
+
+        persisted = await db_write(
+            _persist_once,
+            operation_name="discovery_iteration_learning_persist",
+            attempts=3,
+        )
         logger.info(
             "Discovery iteration learnings persisted",
             extra={
