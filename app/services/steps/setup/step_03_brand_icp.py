@@ -72,7 +72,7 @@ class Step03BrandIcpService(BaseStepService[BrandIcpInput, BrandIcpOutput]):
             recommender = ICPRecommenderAgent()
             recommendation = await recommender.run(
                 ICPRecommenderInput(
-                    company_name=brand.company_name,
+                    company_name=brand.company_name or "Company",
                     tagline=brand.tagline,
                     products_services=[
                         {

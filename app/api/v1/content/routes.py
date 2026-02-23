@@ -40,6 +40,7 @@ from app.schemas.content import (
     ContentBriefListResponse,
     ContentBriefResponse,
     ContentBriefUpdate,
+    ContentCalendarItemResponse,
     ContentCalendarItemState,
     ContentCalendarResponse,
     RegenerateArticleRequest,
@@ -252,7 +253,7 @@ async def get_content_calendar(
     )
     result = await session.execute(query)
 
-    items: list[dict[str, object | None]] = []
+    items: list[ContentCalendarItemResponse] = []
     for brief, writer_instruction_id, article in result.all():
         has_writer_instructions = writer_instruction_id is not None
         calendar_state = _resolve_calendar_state(
@@ -262,24 +263,24 @@ async def get_content_calendar(
         working_title = (brief.working_titles or [None])[0]
         article_id = str(article.id) if article else None
         items.append(
-            {
-                "date": brief.proposed_publication_date,
-                "brief_id": str(brief.id),
-                "topic_id": str(brief.topic_id),
-                "primary_keyword": brief.primary_keyword,
-                "working_title": str(working_title) if working_title is not None else None,
-                "brief_status": brief.status,
-                "has_writer_instructions": has_writer_instructions,
-                "article_id": article_id,
-                "article_title": article.title if article else None,
-                "article_slug": article.slug if article else None,
-                "article_status": article.status if article else None,
-                "article_current_version": article.current_version if article else None,
-                "publish_status": article.publish_status if article else None,
-                "published_at": article.published_at if article else None,
-                "published_url": article.published_url if article else None,
-                "calendar_state": calendar_state,
-            }
+            ContentCalendarItemResponse(
+                date=brief.proposed_publication_date,
+                brief_id=str(brief.id),
+                topic_id=str(brief.topic_id),
+                primary_keyword=brief.primary_keyword,
+                working_title=str(working_title) if working_title is not None else None,
+                brief_status=brief.status,
+                has_writer_instructions=has_writer_instructions,
+                article_id=article_id,
+                article_title=article.title if article else None,
+                article_slug=article.slug if article else None,
+                article_status=article.status if article else None,
+                article_current_version=article.current_version if article else None,
+                publish_status=article.publish_status if article else None,
+                published_at=article.published_at if article else None,
+                published_url=article.published_url if article else None,
+                calendar_state=calendar_state,
+            )
         )
 
     return ContentCalendarResponse(items=items)

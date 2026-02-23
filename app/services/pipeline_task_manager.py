@@ -10,7 +10,10 @@ from typing import Literal
 
 from app.config import settings
 from app.core.database import get_session_context
-from app.core.exceptions import PipelineAlreadyRunningError
+from app.core.exceptions import (
+    PipelineAlreadyRunningError,
+    PipelineDelayedResumeRequested,
+)
 from app.core.redis import RedisQueueClient, get_redis_queue_client
 
 logger = logging.getLogger(__name__)
@@ -281,6 +284,25 @@ class PipelineTaskWorker:
                                     "run_id": job.run_id,
                                 },
                             )
+                    except PipelineDelayedResumeRequested as exc:
+                        logger.info(
+                            "Pipeline slice requested delayed auto-resume",
+                            extra={
+                                "pipeline_module": self.manager.pipeline_module,
+                                "project_id": job.project_id,
+                                "run_id": job.run_id,
+                                "worker_index": worker_index,
+                                "delay_seconds": exc.delay_seconds,
+                                "reason": exc.reason,
+                            },
+                        )
+                        should_requeue = True
+                        requeue_delay = max(self.requeue_delay_seconds, float(exc.delay_seconds))
+                        job = PipelineTaskJob(
+                            kind="resume",
+                            project_id=job.project_id,
+                            run_id=job.run_id,
+                        )
                     except PipelineAlreadyRunningError:
                         logger.info(
                             "Pipeline module busy, requeueing job",
@@ -336,7 +358,7 @@ class PipelineTaskWorker:
             )
 
     async def _execute(self, job: PipelineTaskJob) -> bool:
-        async with get_session_context() as session:
+        async with get_session_context(commit_on_exit=False) as session:
             # Local import avoids a circular dependency at module import time.
             from app.services.pipeline_orchestrator import PipelineOrchestrator
 

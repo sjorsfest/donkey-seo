@@ -323,7 +323,7 @@ async def test_evaluate_topic_decisions_rejects_workflow_topic_when_saturated() 
 
 
 @pytest.mark.asyncio
-async def test_evaluate_topic_decisions_rejects_off_goal_intent_for_secondary_fit() -> None:
+async def test_evaluate_topic_decisions_skips_secondary_fit_candidates() -> None:
     topic = SimpleNamespace(
         id="topic-3",
         name="Helpdesk Login Portal",
@@ -367,12 +367,7 @@ async def test_evaluate_topic_decisions_rejects_off_goal_intent_for_secondary_fi
         ),
     )
 
-    assert len(decisions) == 1
-    assert decisions[0].decision == "rejected"
-    assert any(
-        reason.startswith("goal_intent_mismatch:")
-        for reason in decisions[0].rejection_reasons
-    )
+    assert decisions == []
 
 
 @pytest.mark.asyncio
@@ -382,7 +377,7 @@ async def test_evaluate_topic_decisions_accepts_core_goal_intent_despite_mismatc
         name="Helpdesk Pricing Software",
         dominant_intent="transactional",
         priority_factors={
-            "fit_tier": "secondary",
+            "fit_tier": "primary",
             "fit_score": 0.63,
             "fit_reasons": [],
             "serp_evidence_keyword_id": "kw-primary",

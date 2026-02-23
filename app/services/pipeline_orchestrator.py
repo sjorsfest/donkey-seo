@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
-from app.core.database import get_session_context
+from app.core.database import get_session_context, rollback_read_only_transaction
 from app.core.exceptions import (
     PipelineAlreadyRunningError,
+    PipelineDelayedResumeRequested,
     StepNotFoundError,
     StepPreconditionError,
 )
@@ -419,11 +421,36 @@ class PipelineOrchestrator:
         run_id_str = str(run.id)
         run_source_topic_id = run.source_topic_id
         run_start_step = run.start_step
+        await self._release_read_only_transaction()
 
         try:
             if run_module == "discovery":
                 return await self._run_discovery_slice(run)
             return await self._run_standard_slice(run)
+        except PipelineDelayedResumeRequested as exc:
+            module_cfg = self._module_config(run_module)
+            paused_at_step = module_cfg["default_start"]
+            await self._update_run_status_with_retry(
+                run_id=run_id_str,
+                status="paused",
+                paused_at_step=paused_at_step,
+                error_message=None,
+            )
+            cooldown_minutes = max(1, int((exc.delay_seconds + 59) // 60))
+            await self.task_manager.set_task_state(
+                task_id=run_id_str,
+                status="paused",
+                stage=(
+                    "Discovery cooldown active: auto-resume scheduled "
+                    f"in ~{cooldown_minutes} minute(s)"
+                ),
+                pipeline_module=run_module,
+                source_topic_id=run_source_topic_id,
+                current_step=paused_at_step,
+                current_step_name=module_cfg["step_names"].get(paused_at_step),
+                error_message=None,
+            )
+            raise
         except Exception as exc:
             await self._rollback_failed_slice_session(
                 run_id=run_id_str,
@@ -515,6 +542,12 @@ class PipelineOrchestrator:
                 },
             )
 
+    async def _release_read_only_transaction(self) -> None:
+        await rollback_read_only_transaction(
+            self.session,
+            context="pipeline_orchestrator",
+        )
+
     async def _update_run_status_with_retry(
         self,
         *,
@@ -585,6 +618,7 @@ class PipelineOrchestrator:
             )
         else:
             await self._verify_dependencies(run_id=str(run.id), module=module, step_number=next_step)
+            await self._release_read_only_transaction()
             execution = await self._execute_step(run, module, next_step)
             await self._patch_run(run, paused_at_step=next_step)
             if execution.status == "completed":
@@ -710,6 +744,7 @@ class PipelineOrchestrator:
                     module="discovery",
                     step_number=step_num,
                 )
+                await self._release_read_only_transaction()
                 execution = await self._execute_step(run, "discovery", step_num)
                 await self._patch_run(run, paused_at_step=step_num)
                 if execution.status == "completed":
@@ -804,6 +839,54 @@ class PipelineOrchestrator:
             return False
 
         if current_iteration >= discovery_cfg.max_iterations:
+            if discovery_cfg.auto_resume_on_exhaustion:
+                immutable_excludes_raw = state.get("immutable_excludes")
+                immutable_excludes = (
+                    {str(item).strip().lower() for item in immutable_excludes_raw if str(item).strip()}
+                    if isinstance(immutable_excludes_raw, list)
+                    else set()
+                )
+                dynamic_excludes = supervisor._next_dynamic_excludes(
+                    current_dynamic_excludes=[
+                        str(item)
+                        for item in state.get("dynamic_excludes", [])
+                        if str(item).strip()
+                    ],
+                    decisions=decisions,
+                    immutable_excludes=immutable_excludes,
+                )
+                base_strategy_payload_raw = state.get("base_strategy_payload")
+                base_strategy_payload = (
+                    dict(base_strategy_payload_raw)
+                    if isinstance(base_strategy_payload_raw, dict)
+                    else {}
+                )
+                restart_strategy_payload = supervisor._build_iteration_strategy_payload(
+                    base_strategy_payload=base_strategy_payload,
+                    iteration=1,
+                    dynamic_excludes=dynamic_excludes,
+                )
+
+                cooldown_delta = timedelta(minutes=discovery_cfg.exhaustion_cooldown_minutes)
+                cooldown_until = datetime.now(timezone.utc) + cooldown_delta
+                steps_config["strategy"] = restart_strategy_payload
+                steps_config["iteration_index"] = 1
+                state["current_iteration"] = 1
+                state["step_cursor"] = 0
+                state["dynamic_excludes"] = dynamic_excludes
+                state["accepted_topics"] = self._serialize_accepted_topics(accepted_pool)
+                state["step_summaries"] = {}
+                state["cooldown_until"] = cooldown_until.isoformat()
+                state["last_exhausted_iteration"] = current_iteration
+                await self._save_discovery_loop_state(
+                    run=run,
+                    steps_config=steps_config,
+                    state=state,
+                )
+                raise PipelineDelayedResumeRequested(
+                    delay_seconds=cooldown_delta.total_seconds(),
+                    reason="discovery_max_iterations_exhausted",
+                )
             raise RuntimeError(
                 "Insufficient accepted topics after discovery loop "
                 f"({accepted_count}/{target_count} accepted across {current_iteration} iterations). "
@@ -1303,7 +1386,10 @@ class PipelineOrchestrator:
             attempts=attempts,
         )
         for field, value in updates.items():
-            setattr(run, field, value)
+            try:
+                set_committed_value(run, field, value)
+            except Exception:
+                setattr(run, field, value)
 
     async def _update_run_status(
         self,

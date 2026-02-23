@@ -25,6 +25,7 @@ from app.api.v1.auth.constants import (
     TWITTER_USERINFO_URL,
 )
 from app.config import settings
+from app.integrations.stripe_billing import StripeBillingClient
 from app.models.generated_dtos import (
     OAuthAccountCreateDTO,
     OAuthAccountPatchDTO,
@@ -235,6 +236,17 @@ async def find_or_create_oauth_user(
             ),
         )
         await session.flush()
+        if settings.stripe_enabled:
+            async with StripeBillingClient() as stripe:
+                stripe_customer = await stripe.create_customer(
+                    email=user.email,
+                    full_name=user.full_name,
+                    metadata={"app_user_id": str(user.id)},
+                )
+                customer_id = stripe_customer.get("id")
+                if not isinstance(customer_id, str) or not customer_id:
+                    raise ValueError("stripe_customer_creation_failed")
+                user.stripe_customer_id = customer_id
     elif full_name and not user.full_name:
         user.patch(
             session,

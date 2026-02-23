@@ -9,10 +9,12 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.generated_dtos import (
+    BrandProfilePatchDTO,
     TopicPatchDTO,
     UserCreateDTO,
     UserPatchDTO,
 )
+from app.models.brand import BrandProfile
 from app.models.topic import Topic
 from app.models.user import User
 from app.persistence.typed.errors import InvalidPatchFieldError
@@ -97,6 +99,26 @@ def test_patch_dto_is_sparse() -> None:
     dto = TopicPatchDTO.from_partial({"name": "Updated", "description": None})
 
     assert dto.to_patch_dict() == {"name": "Updated", "description": None}
+
+
+def test_brand_profile_patch_allows_setup_fields() -> None:
+    session = FakeAsyncSession()
+    typed_session = cast(AsyncSession, session)
+    brand = BrandProfile(project_id="project-1")
+
+    brand.patch(
+        typed_session,
+        BrandProfilePatchDTO.from_partial(
+            {
+                "suggested_icp_niches": [{"niche_name": "SaaS Support"}],
+                "brand_assets": [{"asset_id": "asset-1"}],
+                "visual_style_guide": {"brand_palette": {"primary": "#123456"}},
+                "visual_prompt_contract": {"template": "{article_topic}"},
+            }
+        ),
+    )
+
+    assert brand.suggested_icp_niches == [{"niche_name": "SaaS Support"}]
 
 
 def test_guardrail_scanner_finds_direct_constructor(tmp_path: Path) -> None:

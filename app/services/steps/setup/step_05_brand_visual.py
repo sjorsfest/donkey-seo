@@ -79,7 +79,7 @@ class Step05BrandVisualService(BaseStepService[BrandVisualInput, BrandVisualOutp
             visual_agent = BrandVisualGuideAgent()
             visual_output = await visual_agent.run(
                 BrandVisualGuideInput(
-                    company_name=brand.company_name,
+                    company_name=brand.company_name or "Company",
                     tagline=brand.tagline,
                     tone_attributes=[str(item) for item in list(brand.tone_attributes or [])],
                     unique_value_props=[

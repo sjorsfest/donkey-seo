@@ -319,7 +319,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             prioritization = prioritizations_by_topic_id.get(topic_id, {})
             fit_assessment = st["fit_assessment"]
 
-            is_eligible = fit_assessment["fit_tier"] in {"primary", "secondary"}
+            is_eligible = fit_assessment["fit_tier"] == "primary"
             rank = next_rank if is_eligible else None
             if is_eligible:
                 next_rank += 1
@@ -377,6 +377,18 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
     async def _validate_output(self, result: PrioritizationOutput, input_data: PrioritizationInput) -> None:
         """Ensure output can be consumed by Step 12."""
         if result.topics_ranked <= 0:
+            steps_config = await self.get_steps_config()
+            loop_state = steps_config.get("loop_state")
+            in_discovery_loop = (
+                isinstance(loop_state, dict)
+                and loop_state.get("mode") == "stepwise_discovery"
+            )
+            if in_discovery_loop:
+                result.quality_warnings.append(
+                    "No primary topics passed fit gating this iteration; discovery loop will continue "
+                    "to search for more viable topics."
+                )
+                return
             raise ValueError(
                 "Step 7 ranked 0 topics after fit gating. Step 12 requires at least one eligible topic. "
                 "Consider re-running from Step 2 with broader scope_mode, additional include_topics, "
@@ -855,12 +867,8 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         return max(0.2, min(1.0, coherence - penalty))
 
     def _apply_fit_gating(self, scored_topics: list[dict[str, Any]], strategy: RunStrategy) -> None:
-        """Apply hard eligibility gate with one-pass threshold relaxation."""
+        """Apply hard eligibility gate using primary-fit threshold only."""
         base_threshold = strategy.base_threshold()
-        relaxed_threshold = strategy.relaxed_threshold()
-        eligible_target = strategy.eligible_target()
-
-        primary_count = 0
         for st in scored_topics:
             fit = st["fit_assessment"]
             if fit["hard_exclusion_reason"]:
@@ -871,66 +879,9 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             if fit["fit_score"] >= base_threshold:
                 fit["fit_tier"] = "primary"
                 fit["fit_threshold_used"] = base_threshold
-                primary_count += 1
             else:
                 fit["fit_tier"] = "excluded"
                 fit["fit_threshold_used"] = base_threshold
-
-        if primary_count >= eligible_target:
-            return
-
-        for st in scored_topics:
-            fit = st["fit_assessment"]
-            if fit["fit_tier"] == "primary" or fit["hard_exclusion_reason"]:
-                continue
-            if fit["fit_score"] >= relaxed_threshold:
-                fit["fit_tier"] = "secondary"
-                fit["fit_threshold_used"] = relaxed_threshold
-            else:
-                fit["fit_tier"] = "excluded"
-                fit["fit_threshold_used"] = relaxed_threshold
-
-        eligible_count = sum(
-            1 for st in scored_topics if st["fit_assessment"]["fit_tier"] in {"primary", "secondary"}
-        )
-        if eligible_count >= eligible_target:
-            return
-
-        # Adaptive fallback: if strict+relaxed still yields too little coverage,
-        # promote best remaining non-hard-excluded topics as secondary.
-        # Guard: never promote topics with near-zero ICP relevance — these are
-        # completely disconnected from the target audience.
-        icp_floor = 0.05
-        fallback_floor = max(0.30, relaxed_threshold - 0.15)
-        excluded_candidates = [
-            st for st in scored_topics
-            if st["fit_assessment"]["fit_tier"] == "excluded"
-            and not st["fit_assessment"]["hard_exclusion_reason"]
-            and st["fit_assessment"]["fit_score"] >= fallback_floor
-            and st["fit_assessment"]["components"].get("icp_relevance", 0) >= icp_floor
-        ]
-        if len(excluded_candidates) < (eligible_target - eligible_count):
-            # Final safety net: allow top non-hard-excluded topics even below floor,
-            # but still enforce ICP relevance minimum.
-            excluded_candidates = [
-                st for st in scored_topics
-                if st["fit_assessment"]["fit_tier"] == "excluded"
-                and not st["fit_assessment"]["hard_exclusion_reason"]
-                and st["fit_assessment"]["components"].get("icp_relevance", 0) >= icp_floor
-            ]
-        excluded_candidates.sort(
-            key=lambda st: st["fit_assessment"]["fit_score"],
-            reverse=True,
-        )
-
-        slots_needed = max(0, eligible_target - eligible_count)
-        for st in excluded_candidates[:slots_needed]:
-            fit = st["fit_assessment"]
-            fit["fit_tier"] = "secondary"
-            fit["fit_threshold_used"] = fallback_floor
-            fit.setdefault("reasons", []).append(
-                "Adaptive fallback promotion: included as secondary to avoid empty/too-small backlog."
-            )
 
     def _extract_brand_terms(self, brand: BrandProfile | None) -> tuple[set[str], set[str]]:
         """Extract own-brand and competitor terms."""

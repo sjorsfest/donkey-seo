@@ -390,7 +390,7 @@ class DiscoveryLoopSupervisor:
         candidates = [
             topic
             for topic in all_topics
-            if (topic.priority_factors or {}).get("fit_tier") in {"primary", "secondary"}
+            if (topic.priority_factors or {}).get("fit_tier") == "primary"
         ]
         if not candidates:
             return []

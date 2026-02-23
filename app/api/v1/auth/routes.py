@@ -42,6 +42,7 @@ from app.core.security import (
     verify_refresh_token,
 )
 from app.dependencies import CurrentUser, DbSession
+from app.integrations.stripe_billing import StripeBillingClient
 from app.models.generated_dtos import UserCreateDTO
 from app.models.user import User
 from app.schemas.auth import Token, TokenRefresh, UserCreate, UserLogin, UserResponse
@@ -81,6 +82,26 @@ async def register(user_data: UserCreate, session: DbSession) -> User:
         ),
     )
     await session.flush()
+
+    if settings.stripe_enabled:
+        try:
+            async with StripeBillingClient() as stripe:
+                stripe_customer = await stripe.create_customer(
+                    email=user_data.email,
+                    full_name=user_data.full_name,
+                    metadata={"app_user_id": str(user.id)},
+                )
+                customer_id = stripe_customer.get("id")
+                if not isinstance(customer_id, str) or not customer_id:
+                    raise ValueError("Stripe customer creation returned invalid id")
+                user.stripe_customer_id = customer_id
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Stripe provisioning failed during signup")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unable to provision Stripe billing account",
+            ) from exc
+
     await session.refresh(user)
 
     logger.info("User registered", extra={"user_id": str(user.id), "email": user.email})

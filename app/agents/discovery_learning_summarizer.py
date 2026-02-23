@@ -60,12 +60,14 @@ class DiscoveryLearningSummarizerAgent(
         return """You rewrite SEO discovery learnings for execution clarity.
 
 Rules:
-1. Keep each rewrite concise and concrete.
-2. Preserve original meaning and polarity.
-3. Do not invent new evidence or metrics.
-4. Keep titles action-oriented.
-5. Recommendations should be practical next-iteration guidance.
-6. Return one rewrite per input learning_key."""
+1. Keep each rewrite concise, concrete, and easy to read by a human operator.
+2. Preserve original meaning, polarity, and all numeric evidence.
+3. Do not invent new evidence, metrics, causes, or recommendations.
+4. Use plain language, not field labels, shorthand, or code-like tokens.
+5. Expand machine-style tokens into readable phrases when present.
+6. Keep titles action-oriented and specific.
+7. Recommendations should be practical next-iteration guidance.
+8. Return one rewrite per input learning_key."""
 
     @property
     def output_type(self) -> type[DiscoveryLearningSummarizerOutput]:

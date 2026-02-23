@@ -98,6 +98,22 @@ class PipelineAlreadyRunningError(PipelineError):
         super().__init__(f"Pipeline already running for project: {project_id}")
 
 
+class PipelineDelayedResumeRequested(PipelineError):
+    """Pipeline should pause and be resumed by the worker after a delay."""
+
+    def __init__(
+        self,
+        *,
+        delay_seconds: float,
+        reason: str = "delayed_resume_requested",
+    ) -> None:
+        self.delay_seconds = max(0.1, float(delay_seconds))
+        self.reason = reason
+        super().__init__(
+            f"Delayed resume requested in {self.delay_seconds:.1f}s: {self.reason}"
+        )
+
+
 # External API Errors
 class ExternalAPIError(DonkeySEOError):
     """Error calling external API."""

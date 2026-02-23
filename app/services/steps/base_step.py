@@ -10,6 +10,7 @@ import traceback
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import rollback_read_only_transaction
 from app.models.brand import BrandProfile
 from app.models.discovery_learning import DiscoveryIterationLearning
 from app.models.generated_dtos import PipelineRunPatchDTO
@@ -87,6 +88,7 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
             # Validate preconditions
             await self._validate_preconditions(input_data)
             logger.info("Preconditions validated", extra=step_info)
+            await self._release_read_only_transaction()
 
             # Execute main logic
             result = await self._execute(input_data)
@@ -229,6 +231,12 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
     async def _restore_checkpoint(self, checkpoint_data: dict[str, Any]) -> None:
         """Restore from checkpoint."""
         self._checkpoint = checkpoint_data
+
+    async def _release_read_only_transaction(self) -> None:
+        await rollback_read_only_transaction(
+            self.session,
+            context=f"step_{self.step_number}_{self.step_name}",
+        )
 
     async def _update_status(self, status: str) -> None:
         """Update execution status."""

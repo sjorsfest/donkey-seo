@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.exceptions import PipelineDelayedResumeRequested
 from app.services.pipeline_task_manager import PipelineTaskJob, PipelineTaskWorker
 from app.workers.pipeline_worker import resolve_modules
 
@@ -122,3 +123,31 @@ async def test_pipeline_task_worker_drops_duplicate_run_job_when_lock_busy(
 
     assert execute_mock.await_count == 0
     assert manager.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_task_worker_requeues_resume_after_delayed_resume_request(
+    monkeypatch: Any,
+) -> None:
+    manager = _FakeManager(
+        PipelineTaskJob(kind="start", project_id="project-1", run_id="run-1")
+    )
+    worker = PipelineTaskWorker(manager=manager, poll_timeout_seconds=1)
+
+    async def _fake_execute(_job: PipelineTaskJob) -> bool:
+        worker._stopping.set()
+        raise PipelineDelayedResumeRequested(
+            delay_seconds=120,
+            reason="discovery_max_iterations_exhausted",
+        )
+
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(worker, "_execute", _fake_execute)
+    monkeypatch.setattr("app.services.pipeline_task_manager.asyncio.sleep", sleep_mock)
+
+    await worker._worker_loop(worker_index=1)
+
+    assert len(manager.requeued) == 1
+    assert manager.requeued[0].run_id == "run-1"
+    assert manager.requeued[0].kind == "resume"
+    sleep_mock.assert_awaited()

@@ -50,13 +50,19 @@ BRAND_PROFILE_PATCH_ALLOWLIST = {
     "primary_pains",
     "desired_outcomes",
     "objections",
+    "suggested_icp_niches",
     "tone_attributes",
     "allowed_claims",
     "restricted_claims",
     "in_scope_topics",
     "out_of_scope_topics",
+    "brand_assets",
+    "visual_style_guide",
+    "visual_prompt_contract",
     "extraction_model",
     "extraction_confidence",
+    "visual_extraction_confidence",
+    "visual_last_synced_at",
 }
 
 _PROJECT_ADAPTER = BaseWriteAdapter[Project, ProjectCreateDTO, ProjectPatchDTO](

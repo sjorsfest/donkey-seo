@@ -18,6 +18,14 @@ USER_PATCH_ALLOWLIST = {
     "full_name",
     "is_active",
     "is_superuser",
+    "stripe_customer_id",
+    "stripe_subscription_id",
+    "subscription_plan",
+    "subscription_interval",
+    "subscription_status",
+    "subscription_current_period_end",
+    "subscription_trial_ends_at",
+    "stripe_price_id",
 }
 
 OAUTH_ACCOUNT_PATCH_ALLOWLIST = {

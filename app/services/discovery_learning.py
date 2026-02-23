@@ -15,6 +15,7 @@ from app.agents.discovery_learning_summarizer import (
     DiscoveryLearningSummarizerInput,
     LearningDraft,
 )
+from app.core.database import rollback_read_only_transaction
 from app.models.discovery_learning import DiscoveryIterationLearning
 from app.models.generated_dtos import DiscoveryIterationLearningCreateDTO
 from app.models.keyword import Keyword, SeedTopic
@@ -108,6 +109,10 @@ class DiscoveryLearningService:
             pipeline_run_id=pipeline_run_id,
             iteration_index=iteration_index,
             candidates=candidates,
+        )
+        await rollback_read_only_transaction(
+            self.session,
+            context="discovery_learning_rewrite",
         )
         await self._rewrite_candidates(project_id=project_id, candidates=candidates)
 
@@ -290,6 +295,7 @@ class DiscoveryLearningService:
             if abs(delta) < 0.08:
                 continue
             polarity = "positive" if delta > 0 else "negative"
+            archetype_label = self._humanize_token(archetype)
             candidates.append(
                 LearningCandidate(
                     learning_key=f"archetype:{archetype}:usable_rate",
@@ -297,15 +303,15 @@ class DiscoveryLearningService:
                     source_agent=DEFAULT_AGENT_BY_CAPABILITY.get(CAPABILITY_SEED_GENERATION),
                     learning_type="archetype_performance",
                     polarity=polarity,
-                    title=f"{archetype.replace('_', ' ').title()} keyword archetype performance",
+                    title=f"{archetype_label} keyword archetype performance",
                     detail=(
-                        f"Archetype '{archetype}' produced {rate:.1%} usable keywords "
+                        f"The {archetype_label.lower()} archetype produced {rate:.1%} usable keywords "
                         f"({stats['usable']}/{total}), vs {overall_rate:.1%} overall."
                     ),
                     recommendation=(
-                        f"Increase seed coverage for '{archetype}'."
+                        f"Increase seed coverage for {archetype_label.lower()} terms."
                         if delta > 0
-                        else f"Reduce low-signal '{archetype}' seeds or tighten scope."
+                        else f"Reduce low-signal {archetype_label.lower()} seeds or tighten scope."
                     ),
                     confidence=self._confidence_from_count(total),
                     current_metric=rate,
@@ -335,6 +341,7 @@ class DiscoveryLearningService:
             if abs(delta) < 0.10:
                 continue
             polarity = "positive" if delta > 0 else "negative"
+            pattern_label = self._humanize_pattern(pattern)
             candidates.append(
                 LearningCandidate(
                     learning_key=f"pattern:{pattern}:usable_rate",
@@ -344,13 +351,14 @@ class DiscoveryLearningService:
                     polarity=polarity,
                     title="Content pattern yield signal",
                     detail=(
-                        f"Pattern '{pattern}' yielded {rate:.1%} usable keywords "
+                        f"{pattern_label} yielded {rate:.1%} usable keywords "
                         f"({stats['usable']}/{total}), vs {overall_rate:.1%} overall."
                     ),
                     recommendation=(
-                        "Prioritize this pattern in cluster naming and topic ranking."
+                        f"Prioritize {pattern_label.lower()} in cluster naming and topic ranking."
                         if delta > 0
-                        else "De-emphasize this pattern unless strategic fit is strong."
+                        else
+                        f"De-emphasize {pattern_label.lower()} unless strategic fit is strong."
                     ),
                     confidence=self._confidence_from_count(total),
                     current_metric=rate,
@@ -379,6 +387,7 @@ class DiscoveryLearningService:
             rejected_total = max(1, len(rejected))
             rate = count / rejected_total
             capability = self._capability_for_rejection_reason(reason)
+            reason_label = self._humanize_rejection_reason(reason)
             applies_to_agents = [
                 agent
                 for agent in [
@@ -396,7 +405,7 @@ class DiscoveryLearningService:
                     polarity="negative",
                     title="Recurring rejection bottleneck",
                     detail=(
-                        f"Rejection reason '{reason}' appears in {rate:.1%} "
+                        f"The rejection reason '{reason_label}' appears in {rate:.1%} "
                         f"of rejected topics ({count}/{rejected_total})."
                     ),
                     recommendation=self._recommendation_for_rejection_reason(reason),
@@ -662,6 +671,20 @@ class DiscoveryLearningService:
         if ":" in clean:
             clean = clean.split(":", 1)[0].strip()
         return re.sub(r"[^a-z0-9_]+", "_", clean).strip("_") or "unknown"
+
+    def _humanize_token(self, token: str) -> str:
+        cleaned = re.sub(r"[^a-z0-9]+", " ", str(token or "").strip().lower())
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned.title() if cleaned else "Unknown"
+
+    def _humanize_pattern(self, pattern: str) -> str:
+        left, _, right = str(pattern or "").partition("|")
+        url_type = self._humanize_token(left).lower()
+        intent = self._humanize_token(right).lower()
+        return f"URL type '{url_type}' with '{intent}' intent"
+
+    def _humanize_rejection_reason(self, reason: str) -> str:
+        return self._humanize_token(reason).lower()
 
     def _capability_for_rejection_reason(self, reason: str) -> str:
         if "serp" in reason or "domain_diversity" in reason:

@@ -62,6 +62,8 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
                 "max_serp_competitor_density": 0.7,
                 "min_serp_intent_confidence": 0.35,
                 "auto_dispatch_content_tasks": True,
+                "auto_resume_on_exhaustion": True,
+                "exhaustion_cooldown_minutes": 45,
             },
             "content": {
                 "max_briefs": 15,
@@ -79,6 +81,8 @@ def test_pipeline_start_request_accepts_mode_and_configs() -> None:
     assert req.discovery.max_serp_servedness == 0.75
     assert req.discovery.max_serp_competitor_density == 0.7
     assert req.discovery.min_serp_intent_confidence == 0.35
+    assert req.discovery.auto_resume_on_exhaustion is True
+    assert req.discovery.exhaustion_cooldown_minutes == 45
     assert req.content is not None
     assert req.content.max_briefs == 15
     assert req.content.posts_per_week == 3
@@ -166,8 +170,8 @@ def test_step03_branded_keyword_policy_comparisons_only() -> None:
     assert allowed is True
 
 
-def test_step07_fit_gating_relaxes_to_secondary_when_needed() -> None:
-    """Fit gating relaxes threshold once and labels additional topics as secondary."""
+def test_step07_fit_gating_keeps_primary_only() -> None:
+    """Fit gating labels only topics above base threshold as primary."""
     service = Step07PrioritizationService.__new__(Step07PrioritizationService)
     strategy = resolve_run_strategy(
         strategy_payload={"fit_threshold_profile": "aggressive"},
@@ -236,11 +240,12 @@ def test_step07_fit_gating_relaxes_to_secondary_when_needed() -> None:
 
     tiers = [item["fit_assessment"]["fit_tier"] for item in scored_topics]
     assert tiers[0] == "primary"
-    assert tiers.count("secondary") >= 4
+    assert tiers.count("primary") == 1
+    assert tiers.count("secondary") == 0
 
 
-def test_step07_fit_gating_adaptive_fallback_promotes_when_relaxed_still_low() -> None:
-    """Fallback promotion should prevent zero-eligible output for plausible topics."""
+def test_step07_fit_gating_does_not_promote_secondary_fallback() -> None:
+    """Fallback promotion is disabled; below-threshold topics remain excluded."""
     service = Step07PrioritizationService.__new__(Step07PrioritizationService)
     strategy = resolve_run_strategy(
         strategy_payload={"fit_threshold_profile": "aggressive", "min_eligible_target": 3},
@@ -283,7 +288,7 @@ def test_step07_fit_gating_adaptive_fallback_promotes_when_relaxed_still_low() -
 
     service._apply_fit_gating(scored_topics, strategy)  # type: ignore[attr-defined]
     tiers = [item["fit_assessment"]["fit_tier"] for item in scored_topics]
-    assert tiers.count("secondary") == 3
+    assert tiers == ["excluded", "excluded", "excluded"]
 
 
 def test_resolve_run_strategy_maps_goal_preset_to_multiple_conversion_intents() -> None:

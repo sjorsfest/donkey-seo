@@ -95,6 +95,21 @@ class DiscoveryLoopConfig(BaseModel):
         default=True,
         description="Dispatch content tasks when topics are accepted during discovery.",
     )
+    auto_resume_on_exhaustion: bool = Field(
+        default=False,
+        description=(
+            "When max_iterations is reached without enough accepted topics, pause and "
+            "auto-resume discovery after a cooldown."
+        ),
+    )
+    exhaustion_cooldown_minutes: int = Field(
+        default=60,
+        ge=1,
+        le=10080,
+        description=(
+            "Cooldown delay before auto-resuming discovery after max_iterations exhaustion."
+        ),
+    )
 
 
 class ContentPipelineConfig(BaseModel):
@@ -227,6 +242,8 @@ class PipelineStartRequest(BaseModel):
                         "max_serp_competitor_density": 0.70,
                         "min_serp_intent_confidence": 0.35,
                         "auto_dispatch_content_tasks": True,
+                        "auto_resume_on_exhaustion": True,
+                        "exhaustion_cooldown_minutes": 60,
                     },
                     "content": {
                         "max_briefs": 20,

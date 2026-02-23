@@ -133,10 +133,17 @@ def test_build_deterministic_candidates_captures_archetype_and_bottleneck() -> N
         topics_by_id=topics_by_id,
         usable_by_keyword=usable_map,
     )
-    keys = {item.learning_key for item in candidates}
+    by_key = {item.learning_key: item for item in candidates}
+    keys = set(by_key)
     assert "overall:usable_keyword_rate" in keys
     assert "archetype:comparison:usable_rate" in keys
+    assert "pattern:landing|commercial:usable_rate" in keys
     assert "bottleneck:missing_serp_results" in keys
+    assert (
+        by_key["pattern:landing|commercial:usable_rate"].detail
+        == "URL type 'landing' with 'commercial' intent yielded 100.0% usable keywords (8/8), vs 50.0% overall."
+    )
+    assert "missing serp results" in by_key["bottleneck:missing_serp_results"].detail
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
+from app.core.db_retry import is_transient_connection_error
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +37,70 @@ async_session_maker = async_sessionmaker(
 )
 
 
+def _has_pending_state(session: AsyncSession) -> bool:
+    return bool(session.new or session.dirty or session.deleted)
+
+
+async def rollback_read_only_transaction(
+    session: AsyncSession,
+    *,
+    context: str,
+) -> None:
+    """Close an open read-only transaction only when no ORM changes are pending.
+
+    This prevents long-running read-heavy flows from keeping idle transactions
+    open across external I/O (LLM/API calls). We use commit (not rollback)
+    because rollback expires ORM attributes and can trigger async lazy-load
+    attribute access failures (`MissingGreenlet`) later in the same flow.
+    """
+    in_transaction = getattr(session, "in_transaction", None)
+    if not callable(in_transaction):
+        return
+    if not in_transaction():
+        return
+    if _has_pending_state(session):
+        return
+
+    try:
+        await session.commit()
+    except Exception as exc:
+        if is_transient_connection_error(exc):
+            logger.debug(
+                "Ignoring transient commit failure for read-only transaction",
+                extra={"context": context},
+            )
+            return
+        raise
+
+
+async def _finalize_session(
+    session: AsyncSession,
+    *,
+    commit_on_exit: bool,
+    context: str,
+) -> None:
+    if commit_on_exit:
+        await session.commit()
+        return
+
+    if _has_pending_state(session):
+        raise RuntimeError(
+            "Session has pending ORM changes but commit_on_exit=False. "
+            "Commit explicitly or use commit_on_exit=True."
+        )
+
+    await rollback_read_only_transaction(session, context=context)
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """Get database session for dependency injection."""
     async with async_session_maker() as session:
         try:
             yield session
-            await session.commit()
+            await _finalize_session(session, commit_on_exit=True, context="get_session")
         except InterfaceError as e:
             has_active_transaction = session.in_transaction()
-            has_pending_state = bool(session.new or session.dirty or session.deleted)
+            has_pending_state = _has_pending_state(session)
             if not has_active_transaction and not has_pending_state:
                 # Connection closed after work already committed/rolled back.
                 logger.debug("Session connection already closed during cleanup, ignoring")
@@ -65,15 +121,22 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 @asynccontextmanager
-async def get_session_context() -> AsyncGenerator[AsyncSession, None]:
+async def get_session_context(
+    *,
+    commit_on_exit: bool = True,
+) -> AsyncGenerator[AsyncSession, None]:
     """Get database session as context manager for non-DI usage."""
     async with async_session_maker() as session:
         try:
             yield session
-            await session.commit()
+            await _finalize_session(
+                session,
+                commit_on_exit=commit_on_exit,
+                context="get_session_context",
+            )
         except InterfaceError as e:
             has_active_transaction = session.in_transaction()
-            has_pending_state = bool(session.new or session.dirty or session.deleted)
+            has_pending_state = _has_pending_state(session)
             if not has_active_transaction and not has_pending_state:
                 logger.debug("Session connection already closed during cleanup, ignoring")
                 return

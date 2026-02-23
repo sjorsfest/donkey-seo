@@ -59,6 +59,20 @@ class Settings(BaseSettings):
     twitter_callback_url: str | None = None
     oauth_state_secret: str = "change-me-oauth-state-secret"
 
+    # Stripe billing
+    stripe_secret_key: str | None = None
+    stripe_publishable_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_product_donkeyseo: str | None = None
+    stripe_price_starter_monthly: str | None = None
+    stripe_price_starter_yearly: str | None = None
+    stripe_price_growth_monthly: str | None = None
+    stripe_price_growth_yearly: str | None = None
+    stripe_price_agency_monthly: str | None = None
+    stripe_price_agency_yearly: str | None = None
+    stripe_price_article_addon: str | None = None
+    stripe_free_trial_days: int = 0
+
     # LLM Configuration
     default_llm_model: str = "openai:gpt-4-turbo"
     openrouter_api_key: str | None = None
@@ -155,6 +169,11 @@ class Settings(BaseSettings):
     discovery_pipeline_task_queue_size: int = 200
     content_pipeline_task_workers: int = 3
     content_pipeline_task_queue_size: int = 300
+
+    @property
+    def stripe_enabled(self) -> bool:
+        """Whether Stripe billing is configured."""
+        return bool(self.stripe_secret_key)
 
     def get_integration_api_keys(self) -> set[str]:
         """Return configured integration API keys from comma-separated env value."""

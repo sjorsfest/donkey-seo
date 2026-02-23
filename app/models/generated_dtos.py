@@ -1961,6 +1961,14 @@ class UserRow:
     full_name: str | None
     is_active: bool
     is_superuser: bool
+    stripe_customer_id: str | None
+    stripe_subscription_id: str | None
+    subscription_plan: str | None
+    subscription_interval: str | None
+    subscription_status: str | None
+    subscription_current_period_end: datetime | None
+    subscription_trial_ends_at: datetime | None
+    stripe_price_id: str | None
     id: str
     created_at: datetime
     updated_at: datetime
@@ -1973,6 +1981,14 @@ class UserRow:
             full_name=model.full_name,
             is_active=model.is_active,
             is_superuser=model.is_superuser,
+            stripe_customer_id=model.stripe_customer_id,
+            stripe_subscription_id=model.stripe_subscription_id,
+            subscription_plan=model.subscription_plan,
+            subscription_interval=model.subscription_interval,
+            subscription_status=model.subscription_status,
+            subscription_current_period_end=model.subscription_current_period_end,
+            subscription_trial_ends_at=model.subscription_trial_ends_at,
+            stripe_price_id=model.stripe_price_id,
             id=model.id,
             created_at=model.created_at,
             updated_at=model.updated_at,
@@ -1987,10 +2003,19 @@ class UserCreateDTO:
     full_name: str | None = None
     is_active: bool | None = None
     is_superuser: bool | None = None
+    stripe_customer_id: str | None = None
+    stripe_subscription_id: str | None = None
+    subscription_plan: str | None = None
+    subscription_interval: str | None = None
+    subscription_status: str | None = None
+    subscription_current_period_end: datetime | None = None
+    subscription_trial_ends_at: datetime | None = None
+    stripe_price_id: str | None = None
 
     _DROP_NONE_FIELDS: ClassVar[set[str]] = {
         "is_active",
         "is_superuser",
+        "subscription_status",
     }
 
     def to_orm_kwargs(self) -> dict[str, Any]:
@@ -2009,6 +2034,14 @@ class UserPatchDTO:
     full_name: str | None = None
     is_active: bool | None = None
     is_superuser: bool | None = None
+    stripe_customer_id: str | None = None
+    stripe_subscription_id: str | None = None
+    subscription_plan: str | None = None
+    subscription_interval: str | None = None
+    subscription_status: str | None = None
+    subscription_current_period_end: datetime | None = None
+    subscription_trial_ends_at: datetime | None = None
+    stripe_price_id: str | None = None
     _provided_fields: set[str] = field(
         default_factory=set,
         repr=False,

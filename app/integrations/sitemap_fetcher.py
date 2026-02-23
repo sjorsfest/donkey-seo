@@ -5,9 +5,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
+import xml.etree.ElementTree as ET
 
 import httpx
-from lxml import etree
 
 logger = logging.getLogger(__name__)
 
@@ -231,8 +231,8 @@ class SitemapFetcher:
             raise
 
         try:
-            root = etree.fromstring(response.content)
-        except etree.XMLSyntaxError as e:
+            root = ET.fromstring(response.content)
+        except ET.ParseError as e:
             logger.warning(
                 "Invalid XML in sitemap",
                 extra={"url": sitemap_url, "error": str(e)},
@@ -242,7 +242,7 @@ class SitemapFetcher:
         # Determine if this is a sitemap index or regular sitemap
         # Check for sitemap elements (sitemap index)
         namespace = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-        sitemap_elements = root.xpath("//ns:sitemap/ns:loc", namespaces=namespace)
+        sitemap_elements = root.findall(".//ns:sitemap/ns:loc", namespace)
 
         if sitemap_elements:
             # This is a sitemap index - recursively fetch child sitemaps
@@ -253,7 +253,7 @@ class SitemapFetcher:
 
     async def _parse_sitemap_index(
         self,
-        root: etree._Element,
+        root: ET.Element,
         namespace: dict[str, str],
     ) -> list[SitemapPage]:
         """Parse a sitemap index and fetch all child sitemaps.
@@ -265,7 +265,7 @@ class SitemapFetcher:
         Returns:
             Combined list of SitemapPage objects from all child sitemaps
         """
-        sitemap_locs = root.xpath("//ns:sitemap/ns:loc", namespaces=namespace)
+        sitemap_locs = root.findall(".//ns:sitemap/ns:loc", namespace)
         child_sitemap_urls = [loc.text for loc in sitemap_locs if loc.text]
 
         # Limit number of child sitemaps to fetch
@@ -302,7 +302,7 @@ class SitemapFetcher:
 
     def _parse_sitemap(
         self,
-        root: etree._Element,
+        root: ET.Element,
         namespace: dict[str, str],
     ) -> list[SitemapPage]:
         """Parse a regular sitemap XML and extract URLs.
@@ -316,7 +316,7 @@ class SitemapFetcher:
         """
         pages = []
 
-        url_elements = root.xpath("//ns:url", namespaces=namespace)
+        url_elements = root.findall(".//ns:url", namespace)
 
         for url_elem in url_elements:
             # Extract loc (required)
