@@ -675,6 +675,127 @@ class ContentBriefPatchDTO:
         }
 
 @dataclass(slots=True)
+class ContentFeaturedImageRow:
+    """Read DTO for `ContentFeaturedImage`."""
+
+    project_id: str
+    brief_id: str
+    status: str
+    title_text: str
+    style_variant_id: str | None
+    template_version: str | None
+    template_spec: dict | None
+    object_key: str | None
+    mime_type: str | None
+    width: int | None
+    height: int | None
+    byte_size: int | None
+    sha256: str | None
+    source: str | None
+    generation_error: str | None
+    last_generated_at: datetime | None
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "ContentFeaturedImageRow":
+        return cls(
+            project_id=model.project_id,
+            brief_id=model.brief_id,
+            status=model.status,
+            title_text=model.title_text,
+            style_variant_id=model.style_variant_id,
+            template_version=model.template_version,
+            template_spec=model.template_spec,
+            object_key=model.object_key,
+            mime_type=model.mime_type,
+            width=model.width,
+            height=model.height,
+            byte_size=model.byte_size,
+            sha256=model.sha256,
+            source=model.source,
+            generation_error=model.generation_error,
+            last_generated_at=model.last_generated_at,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class ContentFeaturedImageCreateDTO:
+    """Create DTO for `ContentFeaturedImage`."""
+
+    project_id: str
+    brief_id: str
+    title_text: str
+    status: str | None = None
+    style_variant_id: str | None = None
+    template_version: str | None = None
+    template_spec: dict | None = None
+    object_key: str | None = None
+    mime_type: str | None = None
+    width: int | None = None
+    height: int | None = None
+    byte_size: int | None = None
+    sha256: str | None = None
+    source: str | None = None
+    generation_error: str | None = None
+    last_generated_at: datetime | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "status",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class ContentFeaturedImagePatchDTO:
+    """Sparse patch DTO for `ContentFeaturedImage`."""
+
+    project_id: str | None = None
+    brief_id: str | None = None
+    status: str | None = None
+    title_text: str | None = None
+    style_variant_id: str | None = None
+    template_version: str | None = None
+    template_spec: dict | None = None
+    object_key: str | None = None
+    mime_type: str | None = None
+    width: int | None = None
+    height: int | None = None
+    byte_size: int | None = None
+    sha256: str | None = None
+    source: str | None = None
+    generation_error: str | None = None
+    last_generated_at: datetime | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "ContentFeaturedImagePatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
 class DiscoveryIterationLearningRow:
     """Read DTO for `DiscoveryIterationLearning`."""
 
@@ -1346,6 +1467,8 @@ class ProjectRow:
     caching_ttls: dict | None
     enabled_steps: list[int] | None
     skip_steps: list[int] | None
+    notification_webhook: str | None
+    notification_webhook_secret: str | None
     current_step: int
     status: str
     id: str
@@ -1373,6 +1496,8 @@ class ProjectRow:
             caching_ttls=model.caching_ttls,
             enabled_steps=model.enabled_steps,
             skip_steps=model.skip_steps,
+            notification_webhook=model.notification_webhook,
+            notification_webhook_secret=model.notification_webhook_secret,
             current_step=model.current_step,
             status=model.status,
             id=model.id,
@@ -1402,6 +1527,8 @@ class ProjectCreateDTO:
     caching_ttls: dict | None = None
     enabled_steps: list[int] | None = None
     skip_steps: list[int] | None = None
+    notification_webhook: str | None = None
+    notification_webhook_secret: str | None = None
     current_step: int | None = None
     status: str | None = None
 
@@ -1441,6 +1568,8 @@ class ProjectPatchDTO:
     caching_ttls: dict | None = None
     enabled_steps: list[int] | None = None
     skip_steps: list[int] | None = None
+    notification_webhook: str | None = None
+    notification_webhook_secret: str | None = None
     current_step: int | None = None
     status: str | None = None
     _provided_fields: set[str] = field(
@@ -1554,6 +1683,108 @@ class ProjectStyleGuidePatchDTO:
 
     @classmethod
     def from_partial(cls, payload: dict[str, Any]) -> "ProjectStyleGuidePatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
+class PublicationWebhookDeliveryRow:
+    """Read DTO for `PublicationWebhookDelivery`."""
+
+    project_id: str
+    article_id: str
+    event_type: str
+    scheduled_for: datetime
+    status: str
+    attempt_count: int
+    next_attempt_at: datetime
+    last_attempt_at: datetime | None
+    delivered_at: datetime | None
+    last_http_status: int | None
+    last_error: str | None
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "PublicationWebhookDeliveryRow":
+        return cls(
+            project_id=model.project_id,
+            article_id=model.article_id,
+            event_type=model.event_type,
+            scheduled_for=model.scheduled_for,
+            status=model.status,
+            attempt_count=model.attempt_count,
+            next_attempt_at=model.next_attempt_at,
+            last_attempt_at=model.last_attempt_at,
+            delivered_at=model.delivered_at,
+            last_http_status=model.last_http_status,
+            last_error=model.last_error,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class PublicationWebhookDeliveryCreateDTO:
+    """Create DTO for `PublicationWebhookDelivery`."""
+
+    project_id: str
+    article_id: str
+    event_type: str
+    scheduled_for: datetime
+    next_attempt_at: datetime
+    status: str | None = None
+    attempt_count: int | None = None
+    last_attempt_at: datetime | None = None
+    delivered_at: datetime | None = None
+    last_http_status: int | None = None
+    last_error: str | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "status",
+        "attempt_count",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class PublicationWebhookDeliveryPatchDTO:
+    """Sparse patch DTO for `PublicationWebhookDelivery`."""
+
+    project_id: str | None = None
+    article_id: str | None = None
+    event_type: str | None = None
+    scheduled_for: datetime | None = None
+    status: str | None = None
+    attempt_count: int | None = None
+    next_attempt_at: datetime | None = None
+    last_attempt_at: datetime | None = None
+    delivered_at: datetime | None = None
+    last_http_status: int | None = None
+    last_error: str | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "PublicationWebhookDeliveryPatchDTO":
         obj = cls(**payload)
         obj._provided_fields = set(payload.keys())
         return obj
@@ -1801,7 +2032,26 @@ class TopicRow:
     serp_competitor_density: float | None
     priority_rank: int | None
     priority_score: float | None
-    priority_factors: dict | None
+    fit_tier: str | None
+    fit_score: float | None
+    brand_fit_score: float | None
+    opportunity_score: float | None
+    dynamic_fit_score: float | None
+    dynamic_opportunity_score: float | None
+    deterministic_priority_score: float | None
+    final_priority_score: float | None
+    llm_rerank_delta: float | None
+    llm_fit_adjustment: float | None
+    llm_tier_recommendation: str | None
+    fit_threshold_primary: float | None
+    fit_threshold_secondary: float | None
+    hard_exclusion_reason: str | None
+    final_cut_reason_code: str | None
+    serp_intent_confidence: float | None
+    serp_evidence_keyword_id: str | None
+    serp_evidence_source: str | None
+    serp_evidence_keyword_count: int | None
+    prioritization_diagnostics: dict | None
     recommended_url_type: str | None
     recommended_publish_order: int | None
     target_money_pages: list[str] | None
@@ -1838,7 +2088,26 @@ class TopicRow:
             serp_competitor_density=model.serp_competitor_density,
             priority_rank=model.priority_rank,
             priority_score=model.priority_score,
-            priority_factors=model.priority_factors,
+            fit_tier=model.fit_tier,
+            fit_score=model.fit_score,
+            brand_fit_score=model.brand_fit_score,
+            opportunity_score=model.opportunity_score,
+            dynamic_fit_score=model.dynamic_fit_score,
+            dynamic_opportunity_score=model.dynamic_opportunity_score,
+            deterministic_priority_score=model.deterministic_priority_score,
+            final_priority_score=model.final_priority_score,
+            llm_rerank_delta=model.llm_rerank_delta,
+            llm_fit_adjustment=model.llm_fit_adjustment,
+            llm_tier_recommendation=model.llm_tier_recommendation,
+            fit_threshold_primary=model.fit_threshold_primary,
+            fit_threshold_secondary=model.fit_threshold_secondary,
+            hard_exclusion_reason=model.hard_exclusion_reason,
+            final_cut_reason_code=model.final_cut_reason_code,
+            serp_intent_confidence=model.serp_intent_confidence,
+            serp_evidence_keyword_id=model.serp_evidence_keyword_id,
+            serp_evidence_source=model.serp_evidence_source,
+            serp_evidence_keyword_count=model.serp_evidence_keyword_count,
+            prioritization_diagnostics=model.prioritization_diagnostics,
             recommended_url_type=model.recommended_url_type,
             recommended_publish_order=model.recommended_publish_order,
             target_money_pages=model.target_money_pages,
@@ -1877,7 +2146,26 @@ class TopicCreateDTO:
     serp_competitor_density: float | None = None
     priority_rank: int | None = None
     priority_score: float | None = None
-    priority_factors: dict | None = None
+    fit_tier: str | None = None
+    fit_score: float | None = None
+    brand_fit_score: float | None = None
+    opportunity_score: float | None = None
+    dynamic_fit_score: float | None = None
+    dynamic_opportunity_score: float | None = None
+    deterministic_priority_score: float | None = None
+    final_priority_score: float | None = None
+    llm_rerank_delta: float | None = None
+    llm_fit_adjustment: float | None = None
+    llm_tier_recommendation: str | None = None
+    fit_threshold_primary: float | None = None
+    fit_threshold_secondary: float | None = None
+    hard_exclusion_reason: str | None = None
+    final_cut_reason_code: str | None = None
+    serp_intent_confidence: float | None = None
+    serp_evidence_keyword_id: str | None = None
+    serp_evidence_source: str | None = None
+    serp_evidence_keyword_count: int | None = None
+    prioritization_diagnostics: dict | None = None
     recommended_url_type: str | None = None
     recommended_publish_order: int | None = None
     target_money_pages: list[str] | None = None
@@ -1923,7 +2211,26 @@ class TopicPatchDTO:
     serp_competitor_density: float | None = None
     priority_rank: int | None = None
     priority_score: float | None = None
-    priority_factors: dict | None = None
+    fit_tier: str | None = None
+    fit_score: float | None = None
+    brand_fit_score: float | None = None
+    opportunity_score: float | None = None
+    dynamic_fit_score: float | None = None
+    dynamic_opportunity_score: float | None = None
+    deterministic_priority_score: float | None = None
+    final_priority_score: float | None = None
+    llm_rerank_delta: float | None = None
+    llm_fit_adjustment: float | None = None
+    llm_tier_recommendation: str | None = None
+    fit_threshold_primary: float | None = None
+    fit_threshold_secondary: float | None = None
+    hard_exclusion_reason: str | None = None
+    final_cut_reason_code: str | None = None
+    serp_intent_confidence: float | None = None
+    serp_evidence_keyword_id: str | None = None
+    serp_evidence_source: str | None = None
+    serp_evidence_keyword_count: int | None = None
+    prioritization_diagnostics: dict | None = None
     recommended_url_type: str | None = None
     recommended_publish_order: int | None = None
     target_money_pages: list[str] | None = None
@@ -2194,6 +2501,9 @@ __all__ = [
     "ContentBriefRow",
     "ContentBriefCreateDTO",
     "ContentBriefPatchDTO",
+    "ContentFeaturedImageRow",
+    "ContentFeaturedImageCreateDTO",
+    "ContentFeaturedImagePatchDTO",
     "DiscoveryIterationLearningRow",
     "DiscoveryIterationLearningCreateDTO",
     "DiscoveryIterationLearningPatchDTO",
@@ -2215,6 +2525,9 @@ __all__ = [
     "ProjectStyleGuideRow",
     "ProjectStyleGuideCreateDTO",
     "ProjectStyleGuidePatchDTO",
+    "PublicationWebhookDeliveryRow",
+    "PublicationWebhookDeliveryCreateDTO",
+    "PublicationWebhookDeliveryPatchDTO",
     "SeedTopicRow",
     "SeedTopicCreateDTO",
     "SeedTopicPatchDTO",

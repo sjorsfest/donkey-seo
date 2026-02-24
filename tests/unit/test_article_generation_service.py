@@ -89,6 +89,28 @@ class _FakeAuditorAgent:
         return SimpleNamespace(model_dump=lambda: payload)
 
 
+class _FakeHTTPResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _FakeLinkClient:
+    def __init__(self, status_by_method_and_url: dict[tuple[str, str], int]) -> None:
+        self.status_by_method_and_url = status_by_method_and_url
+        self.calls: list[tuple[str, str]] = []
+
+    async def head(self, url: str) -> _FakeHTTPResponse:
+        self.calls.append(("HEAD", url))
+        status_code = self.status_by_method_and_url.get(("HEAD", url), 404)
+        return _FakeHTTPResponse(status_code)
+
+    async def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeHTTPResponse:
+        del headers
+        self.calls.append(("GET", url))
+        status_code = self.status_by_method_and_url.get(("GET", url), 404)
+        return _FakeHTTPResponse(status_code)
+
+
 def _brief_payload() -> dict:
     return {
         "primary_keyword": "helpdesk automation software",
@@ -121,6 +143,156 @@ def _writer_instructions_payload() -> dict:
 
 def _delta_payload() -> dict:
     return {"must_include_sections": ["Overview"]}
+
+
+@pytest.mark.asyncio
+async def test_filter_invalid_document_links_drops_broken_links() -> None:
+    service = ArticleGenerationService("donkey.support")
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {},
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "section",
+                "semantic_tag": "section",
+                "heading": "Links",
+                "links": [
+                    {"anchor": "Valid", "href": "/docs"},
+                    {"anchor": "Invalid", "href": "/demo"},
+                ],
+                "cta": {"label": "Try it", "href": "https://donkey.support/pricing"},
+            }
+        ],
+    }
+    client = _FakeLinkClient(
+        {
+            ("HEAD", "https://donkey.support/docs"): 200,
+            ("HEAD", "https://donkey.support/demo"): 404,
+            ("HEAD", "https://donkey.support/pricing"): 404,
+        }
+    )
+
+    filtered = await service._filter_invalid_document_links(
+        document=document,
+        link_cache={},
+        client=client,
+    )
+    block = filtered["blocks"][0]
+
+    assert block["links"] == [{"anchor": "Valid", "href": "/docs"}]
+    assert block["cta"]["href"] == "#"
+
+
+@pytest.mark.asyncio
+async def test_filter_invalid_document_links_keeps_deferred_internal_links() -> None:
+    service = ArticleGenerationService("donkey.support")
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {},
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "section",
+                "semantic_tag": "section",
+                "heading": "Links",
+                "links": [
+                    {
+                        "anchor": "Upcoming article",
+                        "href": "",
+                        "target_brief_id": "brief-1",
+                    }
+                ],
+            }
+        ],
+    }
+    client = _FakeLinkClient({})
+
+    filtered = await service._filter_invalid_document_links(
+        document=document,
+        link_cache={},
+        client=client,
+    )
+
+    assert len(filtered["blocks"][0]["links"]) == 1
+    assert filtered["blocks"][0]["links"][0]["target_brief_id"] == "brief-1"
+    assert filtered["blocks"][0]["links"][0]["href"] == ""
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_filter_invalid_document_links_uses_head_get_fallback_and_cache() -> None:
+    service = ArticleGenerationService("donkey.support")
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {},
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "section",
+                "semantic_tag": "section",
+                "heading": "Links",
+                "links": [
+                    {"anchor": "One", "href": "/head-get-fallback"},
+                    {"anchor": "Two", "href": "/head-get-fallback"},
+                ],
+                "cta": None,
+            }
+        ],
+    }
+    target_url = "https://donkey.support/head-get-fallback"
+    client = _FakeLinkClient(
+        {
+            ("HEAD", target_url): 405,
+            ("GET", target_url): 200,
+        }
+    )
+
+    filtered = await service._filter_invalid_document_links(
+        document=document,
+        link_cache={},
+        client=client,
+    )
+
+    assert len(filtered["blocks"][0]["links"]) == 2
+    assert client.calls.count(("HEAD", target_url)) == 1
+    assert client.calls.count(("GET", target_url)) == 1
+
+
+def test_apply_brief_internal_link_plan_injects_batch_brief_link() -> None:
+    service = ArticleGenerationService("donkey.support")
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {},
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "section",
+                "semantic_tag": "section",
+                "heading": "Overview",
+                "links": [],
+            }
+        ],
+    }
+    brief = {
+        "internal_links_out": [
+            {
+                "target_type": "batch_brief",
+                "target_brief_id": "brief-123",
+                "target_url": "/blog-1",
+                "anchor_text": "Read Blog 1",
+                "placement_section": "Overview",
+            }
+        ]
+    }
+
+    updated = service._apply_brief_internal_link_plan(document=document, brief=brief)
+
+    links = updated["blocks"][0]["links"]
+    assert len(links) == 1
+    assert links[0]["href"] == "/blog-1"
+    assert links[0]["anchor"] == "Read Blog 1"
+    assert links[0]["target_brief_id"] == "brief-123"
 
 
 @pytest.mark.asyncio

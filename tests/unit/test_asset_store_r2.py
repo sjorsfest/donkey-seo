@@ -48,6 +48,8 @@ async def test_ingest_asset_candidates_deduplicates_by_sha(monkeypatch: pytest.M
     assert len(assets) == 1
     assert len(uploaded_keys) == 1
     assert assets[0]["object_key"].startswith("projects/project-1/brand-assets/")
+    assert "dominant_colors" in assets[0]
+    assert "average_luminance" in assets[0]
 
 
 def test_create_signed_read_url_uses_s3_presign() -> None:

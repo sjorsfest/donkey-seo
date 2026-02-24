@@ -18,6 +18,8 @@ class BrandAssetMetadata(BaseModel):
     byte_size: int
     width: int | None = None
     height: int | None = None
+    dominant_colors: list[str] = Field(default_factory=list)
+    average_luminance: float | None = None
     role: str
     role_confidence: float
     source_url: str

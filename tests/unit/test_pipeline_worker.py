@@ -151,3 +151,37 @@ async def test_pipeline_task_worker_requeues_resume_after_delayed_resume_request
     assert manager.requeued[0].run_id == "run-1"
     assert manager.requeued[0].kind == "resume"
     sleep_mock.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_task_worker_requeues_when_project_lock_busy(
+    monkeypatch: Any,
+) -> None:
+    job = PipelineTaskJob(kind="start", project_id="project-1", run_id="run-1")
+    manager = _FakeManager(job)
+    worker = PipelineTaskWorker(manager=manager, poll_timeout_seconds=1)
+
+    busy_lock = worker._project_locks.setdefault(job.project_id, asyncio.Lock())
+    await busy_lock.acquire()
+
+    calls = {"count": 0}
+
+    async def _pop_once_then_stop(*, timeout_seconds: int = 5) -> PipelineTaskJob | None:
+        if calls["count"] == 0:
+            calls["count"] += 1
+            worker._stopping.set()
+            return job
+        return None
+
+    manager.pop_next = _pop_once_then_stop  # type: ignore[method-assign]
+    execute_mock = AsyncMock(return_value=False)
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(worker, "_execute", execute_mock)
+    monkeypatch.setattr("app.services.pipeline_task_manager.asyncio.sleep", sleep_mock)
+
+    await worker._worker_loop(worker_index=1)
+
+    assert execute_mock.await_count == 0
+    assert len(manager.requeued) == 1
+    assert manager.requeued[0].run_id == "run-1"
+    sleep_mock.assert_awaited()

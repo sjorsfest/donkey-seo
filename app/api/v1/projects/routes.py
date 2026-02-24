@@ -1,6 +1,7 @@
 """Project API endpoints."""
 
 import logging
+from dataclasses import dataclass
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -25,11 +26,59 @@ from app.services.pipeline_task_manager import (
     PipelineQueueFullError,
     get_setup_pipeline_task_manager,
 )
+from app.services.publication_webhook import (
+    backfill_project_publication_webhook_deliveries,
+)
 from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class _ProjectSettingsCreateFields:
+    skip_steps: list[int] | None
+    notification_webhook: str | None
+    notification_webhook_secret: str | None
+
+
+def _project_settings_create_fields(
+    payload: ProjectCreate | ProjectOnboardingBootstrapRequest,
+) -> _ProjectSettingsCreateFields:
+    """Flatten project settings into DTO kwargs for creation."""
+    settings_payload = payload.settings
+    if settings_payload is None:
+        return _ProjectSettingsCreateFields(
+            skip_steps=None,
+            notification_webhook=None,
+            notification_webhook_secret=None,
+        )
+    return _ProjectSettingsCreateFields(
+        skip_steps=settings_payload.skip_steps,
+        notification_webhook=settings_payload.notification_webhook,
+        notification_webhook_secret=settings_payload.notification_webhook_secret,
+    )
+
+
+def _project_settings_patch_fields(settings_payload: dict[str, object] | None) -> tuple[dict[str, object], bool]:
+    """Extract patchable project settings fields and webhook-touch marker."""
+    if not isinstance(settings_payload, dict):
+        return {}, False
+
+    patch_fields: dict[str, object] = {}
+    webhook_config_touched = False
+    if "skip_steps" in settings_payload:
+        patch_fields["skip_steps"] = settings_payload.get("skip_steps")
+    if "notification_webhook" in settings_payload:
+        patch_fields["notification_webhook"] = settings_payload.get("notification_webhook")
+        webhook_config_touched = True
+    if "notification_webhook_secret" in settings_payload:
+        patch_fields["notification_webhook_secret"] = settings_payload.get(
+            "notification_webhook_secret"
+        )
+        webhook_config_touched = True
+    return patch_fields, webhook_config_touched
 
 
 @router.post(
@@ -231,15 +280,26 @@ async def update_project(
     project = await get_user_project(project_id, current_user, session)
 
     update_data = project_data.model_dump(exclude_unset=True)
+    settings_payload = update_data.get("settings")
     patch_data = {
         field: value
         for field, value in update_data.items()
         if hasattr(project, field)
     }
+    settings_patch_data, webhook_config_touched = _project_settings_patch_fields(
+        settings_payload if isinstance(settings_payload, dict) else None
+    )
+    patch_data.update(settings_patch_data)
     project.patch(
         session,
         ProjectPatchDTO.from_partial(patch_data),
     )
+
+    if webhook_config_touched:
+        await backfill_project_publication_webhook_deliveries(
+            session,
+            project_id=str(project.id),
+        )
 
     await session.flush()
     await session.refresh(project)
@@ -276,6 +336,7 @@ async def _create_project(
     payload: ProjectCreate | ProjectOnboardingBootstrapRequest,
 ) -> Project:
     """Persist a project from either standard create or onboarding bootstrap payload."""
+    settings_fields = _project_settings_create_fields(payload)
     project = Project.create(
         session,
         ProjectCreateDTO(
@@ -288,9 +349,18 @@ async def _create_project(
             secondary_locales=payload.secondary_locales,
             primary_goal=payload.goals.primary_objective if payload.goals else None,
             secondary_goals=payload.goals.secondary_goals if payload.goals else None,
-            skip_steps=payload.settings.skip_steps if payload.settings else None,
+            skip_steps=settings_fields.skip_steps,
+            notification_webhook=settings_fields.notification_webhook,
+            notification_webhook_secret=settings_fields.notification_webhook_secret,
         ),
     )
+
+    if settings_fields.notification_webhook or settings_fields.notification_webhook_secret:
+        await backfill_project_publication_webhook_deliveries(
+            session,
+            project_id=str(project.id),
+        )
+
     await session.flush()
     await session.refresh(project)
     return project

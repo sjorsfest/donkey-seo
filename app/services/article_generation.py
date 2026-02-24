@@ -6,7 +6,9 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+import httpx
 
 from app.agents.article_seo_auditor import ArticleSEOAuditorAgent, ArticleSEOAuditorInput
 from app.agents.article_writer import ArticleWriterAgent, ArticleWriterInput
@@ -15,6 +17,8 @@ from app.services.content_renderer import render_modular_document
 from app.services.seo_checklist import DeterministicAuditReport, run_deterministic_checklist
 
 logger = logging.getLogger(__name__)
+
+_LINK_VALIDATION_TIMEOUT_SECONDS = 4.0
 
 _ALLOWED_BLOCK_TYPES = {
     "hero",
@@ -112,115 +116,126 @@ class ArticleGenerationService:
         min_external_links = self._min_link_count(writer_instructions, "min_external")
         require_cta = self._cta_required(brief, conversion_intents)
         first_party_domain = self._normalize_domain(self.target_domain)
+        link_validation_cache: dict[str, bool] = {}
 
-        for attempt in range(total_attempts):
-            output = await writer_agent.run(
-                input_data=ArticleWriterInput(
+        async with httpx.AsyncClient(
+            timeout=_LINK_VALIDATION_TIMEOUT_SECONDS,
+            follow_redirects=True,
+        ) as link_client:
+            for attempt in range(total_attempts):
+                output = await writer_agent.run(
+                    input_data=ArticleWriterInput(
+                        brief=brief,
+                        writer_instructions=writer_instructions,
+                        brief_delta=brief_delta,
+                        brand_context=brand_context,
+                        conversion_intents=conversion_intents,
+                        target_domain=self.target_domain,
+                        qa_feedback=qa_feedback,
+                        existing_document=previous_document,
+                    )
+                )
+                document = self._normalize_document(
+                    output.document.model_dump(),
+                    brief,
+                    writer_instructions,
+                    conversion_intents,
+                )
+                document = self._apply_brief_internal_link_plan(document=document, brief=brief)
+                document = await self._filter_invalid_document_links(
+                    document=document,
+                    link_cache=link_validation_cache,
+                    client=link_client,
+                )
+                rendered_html = render_modular_document(document)
+                base_qa_report = evaluate_article_quality(
+                    document,
+                    rendered_html,
+                    required_sections=required_sections,
+                    forbidden_claims=forbidden_claims,
+                    target_word_count_min=brief.get("target_word_count_min"),
+                    target_word_count_max=brief.get("target_word_count_max"),
+                    min_internal_links=min_internal_links,
+                    min_external_links=min_external_links,
+                    require_cta=require_cta,
+                    first_party_domain=first_party_domain,
+                )
+                deterministic_report = run_deterministic_checklist(
+                    document,
+                    rendered_html,
+                    primary_keyword=str(brief.get("primary_keyword") or ""),
+                    page_type=brief.get("page_type"),
+                    search_intent=brief.get("search_intent"),
+                    required_sections=required_sections,
+                    forbidden_claims=forbidden_claims,
+                    target_word_count_min=brief.get("target_word_count_min"),
+                    target_word_count_max=brief.get("target_word_count_max"),
+                    min_internal_links=min_internal_links,
+                    min_external_links=min_external_links,
+                    require_cta=require_cta,
+                    first_party_domain=first_party_domain,
+                    compliance_notes=writer_instructions.get("compliance_notes") or [],
+                    brief_text_fields=[
+                        str(brief.get("primary_keyword") or ""),
+                        str(brief.get("search_intent") or ""),
+                        str(brief.get("page_type") or ""),
+                        str(brief.get("target_audience") or ""),
+                        str(brief.get("reader_job_to_be_done") or ""),
+                        str(brand_context or ""),
+                        str(_as_dict(document.get("seo_meta")).get("h1") or ""),
+                    ],
+                    keyword_density_soft_min=density_soft_min,
+                    keyword_density_soft_max=density_soft_max,
+                )
+                llm_audit = await self._run_llm_seo_audit(
+                    auditor=seo_auditor,
                     brief=brief,
                     writer_instructions=writer_instructions,
-                    brief_delta=brief_delta,
-                    brand_context=brand_context,
-                    conversion_intents=conversion_intents,
-                    target_domain=self.target_domain,
-                    qa_feedback=qa_feedback,
-                    existing_document=previous_document,
+                    document=document,
+                    deterministic_report=deterministic_report,
                 )
-            )
-            document = self._normalize_document(
-                output.document.model_dump(),
-                brief,
-                writer_instructions,
-                conversion_intents,
-            )
-            rendered_html = render_modular_document(document)
-            base_qa_report = evaluate_article_quality(
-                document,
-                rendered_html,
-                required_sections=required_sections,
-                forbidden_claims=forbidden_claims,
-                target_word_count_min=brief.get("target_word_count_min"),
-                target_word_count_max=brief.get("target_word_count_max"),
-                min_internal_links=min_internal_links,
-                min_external_links=min_external_links,
-                require_cta=require_cta,
-                first_party_domain=first_party_domain,
-            )
-            deterministic_report = run_deterministic_checklist(
-                document,
-                rendered_html,
-                primary_keyword=str(brief.get("primary_keyword") or ""),
-                page_type=brief.get("page_type"),
-                search_intent=brief.get("search_intent"),
-                required_sections=required_sections,
-                forbidden_claims=forbidden_claims,
-                target_word_count_min=brief.get("target_word_count_min"),
-                target_word_count_max=brief.get("target_word_count_max"),
-                min_internal_links=min_internal_links,
-                min_external_links=min_external_links,
-                require_cta=require_cta,
-                first_party_domain=first_party_domain,
-                compliance_notes=writer_instructions.get("compliance_notes") or [],
-                brief_text_fields=[
-                    str(brief.get("primary_keyword") or ""),
-                    str(brief.get("search_intent") or ""),
-                    str(brief.get("page_type") or ""),
-                    str(brief.get("target_audience") or ""),
-                    str(brief.get("reader_job_to_be_done") or ""),
-                    str(brand_context or ""),
-                    str(_as_dict(document.get("seo_meta")).get("h1") or ""),
-                ],
-                keyword_density_soft_min=density_soft_min,
-                keyword_density_soft_max=density_soft_max,
-            )
-            llm_audit = await self._run_llm_seo_audit(
-                auditor=seo_auditor,
-                brief=brief,
-                writer_instructions=writer_instructions,
-                document=document,
-                deterministic_report=deterministic_report,
-            )
-            qa_report = self._merge_qa_reports(
-                base_qa_report=base_qa_report,
-                deterministic_report=deterministic_report,
-                llm_audit=llm_audit,
-                seo_score_target=seo_score_target,
-            )
-            revision_feedback = self._build_revision_feedback(qa_report, brief)
-            seo_audit = _as_dict(qa_report.get("seo_audit"))
-            seo_audit["revision_feedback"] = revision_feedback
-            qa_report["seo_audit"] = seo_audit
+                qa_report = self._merge_qa_reports(
+                    base_qa_report=base_qa_report,
+                    deterministic_report=deterministic_report,
+                    llm_audit=llm_audit,
+                    seo_score_target=seo_score_target,
+                )
+                revision_feedback = self._build_revision_feedback(qa_report, brief)
+                seo_audit = _as_dict(qa_report.get("seo_audit"))
+                seo_audit["revision_feedback"] = revision_feedback
+                qa_report["seo_audit"] = seo_audit
 
-            hard_failures = _as_list(seo_audit.get("hard_failures"))
-            overall_score = int(seo_audit.get("overall_score") or 0)
-            should_retry = (
-                attempt < total_attempts - 1
-                and (len(hard_failures) > 0 or overall_score < seo_score_target)
-            )
-
-            if not should_retry:
-                status = "needs_review" if hard_failures else "draft"
-                seo_meta = _as_dict(document.get("seo_meta"))
-                return GeneratedArticleArtifact(
-                    title=str(seo_meta.get("h1") or brief.get("primary_keyword") or "Untitled"),
-                    slug=str(
-                        seo_meta.get("slug")
-                        or self._slugify(str(brief.get("primary_keyword") or "article"))
-                    ),
-                    primary_keyword=str(
-                        seo_meta.get("primary_keyword")
-                        or brief.get("primary_keyword")
-                        or ""
-                    ),
-                    modular_document=document,
-                    rendered_html=rendered_html,
-                    qa_report=qa_report,
-                    status=status,
-                    generation_model=getattr(writer_agent, "_model", None),
-                    generation_temperature=writer_agent.temperature,
+                hard_failures = _as_list(seo_audit.get("hard_failures"))
+                overall_score = int(seo_audit.get("overall_score") or 0)
+                should_retry = (
+                    attempt < total_attempts - 1
+                    and (len(hard_failures) > 0 or overall_score < seo_score_target)
                 )
 
-            qa_feedback = revision_feedback
-            previous_document = document
+                if not should_retry:
+                    status = "needs_review" if hard_failures else "draft"
+                    seo_meta = _as_dict(document.get("seo_meta"))
+                    return GeneratedArticleArtifact(
+                        title=str(seo_meta.get("h1") or brief.get("primary_keyword") or "Untitled"),
+                        slug=str(
+                            seo_meta.get("slug")
+                            or self._slugify(str(brief.get("primary_keyword") or "article"))
+                        ),
+                        primary_keyword=str(
+                            seo_meta.get("primary_keyword")
+                            or brief.get("primary_keyword")
+                            or ""
+                        ),
+                        modular_document=document,
+                        rendered_html=rendered_html,
+                        qa_report=qa_report,
+                        status=status,
+                        generation_model=getattr(writer_agent, "_model", None),
+                        generation_temperature=writer_agent.temperature,
+                    )
+
+                qa_feedback = revision_feedback
+                previous_document = document
 
         raise RuntimeError("Unreachable article generation state")
 
@@ -445,10 +460,13 @@ class ArticleGenerationService:
         }
 
         primary_keyword = str(brief.get("primary_keyword") or "")
+        locked_title = str(brief.get("locked_title") or "").strip()
         if not seo_meta.get("primary_keyword"):
             seo_meta["primary_keyword"] = primary_keyword
 
-        if not seo_meta.get("h1"):
+        if locked_title:
+            seo_meta["h1"] = locked_title
+        elif not seo_meta.get("h1"):
             working_titles = _as_list(brief.get("working_titles"))
             seo_meta["h1"] = str(
                 working_titles[0] if working_titles else primary_keyword or "Untitled"
@@ -469,6 +487,14 @@ class ArticleGenerationService:
             seo_meta["slug"] = self._slugify(primary_keyword or str(seo_meta.get("h1")))
 
         normalized_blocks = self._normalize_blocks(blocks, seo_meta)
+        if locked_title:
+            for block in normalized_blocks:
+                if not isinstance(block, dict):
+                    continue
+                if str(block.get("block_type") or "").strip().lower() != "hero":
+                    continue
+                block["heading"] = locked_title
+                break
 
         if self._cta_required(brief, conversion_intents) and not any(
             block.get("block_type") == "cta" for block in normalized_blocks
@@ -507,6 +533,274 @@ class ArticleGenerationService:
 
         normalized["conversion_plan"] = conversion_plan
         return normalized
+
+    async def _filter_invalid_document_links(
+        self,
+        *,
+        document: dict[str, Any],
+        link_cache: dict[str, bool],
+        client: httpx.AsyncClient,
+    ) -> dict[str, Any]:
+        blocks = _as_list(document.get("blocks"))
+        if not blocks:
+            return document
+
+        dropped_links = 0
+        neutralized_ctas = 0
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+
+            valid_links: list[dict[str, Any]] = []
+            for raw_link in _as_list(block.get("links")):
+                if not isinstance(raw_link, dict):
+                    continue
+                target_brief_id = str(raw_link.get("target_brief_id") or "").strip()
+                href = str(raw_link.get("href") or "").strip()
+                if target_brief_id:
+                    # Deferred internal link: keep metadata and resolve href later.
+                    valid_links.append(raw_link)
+                    continue
+                if not href:
+                    continue
+                if await self._href_exists(href=href, link_cache=link_cache, client=client):
+                    valid_links.append(raw_link)
+                else:
+                    dropped_links += 1
+            block["links"] = valid_links
+
+            cta = block.get("cta")
+            if not isinstance(cta, dict):
+                continue
+            cta_href = str(cta.get("href") or "").strip()
+            if not cta_href:
+                continue
+            if await self._href_exists(href=cta_href, link_cache=link_cache, client=client):
+                continue
+            cta["href"] = "#"
+            block["cta"] = cta
+            neutralized_ctas += 1
+
+        if dropped_links > 0 or neutralized_ctas > 0:
+            logger.info(
+                "Filtered invalid links from generated article",
+                extra={
+                    "dropped_links": dropped_links,
+                    "neutralized_ctas": neutralized_ctas,
+                    "target_domain": self.target_domain,
+                },
+            )
+
+        return document
+
+    def _apply_brief_internal_link_plan(
+        self,
+        *,
+        document: dict[str, Any],
+        brief: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Inject deterministic internal links from brief recommendations.
+
+        This guarantees planned interlinks (including unpublished predecessors)
+        are present even when the writer model omits them.
+        """
+        recommendations = [
+            rec
+            for rec in _as_list(brief.get("internal_links_out"))
+            if isinstance(rec, dict)
+        ]
+        if not recommendations:
+            return document
+
+        blocks = _as_list(document.get("blocks"))
+        if not blocks:
+            return document
+
+        existing_keys: set[str] = set()
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            for link in _as_list(block.get("links")):
+                if not isinstance(link, dict):
+                    continue
+                existing_keys.add(
+                    self._link_key(
+                        href=str(link.get("href") or ""),
+                        anchor=str(link.get("anchor") or ""),
+                    )
+                )
+
+        for rec in recommendations[:6]:
+            target_type = str(rec.get("target_type") or "").strip().lower()
+            href = str(rec.get("target_url") or "").strip()
+            target_brief_id = str(rec.get("target_brief_id") or "").strip()
+
+            # Deferred batch links intentionally keep empty href until publish_url exists.
+            if target_type == "batch_brief" and target_brief_id and not href:
+                href = ""
+            if not href:
+                if not target_brief_id:
+                    continue
+
+            anchor = str(rec.get("anchor_text") or "").strip() or self._fallback_anchor_from_href(href)
+            link_key = self._link_key(href=href, anchor=anchor)
+            if link_key in existing_keys:
+                continue
+
+            placement = str(rec.get("placement_section") or "").strip()
+            block_idx = self._select_internal_link_block_index(blocks=blocks, placement_section=placement)
+
+            block = blocks[block_idx]
+            if not isinstance(block, dict):
+                continue
+            block_links = _as_list(block.get("links"))
+            link_payload: dict[str, Any] = {"anchor": anchor, "href": href}
+            if target_brief_id:
+                link_payload["target_brief_id"] = target_brief_id
+            block_links.append(link_payload)
+            block["links"] = block_links
+            existing_keys.add(link_key)
+
+        document["blocks"] = blocks
+        return document
+
+    def _select_internal_link_block_index(
+        self,
+        *,
+        blocks: list[Any],
+        placement_section: str,
+    ) -> int:
+        normalized_placement = placement_section.strip().lower()
+        if normalized_placement:
+            for idx, block in enumerate(blocks):
+                if not isinstance(block, dict):
+                    continue
+                heading = str(block.get("heading") or "").strip().lower()
+                if not heading:
+                    continue
+                if heading == normalized_placement or normalized_placement in heading:
+                    return idx
+
+        preferred_types = {
+            "section",
+            "summary",
+            "list",
+            "steps",
+            "comparison_table",
+            "conclusion",
+        }
+        for idx, block in enumerate(blocks):
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("block_type") or "").strip().lower() in preferred_types:
+                return idx
+
+        return 0
+
+    def _fallback_anchor_from_href(self, href: str) -> str:
+        if not href:
+            return "Related article"
+        path = href.split("?", 1)[0].rstrip("/")
+        slug = path.split("/")[-1]
+        words = re.sub(r"[-_]+", " ", slug).strip()
+        return words or "Related article"
+
+    def _link_key(self, *, href: str, anchor: str) -> str:
+        return "|".join([
+            href.strip().lower(),
+            anchor.strip().lower(),
+        ])
+
+    async def _href_exists(
+        self,
+        *,
+        href: str,
+        link_cache: dict[str, bool],
+        client: httpx.AsyncClient,
+    ) -> bool:
+        resolved_url = self._resolve_href_to_url(href)
+        if not resolved_url:
+            return True
+
+        cached = link_cache.get(resolved_url)
+        if cached is not None:
+            return cached
+
+        exists = await self._check_remote_url_exists(url=resolved_url, client=client)
+        link_cache[resolved_url] = exists
+        return exists
+
+    def _resolve_href_to_url(self, href: str) -> str | None:
+        normalized_href = href.strip()
+        if not normalized_href:
+            return None
+
+        lowered = normalized_href.lower()
+        if lowered.startswith(("#", "mailto:", "tel:", "javascript:")):
+            return None
+
+        parsed = urlparse(normalized_href)
+        if parsed.scheme and parsed.scheme not in {"http", "https"}:
+            return None
+
+        return urljoin(f"{self._target_base_url()}/", normalized_href)
+
+    async def _check_remote_url_exists(
+        self,
+        *,
+        url: str,
+        client: httpx.AsyncClient,
+    ) -> bool:
+        head_status = await self._request_status(url=url, client=client, method="HEAD")
+        if head_status is not None:
+            if head_status in {405, 501}:
+                get_status = await self._request_status(url=url, client=client, method="GET")
+                if get_status is not None:
+                    return self._status_indicates_existing_page(get_status)
+            return self._status_indicates_existing_page(head_status)
+
+        get_status = await self._request_status(url=url, client=client, method="GET")
+        if get_status is not None:
+            return self._status_indicates_existing_page(get_status)
+
+        return False
+
+    async def _request_status(
+        self,
+        *,
+        url: str,
+        client: httpx.AsyncClient,
+        method: str,
+    ) -> int | None:
+        try:
+            if method == "HEAD":
+                response = await client.head(url)
+            else:
+                response = await client.get(url, headers={"Range": "bytes=0-0"})
+            return int(response.status_code)
+        except httpx.HTTPError:
+            return None
+
+    def _status_indicates_existing_page(self, status_code: int) -> bool:
+        if 200 <= status_code < 400:
+            return True
+        if status_code in {401, 403, 429}:
+            return True
+        if 500 <= status_code < 600:
+            return True
+        if status_code in {404, 410}:
+            return False
+        return False
+
+    def _target_base_url(self) -> str:
+        parsed = urlparse(
+            self.target_domain
+            if self.target_domain.startswith(("http://", "https://"))
+            else f"https://{self.target_domain}"
+        )
+        scheme = parsed.scheme if parsed.scheme in {"http", "https"} else "https"
+        netloc = parsed.netloc or parsed.path
+        return f"{scheme}://{netloc}".rstrip("/")
 
     def _normalize_blocks(
         self,

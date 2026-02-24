@@ -29,3 +29,13 @@ def test_discovery_module_contract_uses_steps_1_to_7() -> None:
     assert cfg["default_end"] == 7
     assert sorted(cfg["step_names"].keys()) == [1, 2, 3, 4, 5, 6, 7]
     assert cfg["optional_steps"] == {7}
+
+
+def test_content_module_contract_uses_steps_1_to_5() -> None:
+    orchestrator = PipelineOrchestrator(_NoopSession(), "project-1")
+
+    cfg = orchestrator._module_config("content")
+
+    assert cfg["default_start"] == 1
+    assert cfg["default_end"] == 5
+    assert sorted(cfg["step_names"].keys()) == [1, 2, 3, 4, 5]

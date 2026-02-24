@@ -448,13 +448,10 @@ class Step08SerpValidationService(
             if not evidence_keywords:
                 topic.serp_servedness_score = None
                 topic.serp_competitor_density = None
-                topic.priority_factors = {
-                    **(topic.priority_factors or {}),
-                    "serp_intent_confidence": 0.0,
-                    "serp_evidence_source": "none",
-                    "serp_evidence_keyword_id": None,
-                    "serp_evidence_keyword_count": 0,
-                }
+                topic.serp_intent_confidence = 0.0
+                topic.serp_evidence_source = "none"
+                topic.serp_evidence_keyword_id = None
+                topic.serp_evidence_keyword_count = 0
                 continue
 
             # Aggregate top evidence keywords to avoid overfitting to one phrase.
@@ -483,18 +480,15 @@ class Step08SerpValidationService(
                 sum(competitor_densities) / max(len(competitor_densities), 1),
                 4,
             )
-            topic.priority_factors = {
-                **(topic.priority_factors or {}),
-                "serp_intent_confidence": round(
-                    sum(intent_confidence_scores) / max(len(intent_confidence_scores), 1),
-                    4,
-                ),
-                "serp_evidence_source": evidence_source,
-                "serp_evidence_keyword_id": (
-                    str(selected_evidence_keyword.id) if selected_evidence_keyword else None
-                ),
-                "serp_evidence_keyword_count": len(sampled),
-            }
+            topic.serp_intent_confidence = round(
+                sum(intent_confidence_scores) / max(len(intent_confidence_scores), 1),
+                4,
+            )
+            topic.serp_evidence_source = evidence_source
+            topic.serp_evidence_keyword_id = (
+                str(selected_evidence_keyword.id) if selected_evidence_keyword else None
+            )
+            topic.serp_evidence_keyword_count = len(sampled)
 
     def _scalar_rows(self, result: Any) -> list[Any]:
         """Normalize SQLAlchemy scalar results and lightweight test proxies."""

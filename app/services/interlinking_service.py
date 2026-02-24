@@ -374,6 +374,10 @@ class InterlinkingService:
             if target_brief.id == source_brief.id:
                 continue
 
+            # Only link to content scheduled before this brief.
+            if not self._is_valid_publication_predecessor(source_brief, target_brief):
+                continue
+
             # Early exit if cosine similarity too low
             if cosine_score < 0.5:
                 continue
@@ -432,7 +436,7 @@ class InterlinkingService:
             candidates.append(
                 LinkCandidate(
                     target_type="batch_brief",
-                    target_url=None,  # Will be determined when article is published
+                    target_url=None,  # Resolved later when/if target gets published_url
                     target_brief_id=str(target_brief.id),
                     anchor_text=anchor_text,
                     placement_section=placement_section,
@@ -443,6 +447,25 @@ class InterlinkingService:
             )
 
         return candidates
+
+    def _is_valid_publication_predecessor(
+        self,
+        source_brief: ContentBrief,
+        target_brief: ContentBrief,
+    ) -> bool:
+        """Return True when target is scheduled before source.
+
+        If source has a proposed date and target does not, skip the target.
+        If source lacks a proposed date, keep legacy behavior and allow target.
+        """
+        source_date = source_brief.proposed_publication_date
+        target_date = target_brief.proposed_publication_date
+
+        if source_date is None:
+            return True
+        if target_date is None:
+            return False
+        return target_date < source_date
 
     def _cosine_similarity_batch(
         self,

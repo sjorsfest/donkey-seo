@@ -162,6 +162,11 @@ class Settings(BaseSettings):
     brand_asset_max_bytes: int = 5_000_000
     brand_assets_max_count: int = 8
     signed_url_ttl_seconds: int = 90
+    content_image_width: int = 1200
+    content_image_height: int = 630
+    content_image_render_timeout_ms: int = 30_000
+    content_image_retry_attempts: int = 3
+    content_image_retry_backoff_ms: int = 750
 
     setup_pipeline_task_workers: int = 2
     setup_pipeline_task_queue_size: int = 100

@@ -53,11 +53,26 @@ class TopicResponse(BaseModel):
     # Priority
     priority_rank: int | None
     priority_score: float | None
+    deterministic_priority_score: float | None
+    final_priority_score: float | None
+    dynamic_fit_score: float | None
+    dynamic_opportunity_score: float | None
     expected_role: str | None
     fit_score: float | None
+    brand_fit_score: float | None
+    opportunity_score: float | None
     fit_tier: str | None
-    fit_reasons: list[str] | None
-    fit_threshold_used: float | None
+    fit_threshold_primary: float | None
+    fit_threshold_secondary: float | None
+    llm_rerank_delta: float | None
+    llm_fit_adjustment: float | None
+    llm_tier_recommendation: str | None
+    hard_exclusion_reason: str | None
+    final_cut_reason_code: str | None
+    serp_intent_confidence: float | None
+    serp_evidence_keyword_id: str | None
+    serp_evidence_source: str | None
+    serp_evidence_keyword_count: int | None
 
     created_at: datetime
     updated_at: datetime
@@ -68,7 +83,7 @@ class TopicResponse(BaseModel):
 class TopicDetailResponse(TopicResponse):
     """Detailed topic response."""
 
-    priority_factors: dict | None
+    prioritization_diagnostics: dict | None
     recommended_url_type: str | None
     recommended_publish_order: int | None
     target_money_pages: list[str] | None

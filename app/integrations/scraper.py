@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 class WebsiteScraper:
     """Scraper for extracting content from websites."""
 
+    _HEX_COLOR_PATTERN = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b")
+    _FONT_FAMILY_PATTERN = re.compile(r"font-family\s*:\s*([^;}{]+)", re.IGNORECASE)
+
     def __init__(
         self,
         timeout: float = 30.0,
@@ -61,16 +64,19 @@ class WebsiteScraper:
 
         soup = BeautifulSoup(response.text, "lxml")
 
-        # Remove script and style elements
-        for element in soup(["script", "style", "nav", "footer", "header"]):
-            element.decompose()
-
         # Extract metadata
         title = soup.title.string if soup.title else ""
         meta_desc = ""
         meta_tag = soup.find("meta", attrs={"name": "description"})
         if meta_tag and meta_tag.get("content"):
             meta_desc = meta_tag["content"]
+
+        visual_signals = self._extract_visual_signals(soup=soup)
+        asset_candidates = self._extract_asset_candidates(soup=soup, page_url=url)
+
+        # Remove non-content shells for text extraction after visual/asset extraction.
+        for element in soup(["script", "style", "nav", "footer", "header"]):
+            element.decompose()
 
         # Extract headings
         headings = []
@@ -98,8 +104,6 @@ class WebsiteScraper:
             if parsed.netloc == base_domain:
                 links.append(full_url)
 
-        asset_candidates = self._extract_asset_candidates(soup=soup, page_url=url)
-
         return {
             "url": url,
             "title": title,
@@ -108,6 +112,7 @@ class WebsiteScraper:
             "text_content": text_content[:50000],  # Limit content size
             "links": list(set(links)),
             "asset_candidates": asset_candidates,
+            "visual_signals": visual_signals,
         }
 
     async def scrape_website(self, domain: str) -> dict:
@@ -176,6 +181,7 @@ class WebsiteScraper:
         # Combine content for LLM processing
         combined_parts = []
         aggregated_asset_candidates: dict[str, dict] = {}
+        visual_signal_pages: list[dict[str, list[str]]] = []
         for page in pages:
             if "error" in page:
                 continue
@@ -211,7 +217,28 @@ class WebsiteScraper:
                 if candidate_confidence > existing_confidence:
                     aggregated_asset_candidates[candidate_url] = candidate
 
+            page_visual_signals = page.get("visual_signals")
+            if isinstance(page_visual_signals, dict):
+                visual_signal_pages.append(
+                    {
+                        key: [
+                            str(item).strip()
+                            for item in values
+                            if str(item).strip()
+                        ]
+                        for key, values in page_visual_signals.items()
+                        if isinstance(values, list)
+                    }
+                )
+
             combined_parts.append("")
+
+        homepage_visual_signals = (
+            homepage.get("visual_signals")
+            if isinstance(homepage.get("visual_signals"), dict)
+            else {}
+        )
+        site_visual_signals = self._merge_visual_signals(visual_signal_pages)
 
         logger.info(
             "Website scrape complete",
@@ -231,6 +258,8 @@ class WebsiteScraper:
                 key=lambda item: float(item.get("role_confidence") or 0.0),
                 reverse=True,
             ),
+            "homepage_visual_signals": homepage_visual_signals,
+            "site_visual_signals": site_visual_signals,
         }
 
     def _extract_asset_candidates(self, *, soup: BeautifulSoup, page_url: str) -> list[dict]:
@@ -333,6 +362,226 @@ class WebsiteScraper:
                 )
 
         return list(candidates.values())
+
+    @classmethod
+    def _extract_visual_signals(cls, *, soup: BeautifulSoup) -> dict[str, list[str]]:
+        style_chunks: list[str] = []
+        for style_tag in soup.find_all("style"):
+            text = style_tag.get_text(" ", strip=True)
+            if text:
+                style_chunks.append(text)
+
+        for node in soup.find_all(attrs={"style": True}):
+            inline_style = str(node.get("style") or "").strip()
+            if inline_style:
+                style_chunks.append(inline_style)
+
+        style_blob = "\n".join(style_chunks)
+
+        class_tokens: list[str] = []
+        for node in soup.find_all(class_=True):
+            for token in node.get("class") or []:
+                normalized = str(token).strip().lower()
+                if normalized:
+                    class_tokens.append(normalized)
+
+        class_blob = " ".join(class_tokens[:1500])
+        combined_style_blob = f"{style_blob}\n{class_blob}"
+
+        shape_cues: list[str] = []
+        surface_cues: list[str] = []
+        if re.search(r"border-radius|rounded|pill|capsule|radius", combined_style_blob, re.IGNORECASE):
+            shape_cues.append("Rounded corners and pill-like controls")
+        if re.search(r"\bborder\b|\boutline\b|\bstroke\b|\bring-\d", combined_style_blob, re.IGNORECASE):
+            shape_cues.append("Outlined or stroked UI elements")
+        if re.search(r"box-shadow|\bshadow\b|drop-shadow", combined_style_blob, re.IGNORECASE):
+            surface_cues.append("Drop-shadows used for depth")
+        if re.search(r"gradient\(", combined_style_blob, re.IGNORECASE):
+            surface_cues.append("Gradient surface treatments")
+        if re.search(r"texture|grain|noise", combined_style_blob, re.IGNORECASE):
+            surface_cues.append("Textured or grain overlays")
+        if re.search(r"backdrop-filter|blur", combined_style_blob, re.IGNORECASE):
+            surface_cues.append("Blurred/translucent UI layers")
+
+        cta_labels: list[str] = []
+        cta_keywords = (
+            "start",
+            "get",
+            "book",
+            "try",
+            "join",
+            "demo",
+            "contact",
+            "free",
+            "pricing",
+            "works",
+            "learn",
+            "sign",
+        )
+        for node in soup.find_all(["a", "button"]):
+            label = " ".join(node.get_text(" ", strip=True).split())
+            if not label or len(label) > 44:
+                continue
+            if any(keyword in label.lower() for keyword in cta_keywords):
+                cta_labels.append(label)
+
+        hero_headlines: list[str] = []
+        for heading in soup.find_all(["h1", "h2"]):
+            text = " ".join(heading.get_text(" ", strip=True).split())
+            if text:
+                hero_headlines.append(text)
+
+        imagery_blob_parts: list[str] = []
+        for image in soup.find_all("img"):
+            imagery_blob_parts.extend(
+                [
+                    str(image.get("alt") or ""),
+                    str(image.get("src") or ""),
+                    " ".join(image.get("class") or []),
+                ]
+            )
+        imagery_blob = " ".join(imagery_blob_parts).lower()
+        imagery_cues: list[str] = []
+        imagery_patterns = [
+            (r"illustration|vector|drawn|sticker|cartoon|mascot|avatar|emoji", "Illustrative/mascot imagery"),
+            (r"screenshot|dashboard|ui|widget|mockup|interface|chat", "Product UI/screenshot context"),
+            (r"photo|photography|portrait", "Photography-led visuals"),
+        ]
+        for pattern, cue in imagery_patterns:
+            if re.search(pattern, imagery_blob):
+                imagery_cues.append(cue)
+
+        color_word_hints: list[str] = []
+        color_keywords = (
+            "pink",
+            "rose",
+            "red",
+            "orange",
+            "amber",
+            "yellow",
+            "lime",
+            "green",
+            "emerald",
+            "teal",
+            "cyan",
+            "blue",
+            "indigo",
+            "violet",
+            "purple",
+            "fuchsia",
+            "slate",
+            "gray",
+            "neutral",
+            "black",
+            "white",
+            "cream",
+            "beige",
+        )
+        for token in class_tokens:
+            for color_keyword in color_keywords:
+                if color_keyword in token:
+                    color_word_hints.append(color_keyword)
+                    break
+
+        return {
+            "observed_hex_colors": cls._extract_hex_colors(style_blob),
+            "observed_font_families": cls._extract_font_families(style_blob),
+            "shape_cues": cls._dedupe_and_limit(shape_cues, limit=6),
+            "surface_cues": cls._dedupe_and_limit(surface_cues, limit=6),
+            "cta_labels": cls._dedupe_and_limit(cta_labels, limit=8),
+            "hero_headlines": cls._dedupe_and_limit(hero_headlines, limit=6),
+            "imagery_cues": cls._dedupe_and_limit(imagery_cues, limit=6),
+            "color_word_hints": cls._dedupe_and_limit(color_word_hints, limit=8),
+        }
+
+    @classmethod
+    def _merge_visual_signals(cls, page_signals: list[dict[str, list[str]]]) -> dict[str, list[str]]:
+        merged: dict[str, list[str]] = {
+            "observed_hex_colors": [],
+            "observed_font_families": [],
+            "shape_cues": [],
+            "surface_cues": [],
+            "cta_labels": [],
+            "hero_headlines": [],
+            "imagery_cues": [],
+            "color_word_hints": [],
+        }
+        limits = {
+            "observed_hex_colors": 12,
+            "observed_font_families": 8,
+            "shape_cues": 8,
+            "surface_cues": 8,
+            "cta_labels": 12,
+            "hero_headlines": 10,
+            "imagery_cues": 8,
+            "color_word_hints": 10,
+        }
+
+        for signals in page_signals:
+            for key, values in signals.items():
+                if key not in merged or not isinstance(values, list):
+                    continue
+                merged[key].extend(str(value).strip() for value in values if str(value).strip())
+
+        for key, values in merged.items():
+            merged[key] = cls._dedupe_and_limit(values, limit=limits[key])
+        return merged
+
+    @classmethod
+    def _extract_hex_colors(cls, style_blob: str) -> list[str]:
+        colors = []
+        for match in cls._HEX_COLOR_PATTERN.findall(style_blob):
+            normalized = cls._normalize_hex_color(match)
+            if normalized:
+                colors.append(normalized)
+        return cls._dedupe_and_limit(colors, limit=12)
+
+    @classmethod
+    def _extract_font_families(cls, style_blob: str) -> list[str]:
+        fonts: list[str] = []
+        generic_families = {"serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui"}
+
+        for raw_group in cls._FONT_FAMILY_PATTERN.findall(style_blob):
+            parts = [part.strip(" '\"") for part in raw_group.split(",")]
+            for part in parts:
+                normalized = " ".join(part.split())
+                if not normalized:
+                    continue
+                if normalized.casefold() in generic_families:
+                    continue
+                fonts.append(normalized)
+
+        return cls._dedupe_and_limit(fonts, limit=6)
+
+    @staticmethod
+    def _normalize_hex_color(raw: str) -> str | None:
+        value = str(raw).strip()
+        if not value.startswith("#"):
+            return None
+        hex_value = value[1:]
+        if len(hex_value) == 3 and all(char in "0123456789abcdefABCDEF" for char in hex_value):
+            expanded = "".join(char * 2 for char in hex_value)
+            return f"#{expanded.upper()}"
+        if len(hex_value) == 6 and all(char in "0123456789abcdefABCDEF" for char in hex_value):
+            return f"#{hex_value.upper()}"
+        return None
+
+    @staticmethod
+    def _dedupe_and_limit(values: list[str], *, limit: int) -> list[str]:
+        unique: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = " ".join(str(value).split())
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(normalized)
+            if len(unique) >= limit:
+                break
+        return unique
 
 
 async def scrape_website(domain: str, max_pages: int = 10) -> dict:

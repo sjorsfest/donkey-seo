@@ -150,7 +150,7 @@ When adding new long-running orchestration logic, follow the same pattern:
 The service implementations keep their internal step identifiers, but API execution now uses
 module-local steps:
 - Discovery module: local steps `1..8` (plus bootstrap `0` when needed)
-- Content module: local steps `1..3`
+- Content module: local steps `1..5`
 
 ## Pipeline Modes
 
@@ -162,7 +162,7 @@ The pipeline start endpoint supports two module modes:
   - Stops when enough topics pass fit + SERP gate, or pauses after max iterations.
   - Dispatches accepted topics immediately as content tasks.
 - `content`: Runs content generation only.
-  - Executes local content steps `1 -> 3` (maps to brief/templates/article generation).
+  - Executes local content steps `1 -> 5` (maps to brief/templates/featured-image/article generation).
   - Can run independently while discovery keeps iterating.
 
 ### Discovery Acceptance Gate
@@ -286,6 +286,8 @@ Start content-only module:
 - `GET /api/integration/article/{article_id}?project_id={project_id}` - Latest article version
 - `GET /api/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
   - Specific immutable article version
+- `PATCH /api/integration/article/{article_id}/publication?project_id={project_id}`
+  - Callback route to persist `publish_status`, `published_at`, and `published_url`
 
 ## Configuration
 

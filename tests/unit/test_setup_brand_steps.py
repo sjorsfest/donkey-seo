@@ -102,6 +102,13 @@ async def test_step02_brand_core_truncates_asset_candidates_and_stores_state(mon
                     }
                     for idx in range(100)
                 ],
+                "homepage_visual_signals": {
+                    "observed_hex_colors": ["#F4E08A", "#EF4FA8"],
+                    "shape_cues": ["Rounded corners and pill-like controls"],
+                },
+                "site_visual_signals": {
+                    "cta_labels": ["Get Started", "See how it works"],
+                },
             }
         ),
     )
@@ -120,6 +127,10 @@ async def test_step02_brand_core_truncates_asset_candidates_and_stores_state(mon
     service.update_steps_config.assert_awaited_once()
     payload = service.update_steps_config.await_args.args[0]
     assert len(payload["setup_state"]["asset_candidates"]) == 80
+    assert payload["setup_state"]["homepage_visual_signals"]["observed_hex_colors"] == [
+        "#F4E08A",
+        "#EF4FA8",
+    ]
 
 
 @pytest.mark.asyncio

@@ -11,9 +11,11 @@ import pytest
 from app.services.steps.content.step_12_brief import (
     BriefInput,
     BriefOutput,
+    ExistingBriefSignature,
     PublicationScheduleConfig,
     Step12BriefService,
 )
+from app.services.discovery.topic_overlap import normalize_text_tokens
 
 
 def test_resolve_brief_serp_profile_prefers_validated_values() -> None:
@@ -223,22 +225,26 @@ def test_select_topics_for_briefs_reserves_zero_data_slots() -> None:
         SimpleNamespace(
             id="t1",
             priority_rank=1,
-            priority_factors={"fit_score": 0.70, "fit_tier": "primary"},
+            fit_score=0.70,
+            fit_tier="primary",
         ),
         SimpleNamespace(
             id="t2",
             priority_rank=2,
-            priority_factors={"fit_score": 0.72, "fit_tier": "primary"},
+            fit_score=0.72,
+            fit_tier="primary",
         ),
         SimpleNamespace(
             id="t3",
             priority_rank=3,
-            priority_factors={"fit_score": 0.71, "fit_tier": "primary"},
+            fit_score=0.71,
+            fit_tier="primary",
         ),
         SimpleNamespace(
             id="t4",
             priority_rank=4,
-            priority_factors={"fit_score": 0.93, "fit_tier": "secondary"},
+            fit_score=0.93,
+            fit_tier="secondary",
         ),
     ]
     primary_keywords = {
@@ -271,17 +277,20 @@ def test_select_topics_for_briefs_skips_zero_data_when_disabled() -> None:
         SimpleNamespace(
             id="t1",
             priority_rank=1,
-            priority_factors={"fit_score": 0.70, "fit_tier": "primary"},
+            fit_score=0.70,
+            fit_tier="primary",
         ),
         SimpleNamespace(
             id="t2",
             priority_rank=2,
-            priority_factors={"fit_score": 0.72, "fit_tier": "primary"},
+            fit_score=0.72,
+            fit_tier="primary",
         ),
         SimpleNamespace(
             id="t3",
             priority_rank=3,
-            priority_factors={"fit_score": 0.93, "fit_tier": "secondary"},
+            fit_score=0.93,
+            fit_tier="secondary",
         ),
     ]
     primary_keywords = {
@@ -305,3 +314,34 @@ def test_select_topics_for_briefs_skips_zero_data_when_disabled() -> None:
     selected_ids = [topic.id for topic in selected]
 
     assert selected_ids == ["t1", "t2"]
+
+
+def test_duplicate_guard_allows_sibling_comparison_pairs() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    topic = SimpleNamespace(
+        name="Zendesk vs Tidio",
+        description="",
+        dominant_intent="commercial",
+        dominant_page_type="comparison",
+    )
+    primary_keyword = SimpleNamespace(keyword="zendesk vs tidio")
+    existing = [
+        ExistingBriefSignature(
+            comparison_key="pair:intercom|zendesk",
+            family_key="family:cmp:zendesk",
+            intent="commercial",
+            page_type="comparison",
+            keyword_tokens=normalize_text_tokens("zendesk intercom"),
+            text_tokens=normalize_text_tokens("zendesk vs intercom"),
+        )
+    ]
+
+    should_skip, reason, sibling_allowed = service._should_skip_as_covered(  # type: ignore[attr-defined]
+        topic=topic,
+        primary_keyword=primary_keyword,
+        existing_signatures=existing,
+    )
+
+    assert not should_skip
+    assert reason is None
+    assert sibling_allowed

@@ -85,6 +85,7 @@ class ProjectSettings(BaseModel):
     skip_steps: list[int] = Field(default_factory=list)
     step_configs: dict[int, dict] | None = None
     notification_webhook: str | None = None
+    notification_webhook_secret: str | None = None
     auto_continue_on_error: bool = False
 
 

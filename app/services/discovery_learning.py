@@ -238,6 +238,92 @@ class DiscoveryLearningService:
         total_keywords = len(keywords)
         usable_keywords = sum(1 for key in usable_by_keyword.values() if key)
         overall_rate = (usable_keywords / total_keywords) if total_keywords else 0.0
+        topics_with_keywords = sum(
+            1 for topic in topics_by_id.values() if (getattr(topic, "keyword_count", 0) or 0) > 0
+        )
+        rank_eligible_topics = sum(
+            1
+            for topic in topics_by_id.values()
+            if self._topic_fit_tier(topic) in {"primary", "secondary"} and topic.priority_rank is not None
+        )
+        final_cut_candidates = sum(
+            1
+            for topic in topics_by_id.values()
+            if topic.llm_tier_recommendation is not None
+            or (topic.final_cut_reason_code is not None and topic.final_cut_reason_code != "outside_final_cut_pool")
+        )
+        final_cut_selected = sum(
+            1
+            for topic in topics_by_id.values()
+            if self._topic_fit_tier(topic) in {"primary", "secondary"}
+            and topic.priority_rank is not None
+            and (
+                topic.llm_tier_recommendation is not None
+                or topic.final_cut_reason_code in {"llm_zero_result_fallback", "deterministic_fallback"}
+            )
+        )
+        diversification_rows: list[dict[str, Any]] = []
+        for topic in topics_by_id.values():
+            diagnostics = getattr(topic, "prioritization_diagnostics", None)
+            if not isinstance(diagnostics, dict):
+                continue
+            diversification = diagnostics.get("diversification")
+            if isinstance(diversification, dict):
+                diversification_rows.append(diversification)
+        diversification_topic_count = len(diversification_rows)
+        suppressed_reason_codes = {
+            "exact_pair_duplicate",
+            "near_duplicate_hard",
+            "overlap_demoted",
+            "diversity_cap_demotion",
+        }
+        diversification_suppressed = sum(
+            1
+            for topic in topics_by_id.values()
+            if topic.final_cut_reason_code in suppressed_reason_codes
+        )
+        exact_pair_duplicates = sum(
+            1
+            for topic in topics_by_id.values()
+            if topic.final_cut_reason_code == "exact_pair_duplicate"
+        )
+        sibling_pairs_kept = sum(
+            1
+            for row in diversification_rows
+            if row.get("relationship_type") == "sibling_pair"
+            and row.get("action") == "keep"
+        )
+        sibling_pairs_seen = sum(
+            1 for row in diversification_rows if row.get("relationship_type") == "sibling_pair"
+        )
+        diversification_suppression_rate = (
+            diversification_suppressed / diversification_topic_count
+            if diversification_topic_count
+            else None
+        )
+        sibling_pair_keep_rate = (
+            sibling_pairs_kept / sibling_pairs_seen
+            if sibling_pairs_seen
+            else None
+        )
+        exact_pair_duplicate_rate = (
+            exact_pair_duplicates / diversification_topic_count
+            if diversification_topic_count
+            else None
+        )
+        zero_usable_context = ""
+        if overall_rate == 0.0:
+            if topics_with_keywords > 0 and rank_eligible_topics == 0:
+                if final_cut_candidates > 0:
+                    zero_usable_context = (
+                        " Keywords were clustered, but all candidates were filtered during the LLM final cut."
+                    )
+                else:
+                    zero_usable_context = (
+                        " Keywords were clustered, but no topics were rank-eligible after deterministic gating."
+                    )
+            elif topics_with_keywords == 0:
+                zero_usable_context = " No topics with attached keywords were available."
 
         candidates: list[LearningCandidate] = [
             LearningCandidate(
@@ -254,11 +340,16 @@ class DiscoveryLearningService:
                 detail=(
                     f"Usable keyword rate is {overall_rate:.1%} "
                     f"({usable_keywords}/{total_keywords})."
+                    f"{zero_usable_context}"
                 ),
                 recommendation=(
                     "Double down on high-yield archetypes from this run."
                     if overall_rate >= 0.55
-                    else "Tighten seed/archetype targeting before expanding volume."
+                    else (
+                        "Increase fit-eligible topic yield before expanding volume."
+                        if overall_rate == 0.0 and topics_with_keywords > 0 and rank_eligible_topics == 0
+                        else "Tighten seed/archetype targeting before expanding volume."
+                    )
                 ),
                 confidence=self._confidence_from_count(total_keywords),
                 current_metric=overall_rate,
@@ -277,6 +368,24 @@ class DiscoveryLearningService:
                     "usable_keywords": usable_keywords,
                     "total_keywords": total_keywords,
                     "usable_keyword_rate": round(overall_rate, 4),
+                    "rank_eligible_topics": rank_eligible_topics,
+                    "llm_final_cut_candidates": final_cut_candidates,
+                    "llm_final_cut_selected": final_cut_selected,
+                    **(
+                        {
+                            "diversification_suppression_rate": round(diversification_suppression_rate, 4),
+                            "sibling_pair_keep_rate": round(sibling_pair_keep_rate, 4)
+                            if sibling_pair_keep_rate is not None
+                            else None,
+                            "exact_pair_duplicate_rate": (
+                                round(exact_pair_duplicate_rate, 4)
+                                if exact_pair_duplicate_rate is not None
+                                else None
+                            ),
+                        }
+                        if diversification_suppression_rate is not None
+                        else {}
+                    ),
                 },
             )
         ]
@@ -677,7 +786,7 @@ class DiscoveryLearningService:
     def _topic_fit_tier(self, topic: Topic | None) -> str | None:
         if topic is None:
             return None
-        value = (topic.priority_factors or {}).get("fit_tier")
+        value = topic.fit_tier
         return str(value).strip().lower() if value else None
 
     def _normalize_reason(self, reason: str) -> str:

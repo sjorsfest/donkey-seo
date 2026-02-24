@@ -19,6 +19,12 @@ _DEFAULT_TEMPLATE = (
     "Brand voice: {brand_voice}. Asset references: {asset_refs}."
 )
 
+_DEFAULT_COMPONENT_TEMPLATE = (
+    "Render a brand-aligned component scene for '{article_topic}' targeting {audience}. "
+    "Intent: {intent}. Visual goal: {visual_goal}. "
+    "Brand voice: {brand_voice}. Asset references: {asset_refs}."
+)
+
 
 class ImagePromptBuilder:
     """Compile strict prompt contracts into deterministic prompt strings."""
@@ -39,6 +45,7 @@ class ImagePromptBuilder:
         """Build a deterministic prompt payload and optional signed asset URLs."""
         contract = visual_prompt_contract or {}
         template = str(contract.get("template") or _DEFAULT_TEMPLATE)
+        component_template = str(contract.get("component_template") or _DEFAULT_COMPONENT_TEMPLATE)
 
         asset_refs_payload = self._build_asset_refs(
             assets=assets or [],
@@ -55,12 +62,21 @@ class ImagePromptBuilder:
 
         prompt = self._render_template(template, render_variables)
         prompt = self._append_style_rules(prompt, visual_style_guide or {})
+        component_prompt = self._render_template(component_template, render_variables)
+
+        style_guide = visual_style_guide or {}
+        component_render_context = self._build_component_render_context(
+            style_guide=style_guide,
+            contract=contract,
+            component_prompt=component_prompt,
+        )
 
         return {
             "prompt": prompt,
             "required_variables": _REQUIRED_VARIABLES,
             "render_variables": render_variables,
             "asset_refs": asset_refs_payload["assets"],
+            "component_render_context": component_render_context,
         }
 
     def _build_asset_refs(
@@ -137,6 +153,43 @@ class ImagePromptBuilder:
             return prompt
 
         return f"{prompt} {' | '.join(style_segments)}"
+
+    @staticmethod
+    def _build_component_render_context(
+        *,
+        style_guide: dict[str, Any],
+        contract: dict[str, Any],
+        component_prompt: str,
+    ) -> dict[str, Any]:
+        render_modes = [
+            str(item).strip()
+            for item in (contract.get("render_modes") or [])
+            if str(item).strip()
+        ]
+        enabled = bool(
+            "component_render" in [mode.casefold() for mode in render_modes]
+            or style_guide.get("component_recipes")
+        )
+        return {
+            "enabled": enabled,
+            "render_modes": render_modes,
+            "component_prompt": component_prompt,
+            "component_render_targets": [
+                str(item).strip()
+                for item in (contract.get("component_render_targets") or [])
+                if str(item).strip()
+            ],
+            "component_fallback_rules": [
+                str(item).strip()
+                for item in (contract.get("component_fallback_rules") or [])
+                if str(item).strip()
+            ],
+            "design_tokens": style_guide.get("design_tokens") or {},
+            "component_style_rules": style_guide.get("component_style_rules") or [],
+            "component_layout_rules": style_guide.get("component_layout_rules") or [],
+            "component_recipes": style_guide.get("component_recipes") or [],
+            "component_negative_rules": style_guide.get("component_negative_rules") or [],
+        }
 
     @staticmethod
     def _normalize(value: str) -> str:

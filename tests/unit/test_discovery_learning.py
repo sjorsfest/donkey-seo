@@ -42,8 +42,8 @@ def test_compute_usable_keywords_prefers_iteration_acceptance_then_fallback() ->
     service = DiscoveryLearningService.__new__(DiscoveryLearningService)
 
     topics_by_id = {
-        "topic-1": SimpleNamespace(priority_factors={"fit_tier": "primary"}, priority_rank=1),
-        "topic-2": SimpleNamespace(priority_factors={"fit_tier": "secondary"}, priority_rank=2),
+        "topic-1": SimpleNamespace(fit_tier="primary", priority_rank=1),
+        "topic-2": SimpleNamespace(fit_tier="secondary", priority_rank=2),
     }
     keywords = [
         SimpleNamespace(id="kw-1", topic_id="topic-1"),
@@ -76,17 +76,23 @@ def test_build_deterministic_candidates_captures_archetype_and_bottleneck() -> N
     topics_by_id = {
         "topic-a": SimpleNamespace(
             id="topic-a",
-            priority_factors={"fit_tier": "primary"},
+            fit_tier="primary",
             priority_rank=1,
             recommended_url_type="landing",
             dominant_intent="commercial",
+            llm_tier_recommendation="primary",
+            final_cut_reason_code="llm_primary",
+            keyword_count=8,
         ),
         "topic-b": SimpleNamespace(
             id="topic-b",
-            priority_factors={"fit_tier": "secondary"},
+            fit_tier="secondary",
             priority_rank=2,
             recommended_url_type="blog",
             dominant_intent="informational",
+            llm_tier_recommendation="secondary",
+            final_cut_reason_code="llm_secondary",
+            keyword_count=8,
         ),
     }
 

@@ -61,18 +61,46 @@ class Step05BrandVisualService(BaseStepService[BrandVisualInput, BrandVisualOutp
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         brand = brand_result.scalar_one()
+        try:
+            steps_config = await self.get_steps_config()
+        except Exception:
+            logger.warning(
+                "Failed to load setup_state for visual guide; continuing without visual signals",
+                extra={"project_id": input_data.project_id},
+            )
+            steps_config = {}
+        setup_state_raw = steps_config.get("setup_state")
+        setup_state = setup_state_raw if isinstance(setup_state_raw, dict) else {}
+        homepage_visual_signals_raw = setup_state.get("homepage_visual_signals")
+        site_visual_signals_raw = setup_state.get("site_visual_signals")
+        homepage_visual_signals = (
+            homepage_visual_signals_raw
+            if isinstance(homepage_visual_signals_raw, dict)
+            else {}
+        )
+        site_visual_signals = (
+            site_visual_signals_raw if isinstance(site_visual_signals_raw, dict) else {}
+        )
+        brand_assets = [
+            item
+            for item in list(brand.brand_assets or [])
+            if isinstance(item, dict)
+        ]
 
         await self._update_progress(20, "Generating visual prompt style guide...")
 
         visual_style_guide = default_visual_style_guide(
             tone_attributes=[str(item) for item in list(brand.tone_attributes or [])],
             differentiators=[str(item) for item in list(brand.differentiators or [])],
+            homepage_visual_signals=homepage_visual_signals,
+            site_visual_signals=site_visual_signals,
+            brand_assets=brand_assets,
         )
         visual_prompt_contract = default_visual_prompt_contract()
         extraction_confidence = float(brand.extraction_confidence or 0.0)
         visual_extraction_confidence = fallback_visual_confidence(
             extraction_confidence=extraction_confidence,
-            has_assets=bool(brand.brand_assets),
+            has_assets=bool(brand_assets),
         )
 
         try:
@@ -90,11 +118,9 @@ class Step05BrandVisualService(BaseStepService[BrandVisualInput, BrandVisualOutp
                     target_industries=[
                         str(item) for item in list(brand.target_industries or [])
                     ],
-                    brand_assets=[
-                        item
-                        for item in list(brand.brand_assets or [])
-                        if isinstance(item, dict)
-                    ],
+                    brand_assets=brand_assets,
+                    homepage_visual_signals=homepage_visual_signals,
+                    site_visual_signals=site_visual_signals,
                 )
             )
             visual_style_guide = visual_output.visual_style_guide.model_dump()

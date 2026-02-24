@@ -217,9 +217,12 @@ async def test_update_topic_serp_signals_uses_alternate_when_primary_missing() -
         id=topic_id,
         primary_keyword_id=primary_id,
         dominant_intent="informational",
-        priority_factors={},
         serp_servedness_score=None,
         serp_competitor_density=None,
+        serp_intent_confidence=None,
+        serp_evidence_source=None,
+        serp_evidence_keyword_id=None,
+        serp_evidence_keyword_count=None,
     )
     primary_keyword = SimpleNamespace(
         id=primary_id,
@@ -248,7 +251,7 @@ async def test_update_topic_serp_signals_uses_alternate_when_primary_missing() -
 
     assert topic.serp_servedness_score is not None
     assert topic.serp_competitor_density is not None
-    assert topic.priority_factors["serp_evidence_source"] == "alternate"
+    assert topic.serp_evidence_source == "alternate"
 
 
 @pytest.mark.asyncio

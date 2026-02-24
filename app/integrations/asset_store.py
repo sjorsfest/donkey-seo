@@ -99,6 +99,7 @@ class BrandAssetStore:
             extension = self._resolve_extension(mime_type, source_url)
             object_key = f"projects/{project_id}/brand-assets/{sha256}{extension}"
             width, height = self._detect_dimensions(payload)
+            dominant_colors, average_luminance = self._extract_color_profile(payload)
 
             await asyncio.to_thread(
                 self._upload_object,
@@ -117,6 +118,8 @@ class BrandAssetStore:
                 "byte_size": len(payload),
                 "width": width,
                 "height": height,
+                "dominant_colors": dominant_colors,
+                "average_luminance": average_luminance,
                 "role": str(candidate.get("role") or "reference"),
                 "role_confidence": float(candidate.get("role_confidence") or 0.5),
                 "source_url": source_url,
@@ -293,6 +296,49 @@ class BrandAssetStore:
                 return int(width), int(height)
         except Exception:
             return None, None
+
+    @staticmethod
+    def _extract_color_profile(payload: bytes, *, max_colors: int = 6) -> tuple[list[str], float | None]:
+        try:
+            from PIL import Image, ImageStat
+
+            with Image.open(BytesIO(payload)) as image:
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                if image.mode == "RGBA":
+                    flattened = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                    flattened.alpha_composite(image)
+                    image = flattened.convert("RGB")
+                else:
+                    image = image.convert("RGB")
+
+                image.thumbnail((200, 200))
+                quantized = image.convert("P", palette=Image.Palette.ADAPTIVE, colors=max_colors)
+                palette_data = quantized.getpalette() or []
+                color_counts = quantized.getcolors() or []
+
+                colors: list[str] = []
+                for _count, palette_index in sorted(color_counts, reverse=True):
+                    start = palette_index * 3
+                    rgb = palette_data[start : start + 3]
+                    if len(rgb) != 3:
+                        continue
+                    hex_color = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+                    if hex_color in colors:
+                        continue
+                    colors.append(hex_color)
+                    if len(colors) >= max_colors:
+                        break
+
+                stat = ImageStat.Stat(image)
+                mean_channels = stat.mean
+                if len(mean_channels) < 3:
+                    return colors, None
+                red, green, blue = mean_channels[:3]
+                luminance = ((0.2126 * red) + (0.7152 * green) + (0.0722 * blue)) / 255.0
+                return colors, round(float(luminance), 3)
+        except Exception:
+            return [], None
 
     def _validate_config(self) -> None:
         required = {

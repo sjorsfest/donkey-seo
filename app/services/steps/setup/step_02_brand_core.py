@@ -45,6 +45,8 @@ class BrandCoreOutput:
     source_pages: list[str]
     extraction_confidence: float
     asset_candidates: list[dict[str, Any]]
+    homepage_visual_signals: dict[str, Any]
+    site_visual_signals: dict[str, Any]
 
 
 class Step02BrandCoreService(BaseStepService[BrandCoreInput, BrandCoreOutput]):
@@ -95,6 +97,8 @@ class Step02BrandCoreService(BaseStepService[BrandCoreInput, BrandCoreOutput]):
             if isinstance(candidate, dict)
         ]
         stored_asset_candidates = raw_asset_candidates[: self._MAX_STORED_ASSET_CANDIDATES]
+        homepage_visual_signals = scraped_data.get("homepage_visual_signals", {})
+        site_visual_signals = scraped_data.get("site_visual_signals", {})
         await self.update_steps_config(
             {
                 "setup_state": {
@@ -104,6 +108,14 @@ class Step02BrandCoreService(BaseStepService[BrandCoreInput, BrandCoreOutput]):
                         if str(url).strip()
                     ],
                     "asset_candidates": stored_asset_candidates,
+                    "homepage_visual_signals": (
+                        homepage_visual_signals
+                        if isinstance(homepage_visual_signals, dict)
+                        else {}
+                    ),
+                    "site_visual_signals": (
+                        site_visual_signals if isinstance(site_visual_signals, dict) else {}
+                    ),
                 }
             }
         )
@@ -142,6 +154,12 @@ class Step02BrandCoreService(BaseStepService[BrandCoreInput, BrandCoreOutput]):
             ],
             extraction_confidence=brand_profile.extraction_confidence,
             asset_candidates=stored_asset_candidates,
+            homepage_visual_signals=(
+                homepage_visual_signals if isinstance(homepage_visual_signals, dict) else {}
+            ),
+            site_visual_signals=(
+                site_visual_signals if isinstance(site_visual_signals, dict) else {}
+            ),
         )
 
     async def _persist_results(self, result: BrandCoreOutput) -> None:
@@ -225,6 +243,7 @@ class Step02BrandCoreService(BaseStepService[BrandCoreInput, BrandCoreOutput]):
                 "extraction_confidence": result.extraction_confidence,
                 "source_pages_count": len(result.source_pages),
                 "stored_asset_candidates": len(result.asset_candidates),
+                "homepage_visual_signal_keys": len(result.homepage_visual_signals),
             }
         )
 

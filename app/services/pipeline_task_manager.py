@@ -184,6 +184,8 @@ class PipelineTaskWorker:
         self._workers: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
         self._run_locks: dict[str, asyncio.Lock] = {}
+        # Enforce one in-flight job per project/module to avoid run-start races.
+        self._project_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
         """Start worker tasks if not already running."""
@@ -269,42 +271,12 @@ class PipelineTaskWorker:
                 await run_lock.acquire()
                 should_requeue = False
                 requeue_delay = 0.0
+                project_lock = self._project_locks.setdefault(job.project_id, asyncio.Lock())
+                project_lock_acquired = False
                 try:
-                    try:
-                        should_requeue = await self._execute(job)
-                        if should_requeue:
-                            logger.info(
-                                "Pipeline job slice complete; scheduling continuation",
-                                extra={
-                                    "pipeline_module": self.manager.pipeline_module,
-                                    "worker_index": worker_index,
-                                    "kind": job.kind,
-                                    "project_id": job.project_id,
-                                    "run_id": job.run_id,
-                                },
-                            )
-                    except PipelineDelayedResumeRequested as exc:
+                    if project_lock.locked():
                         logger.info(
-                            "Pipeline slice requested delayed auto-resume",
-                            extra={
-                                "pipeline_module": self.manager.pipeline_module,
-                                "project_id": job.project_id,
-                                "run_id": job.run_id,
-                                "worker_index": worker_index,
-                                "delay_seconds": exc.delay_seconds,
-                                "reason": exc.reason,
-                            },
-                        )
-                        should_requeue = True
-                        requeue_delay = max(self.requeue_delay_seconds, float(exc.delay_seconds))
-                        job = PipelineTaskJob(
-                            kind="resume",
-                            project_id=job.project_id,
-                            run_id=job.run_id,
-                        )
-                    except PipelineAlreadyRunningError:
-                        logger.info(
-                            "Pipeline module busy, requeueing job",
+                            "Project already in progress for module, requeueing job",
                             extra={
                                 "pipeline_module": self.manager.pipeline_module,
                                 "project_id": job.project_id,
@@ -314,18 +286,67 @@ class PipelineTaskWorker:
                         )
                         should_requeue = True
                         requeue_delay = self.requeue_delay_seconds
-                    except Exception:
-                        logger.exception(
-                            "Pipeline worker job failed",
-                            extra={
-                                "pipeline_module": self.manager.pipeline_module,
-                                "worker_index": worker_index,
-                                "kind": job.kind,
-                                "project_id": job.project_id,
-                                "run_id": job.run_id,
-                            },
-                        )
+                    else:
+                        await project_lock.acquire()
+                        project_lock_acquired = True
+                        try:
+                            should_requeue = await self._execute(job)
+                            if should_requeue:
+                                logger.info(
+                                    "Pipeline job slice complete; scheduling continuation",
+                                    extra={
+                                        "pipeline_module": self.manager.pipeline_module,
+                                        "worker_index": worker_index,
+                                        "kind": job.kind,
+                                        "project_id": job.project_id,
+                                        "run_id": job.run_id,
+                                    },
+                                )
+                        except PipelineDelayedResumeRequested as exc:
+                            logger.info(
+                                "Pipeline slice requested delayed auto-resume",
+                                extra={
+                                    "pipeline_module": self.manager.pipeline_module,
+                                    "project_id": job.project_id,
+                                    "run_id": job.run_id,
+                                    "worker_index": worker_index,
+                                    "delay_seconds": exc.delay_seconds,
+                                    "reason": exc.reason,
+                                },
+                            )
+                            should_requeue = True
+                            requeue_delay = max(self.requeue_delay_seconds, float(exc.delay_seconds))
+                            job = PipelineTaskJob(
+                                kind="resume",
+                                project_id=job.project_id,
+                                run_id=job.run_id,
+                            )
+                        except PipelineAlreadyRunningError:
+                            logger.info(
+                                "Pipeline module busy, requeueing job",
+                                extra={
+                                    "pipeline_module": self.manager.pipeline_module,
+                                    "project_id": job.project_id,
+                                    "run_id": job.run_id,
+                                    "worker_index": worker_index,
+                                },
+                            )
+                            should_requeue = True
+                            requeue_delay = self.requeue_delay_seconds
+                        except Exception:
+                            logger.exception(
+                                "Pipeline worker job failed",
+                                extra={
+                                    "pipeline_module": self.manager.pipeline_module,
+                                    "worker_index": worker_index,
+                                    "kind": job.kind,
+                                    "project_id": job.project_id,
+                                    "run_id": job.run_id,
+                                },
+                            )
                 finally:
+                    if project_lock_acquired:
+                        project_lock.release()
                     run_lock.release()
                     if not run_lock.locked():
                         self._run_locks.pop(job.run_id, None)

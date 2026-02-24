@@ -12,7 +12,7 @@ This API supports three independent pipeline modules:
 
 1. `setup` (local steps 1-5)
 2. `discovery` (local steps 1-7)
-3. `content` (local steps 1-3)
+3. `content` (local steps 1-5)
 
 ### Execution Modes
 
@@ -38,7 +38,7 @@ _PIPELINE_GUIDE_JSON_OBJECT: dict[str, Any] = {
             "snapshot_endpoint": "/api/v1/pipeline/{project_id}/runs/{run_id}/discovery-snapshots",
         },
         "content": {
-            "local_steps": [1, 3],
+            "local_steps": [1, 5],
             "granularity": "1_topic_to_1_brief_to_1_article",
         },
     },
@@ -101,7 +101,7 @@ PIPELINE_START_EXAMPLES: dict[str, dict[str, Any]] = {
     },
     "content": {
         "summary": "Content module",
-        "description": "Runs content steps 1-3 with content controls.",
+        "description": "Runs content steps 1-5 with content controls.",
         "value": {
             "mode": "content",
             "content": {

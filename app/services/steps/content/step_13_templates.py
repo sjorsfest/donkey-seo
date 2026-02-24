@@ -65,7 +65,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
     - Ensures consistency across all briefs
     """
 
-    step_number = 2
+    step_number = 3
     step_name = "writer_templates"
     is_optional = False
 

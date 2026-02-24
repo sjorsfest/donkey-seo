@@ -54,14 +54,13 @@ async def list_topics(
     """List topics for a project."""
     await get_user_project(project_id, current_user, session)
 
-    fit_tier_expr = Topic.priority_factors["fit_tier"].astext
     query = select(Topic).where(Topic.project_id == project_id)
     if eligibility == "primary":
-        query = query.where(fit_tier_expr == "primary")
+        query = query.where(Topic.fit_tier == "primary")
     elif eligibility == "secondary":
-        query = query.where(fit_tier_expr == "secondary")
+        query = query.where(Topic.fit_tier == "secondary")
     elif eligibility == "excluded":
-        query = query.where(or_(fit_tier_expr == "excluded", Topic.priority_rank.is_(None)))
+        query = query.where(or_(Topic.fit_tier == "excluded", Topic.priority_rank.is_(None)))
 
     count_query = select(func.count()).select_from(query.subquery())
     total = await session.scalar(count_query) or 0

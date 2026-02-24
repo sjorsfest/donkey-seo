@@ -8,6 +8,10 @@ from app.services.steps.content.step_2_interlinking import (
     Step2InterlinkingService,
 )
 from app.services.steps.content.step_13_templates import Step13TemplatesService, TemplatesInput
+from app.services.steps.content.step_4_featured_image_generation import (
+    FeaturedImageInput,
+    Step4FeaturedImageService,
+)
 from app.services.steps.content.step_14_article_writer import (
     ArticleWriterInput,
     Step14ArticleWriterService,
@@ -17,7 +21,8 @@ CONTENT_LOCAL_STEP_NAMES: dict[int, str] = {
     1: "content_brief",
     2: "interlinking_enrichment",
     3: "writer_templates",
-    4: "article_generation",
+    4: "featured_image_generation",
+    5: "article_generation",
 }
 
 CONTENT_LOCAL_STEP_DEPENDENCIES: dict[int, list[int]] = {
@@ -25,21 +30,24 @@ CONTENT_LOCAL_STEP_DEPENDENCIES: dict[int, list[int]] = {
     2: [1],
     3: [2],
     4: [3],
+    5: [4],
 }
 
 CONTENT_LOCAL_TO_SERVICE = {
     1: Step12BriefService,
     2: Step2InterlinkingService,
     3: Step13TemplatesService,
-    4: Step14ArticleWriterService,
+    4: Step4FeaturedImageService,
+    5: Step14ArticleWriterService,
 }
 
 CONTENT_LOCAL_TO_INPUT = {
     1: BriefInput,
     2: InterlinkingInput,
     3: TemplatesInput,
-    4: ArticleWriterInput,
+    4: FeaturedImageInput,
+    5: ArticleWriterInput,
 }
 
 CONTENT_DEFAULT_START_STEP = 1
-CONTENT_DEFAULT_END_STEP = 4
+CONTENT_DEFAULT_END_STEP = 5

@@ -1,5 +1,7 @@
 """Unit tests for Step 7 market-aware prioritization scoring."""
 
+from types import SimpleNamespace
+
 from app.services.steps.discovery.step_07_prioritization import (
     DFI_WORKFLOW_THRESHOLD,
     Step07PrioritizationService,
@@ -35,6 +37,7 @@ def test_mixed_market_mode_switches_by_dfi_threshold() -> None:
 
 def test_mode_aware_priority_scoring_uses_expected_weights() -> None:
     service = Step07PrioritizationService.__new__(Step07PrioritizationService)
+    topic = SimpleNamespace(cluster_coherence=0.7)
     factors = {
         "mean_intent_score": 0.8,
         "difficulty_ease": 0.6,
@@ -44,17 +47,36 @@ def test_mode_aware_priority_scoring_uses_expected_weights() -> None:
         "raw_volume_norm": 0.7,
         "serp_signal": 0.3,
     }
+    fit_assessment = {"components": {"comparison_relevance": 0.2}}
+
+    workflow_opp = service._calculate_opportunity_score(  # type: ignore[attr-defined]
+        topic=topic,
+        factors=factors,
+        effective_market_mode="fragmented_workflow",
+        fit_assessment=fit_assessment,
+    )
+    established_opp = service._calculate_opportunity_score(  # type: ignore[attr-defined]
+        topic=topic,
+        factors=factors,
+        effective_market_mode="established_category",
+        fit_assessment=fit_assessment,
+    )
 
     workflow_score = service._calculate_mode_aware_priority_score(  # type: ignore[attr-defined]
         factors=factors,
         effective_market_mode="fragmented_workflow",
+        brand_fit_score=0.75,
+        opportunity_score=workflow_opp,
     )
     established_score = service._calculate_mode_aware_priority_score(  # type: ignore[attr-defined]
         factors=factors,
         effective_market_mode="established_category",
+        brand_fit_score=0.75,
+        opportunity_score=established_opp,
     )
 
-    # workflow = (0.8*0.45 + 0.6*0.2 + 0.4*0.15 + 0.9*0.1 + 0.5*0.1) * 100 = 68.0
-    assert workflow_score == 68.0
-    # established = (0.7*0.4 + 0.6*0.25 + 0.8*0.2 + 0.3*0.15) * 100 = 63.5
-    assert established_score == 63.5
+    assert round(workflow_opp, 2) == 0.58
+    assert round(established_opp, 2) == 0.62
+    # deterministic score = (brand_fit*0.7 + opportunity*0.3) * 100
+    assert workflow_score == 69.9
+    assert established_score == 71.1

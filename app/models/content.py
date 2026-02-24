@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Boolean,
@@ -32,6 +32,19 @@ from app.models.generated_dtos import (
     WriterInstructionsCreateDTO,
     WriterInstructionsPatchDTO,
 )
+
+try:
+    from app.models.generated_dtos import (
+        ContentFeaturedImageCreateDTO,
+        ContentFeaturedImagePatchDTO,
+        PublicationWebhookDeliveryCreateDTO,
+        PublicationWebhookDeliveryPatchDTO,
+    )
+except ImportError:  # pragma: no cover - bootstrap before DTO regeneration
+    ContentFeaturedImageCreateDTO = Any  # type: ignore[assignment]
+    ContentFeaturedImagePatchDTO = Any  # type: ignore[assignment]
+    PublicationWebhookDeliveryCreateDTO = Any  # type: ignore[assignment]
+    PublicationWebhookDeliveryPatchDTO = Any  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from app.models.keyword import Keyword
@@ -124,6 +137,12 @@ class ContentBrief(
         uselist=False,
         cascade="all, delete-orphan",
     )
+    featured_image: Mapped[ContentFeaturedImage | None] = relationship(
+        "ContentFeaturedImage",
+        back_populates="brief",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<ContentBrief {self.primary_keyword}>"
@@ -173,6 +192,61 @@ class WriterInstructions(
 
     def __repr__(self) -> str:
         return f"<WriterInstructions for brief {self.brief_id}>"
+
+
+class ContentFeaturedImage(
+    TypedModelMixin[ContentFeaturedImageCreateDTO, ContentFeaturedImagePatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
+    """Rendered featured image artifact for a content brief."""
+
+    __tablename__ = "content_featured_images"
+    __table_args__ = (
+        UniqueConstraint("brief_id", name="uq_content_featured_images_brief_id"),
+        Index(
+            "ix_content_featured_images_project_status",
+            "project_id",
+            "status",
+        ),
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    brief_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_briefs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False, index=True)
+    title_text: Mapped[str] = mapped_column(String(500), nullable=False)
+    style_variant_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    template_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    template_spec: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    generation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    project: Mapped[Project] = relationship("Project", back_populates="content_featured_images")
+    brief: Mapped[ContentBrief] = relationship("ContentBrief", back_populates="featured_image")
+
+    def __repr__(self) -> str:
+        return f"<ContentFeaturedImage brief={self.brief_id} status={self.status}>"
 
 
 class ContentArticle(
@@ -232,6 +306,11 @@ class ContentArticle(
         cascade="all, delete-orphan",
         order_by="ContentArticleVersion.version_number",
     )
+    publication_webhook_deliveries: Mapped[list[PublicationWebhookDelivery]] = relationship(
+        "PublicationWebhookDelivery",
+        back_populates="article",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<ContentArticle brief={self.brief_id} version={self.current_version}>"
@@ -282,4 +361,61 @@ class ContentArticleVersion(
         return (
             f"<ContentArticleVersion article={self.article_id} "
             f"version={self.version_number}>"
+        )
+
+
+class PublicationWebhookDelivery(
+    TypedModelMixin["PublicationWebhookDeliveryCreateDTO", "PublicationWebhookDeliveryPatchDTO"],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
+    """Persistent outbound publication webhook delivery state."""
+
+    __tablename__ = "publication_webhook_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "event_type",
+            name="uq_publication_webhook_deliveries_article_event",
+        ),
+        Index(
+            "ix_publication_webhook_deliveries_status_next_attempt",
+            "status",
+            "next_attempt_at",
+        ),
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    article_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_articles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    project: Mapped[Project] = relationship("Project")
+    article: Mapped[ContentArticle] = relationship(
+        "ContentArticle",
+        back_populates="publication_webhook_deliveries",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PublicationWebhookDelivery article={self.article_id} "
+            f"event={self.event_type} status={self.status}>"
         )

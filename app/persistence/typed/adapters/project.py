@@ -30,6 +30,8 @@ PROJECT_PATCH_ALLOWLIST = {
     "caching_ttls",
     "enabled_steps",
     "skip_steps",
+    "notification_webhook",
+    "notification_webhook_secret",
     "current_step",
     "status",
 }

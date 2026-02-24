@@ -170,19 +170,20 @@ def test_step03_branded_keyword_policy_comparisons_only() -> None:
     assert allowed is True
 
 
-def test_step07_fit_gating_keeps_primary_only() -> None:
-    """Fit gating labels only topics above base threshold as primary."""
+def test_step07_dynamic_calibration_outputs_ordered_thresholds() -> None:
+    """Dynamic calibration should produce primary > secondary under compressed scores."""
     service = Step07PrioritizationService.__new__(Step07PrioritizationService)
     strategy = resolve_run_strategy(
-        strategy_payload={"fit_threshold_profile": "aggressive"},
+        strategy_payload={"fit_threshold_profile": "aggressive", "min_eligible_target": 1},
         brand=None,
         primary_goal=None,
     )
 
     scored_topics = [
         {
+            "scoring_factors": {"opportunity_score": 0.62},
             "fit_assessment": {
-                "fit_score": 0.72,
+                "fit_score": 0.48,
                 "fit_tier": "excluded",
                 "hard_exclusion_reason": None,
                 "fit_threshold_used": None,
@@ -190,8 +191,9 @@ def test_step07_fit_gating_keeps_primary_only() -> None:
             }
         },
         {
+            "scoring_factors": {"opportunity_score": 0.58},
             "fit_assessment": {
-                "fit_score": 0.68,
+                "fit_score": 0.44,
                 "fit_tier": "excluded",
                 "hard_exclusion_reason": None,
                 "fit_threshold_used": None,
@@ -199,8 +201,9 @@ def test_step07_fit_gating_keeps_primary_only() -> None:
             }
         },
         {
+            "scoring_factors": {"opportunity_score": 0.53},
             "fit_assessment": {
-                "fit_score": 0.65,
+                "fit_score": 0.39,
                 "fit_tier": "excluded",
                 "hard_exclusion_reason": None,
                 "fit_threshold_used": None,
@@ -208,8 +211,9 @@ def test_step07_fit_gating_keeps_primary_only() -> None:
             }
         },
         {
+            "scoring_factors": {"opportunity_score": 0.49},
             "fit_assessment": {
-                "fit_score": 0.63,
+                "fit_score": 0.33,
                 "fit_tier": "excluded",
                 "hard_exclusion_reason": None,
                 "fit_threshold_used": None,
@@ -217,8 +221,9 @@ def test_step07_fit_gating_keeps_primary_only() -> None:
             }
         },
         {
+            "scoring_factors": {"opportunity_score": 0.45},
             "fit_assessment": {
-                "fit_score": 0.61,
+                "fit_score": 0.29,
                 "fit_tier": "excluded",
                 "hard_exclusion_reason": None,
                 "fit_threshold_used": None,
@@ -226,8 +231,9 @@ def test_step07_fit_gating_keeps_primary_only() -> None:
             }
         },
         {
+            "scoring_factors": {"opportunity_score": 0.40},
             "fit_assessment": {
-                "fit_score": 0.59,
+                "fit_score": 0.25,
                 "fit_tier": "excluded",
                 "hard_exclusion_reason": None,
                 "fit_threshold_used": None,
@@ -236,59 +242,63 @@ def test_step07_fit_gating_keeps_primary_only() -> None:
         },
     ]
 
-    service._apply_fit_gating(scored_topics, strategy)  # type: ignore[attr-defined]
-
-    tiers = [item["fit_assessment"]["fit_tier"] for item in scored_topics]
-    assert tiers[0] == "primary"
-    assert tiers.count("primary") == 1
-    assert tiers.count("secondary") == 0
-
-
-def test_step07_fit_gating_does_not_promote_secondary_fallback() -> None:
-    """Fallback promotion is disabled; below-threshold topics remain excluded."""
-    service = Step07PrioritizationService.__new__(Step07PrioritizationService)
-    strategy = resolve_run_strategy(
-        strategy_payload={"fit_threshold_profile": "aggressive", "min_eligible_target": 3},
-        brand=None,
-        primary_goal=None,
+    service._apply_dynamic_scores(scored_topics)  # type: ignore[attr-defined]
+    primary_threshold, secondary_threshold = service._calibrate_dynamic_thresholds(  # type: ignore[attr-defined]
+        scored_topics,
+        strategy,
     )
+
+    assert primary_threshold > secondary_threshold
+    assert primary_threshold <= strategy.base_threshold()
+    assert secondary_threshold <= strategy.relaxed_threshold()
+
+
+def test_step07_prefilter_excludes_hard_excluded_topics() -> None:
+    """Deterministic prefilter should never include hard exclusions."""
+    service = Step07PrioritizationService.__new__(Step07PrioritizationService)
 
     scored_topics = [
         {
-            "fit_assessment": {
-                "fit_score": 0.49,
-                "fit_tier": "excluded",
-                "hard_exclusion_reason": None,
-                "fit_threshold_used": None,
-                "reasons": [],
-                "components": {"icp_relevance": 0.2},
-            }
+                "fit_assessment": {
+                    "fit_score": 0.58,
+                    "fit_tier": "excluded",
+                    "hard_exclusion_reason": None,
+                    "fit_threshold_used": None,
+                    "reasons": [],
+                    "components": {"icp_relevance": 0.2},
+            },
+            "dynamic_fit_score": 0.58,
         },
         {
-            "fit_assessment": {
-                "fit_score": 0.47,
-                "fit_tier": "excluded",
-                "hard_exclusion_reason": None,
-                "fit_threshold_used": None,
-                "reasons": [],
-                "components": {"icp_relevance": 0.2},
-            }
+                "fit_assessment": {
+                    "fit_score": 0.57,
+                    "fit_tier": "excluded",
+                    "hard_exclusion_reason": "competitor_branded",
+                    "fit_threshold_used": None,
+                    "reasons": [],
+                    "components": {"icp_relevance": 0.2},
+            },
+            "dynamic_fit_score": 0.57,
         },
         {
-            "fit_assessment": {
-                "fit_score": 0.45,
-                "fit_tier": "excluded",
-                "hard_exclusion_reason": None,
-                "fit_threshold_used": None,
-                "reasons": [],
-                "components": {"icp_relevance": 0.2},
-            }
+                "fit_assessment": {
+                    "fit_score": 0.45,
+                    "fit_tier": "excluded",
+                    "hard_exclusion_reason": None,
+                    "fit_threshold_used": None,
+                    "reasons": [],
+                    "components": {"icp_relevance": 0.2},
+            },
+            "dynamic_fit_score": 0.45,
         },
     ]
 
-    service._apply_fit_gating(scored_topics, strategy)  # type: ignore[attr-defined]
-    tiers = [item["fit_assessment"]["fit_tier"] for item in scored_topics]
-    assert tiers == ["excluded", "excluded", "excluded"]
+    candidates = service._deterministic_prefilter(  # type: ignore[attr-defined]
+        scored_topics=scored_topics,
+        secondary_threshold=0.5,
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["dynamic_fit_score"] == 0.58
 
 
 def test_resolve_run_strategy_maps_goal_preset_to_multiple_conversion_intents() -> None:

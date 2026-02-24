@@ -20,9 +20,18 @@ from app.models.generated_dtos import ContentBriefCreateDTO, ContentBriefPatchDT
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
+from app.services.discovery.topic_overlap import (
+    build_comparison_key,
+    build_family_key,
+    compute_topic_overlap,
+    is_exact_pair_duplicate,
+    is_sibling_pair,
+    normalize_text_tokens,
+)
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
+EXISTING_CONTENT_SKIP_THRESHOLD = 0.82
 
 
 @dataclass
@@ -50,6 +59,21 @@ class BriefOutput:
     briefs_generated: int
     briefs_with_warnings: int
     briefs: list[dict[str, Any]] = field(default_factory=list)
+    skipped_existing_pair: int = 0
+    skipped_existing_overlap: int = 0
+    sibling_pairs_allowed: int = 0
+
+
+@dataclass(frozen=True)
+class ExistingBriefSignature:
+    """Existing-brief signature used for semantic duplicate suppression."""
+
+    comparison_key: str | None
+    family_key: str
+    intent: str
+    page_type: str
+    keyword_tokens: set[str]
+    text_tokens: set[str]
 
 
 @dataclass(frozen=True)
@@ -141,6 +165,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         selected_topics = eligible_topics_all
         zero_data_candidates = 0
         zero_data_selected = 0
+        primary_keywords_by_topic_id: dict[str, Keyword | None] = {}
         if input_data.topic_ids:
             selected_topics = eligible_topics_all[:input_data.max_briefs]
         else:
@@ -170,13 +195,38 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     min_fit_score=input_data.zero_data_fit_score_min,
                 )
             )
+        if not primary_keywords_by_topic_id:
+            primary_keywords_by_topic_id = await self._load_primary_keywords_for_topics(
+                selected_topics
+            )
 
         existing_brief_topic_ids = await self._load_existing_brief_topic_ids(
             [str(topic.id) for topic in selected_topics]
         )
-        topics_to_generate = [
-            topic for topic in selected_topics if str(topic.id) not in existing_brief_topic_ids
-        ]
+        existing_signatures = await self._load_existing_brief_signatures(input_data.project_id)
+        skipped_existing_pair = 0
+        skipped_existing_overlap = 0
+        sibling_pairs_allowed = 0
+        topics_to_generate: list[Topic] = []
+        for topic in selected_topics:
+            topic_id = str(topic.id)
+            if topic_id in existing_brief_topic_ids:
+                continue
+            primary_keyword = primary_keywords_by_topic_id.get(topic_id)
+            should_skip, reason_code, sibling_allowed = self._should_skip_as_covered(
+                topic=topic,
+                primary_keyword=primary_keyword,
+                existing_signatures=existing_signatures,
+            )
+            if sibling_allowed:
+                sibling_pairs_allowed += 1
+            if should_skip:
+                if reason_code == "existing_pair_covered":
+                    skipped_existing_pair += 1
+                elif reason_code == "existing_content_overlap":
+                    skipped_existing_overlap += 1
+                continue
+            topics_to_generate.append(topic)
         skipped_existing = len(selected_topics) - len(topics_to_generate)
         logger.info(
             "Brief generation starting",
@@ -189,6 +239,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 "skipped_existing": skipped_existing,
                 "zero_data_candidates": zero_data_candidates,
                 "zero_data_selected": zero_data_selected,
+                "skipped_existing_pair": skipped_existing_pair,
+                "skipped_existing_overlap": skipped_existing_overlap,
+                "sibling_pairs_allowed": sibling_pairs_allowed,
             },
         )
 
@@ -196,6 +249,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             return BriefOutput(
                 briefs_generated=0,
                 briefs_with_warnings=0,
+                skipped_existing_pair=skipped_existing_pair,
+                skipped_existing_overlap=skipped_existing_overlap,
+                sibling_pairs_allowed=sibling_pairs_allowed,
             )
 
         # Prepare brand context
@@ -425,6 +481,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 "with_warnings": briefs_with_warnings,
                 "skipped_ineligible_topics": skipped_ineligible,
                 "skipped_existing_topics": skipped_existing,
+                "skipped_existing_pair": skipped_existing_pair,
+                "skipped_existing_overlap": skipped_existing_overlap,
+                "sibling_pairs_allowed": sibling_pairs_allowed,
             },
         )
 
@@ -434,12 +493,14 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             briefs_generated=len(output_briefs),
             briefs_with_warnings=briefs_with_warnings,
             briefs=output_briefs,
+            skipped_existing_pair=skipped_existing_pair,
+            skipped_existing_overlap=skipped_existing_overlap,
+            sibling_pairs_allowed=sibling_pairs_allowed,
         )
 
     def _is_topic_eligible(self, topic: Topic) -> bool:
         """Only generate briefs for primary/secondary fit tiers."""
-        factors = topic.priority_factors or {}
-        fit_tier = factors.get("fit_tier")
+        fit_tier = topic.fit_tier
         if fit_tier is None:
             return topic.priority_rank is not None
         return fit_tier in {"primary", "secondary"}
@@ -533,9 +594,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         return (-fit_score, rank)
 
     def _topic_fit_score(self, topic: Topic) -> float | None:
-        """Read fit_score from topic priority factors, if available."""
-        factors = topic.priority_factors or {}
-        fit_score = factors.get("fit_score")
+        """Read typed fit_score value."""
+        fit_score = topic.fit_score
         try:
             if fit_score is None:
                 return None
@@ -897,6 +957,94 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             )
         )
         return {str(topic_id) for topic_id in result.scalars().all() if topic_id is not None}
+
+    async def _load_existing_brief_signatures(self, project_id: str) -> list[ExistingBriefSignature]:
+        """Load semantic signatures for already-persisted briefs."""
+        result = await self.session.execute(
+            select(ContentBrief).where(ContentBrief.project_id == project_id)
+        )
+        signatures: list[ExistingBriefSignature] = []
+        for brief in result.scalars().all():
+            primary_keyword = str(brief.primary_keyword or "").strip()
+            supporting = [
+                str(item).strip()
+                for item in (brief.supporting_keywords or [])
+                if str(item).strip()
+            ]
+            keyword_texts = [primary_keyword, *supporting]
+            keyword_text = " ".join(keyword_texts)
+            title_text = " ".join(
+                str(item).strip()
+                for item in (brief.working_titles or [])
+                if str(item).strip()
+            )
+            comparison_key = build_comparison_key("", primary_keyword)
+            family_key = build_family_key("", primary_keyword, supporting)
+            signatures.append(
+                ExistingBriefSignature(
+                    comparison_key=comparison_key,
+                    family_key=family_key,
+                    intent=str(brief.search_intent or "").strip().lower(),
+                    page_type=str(brief.page_type or "").strip().lower(),
+                    keyword_tokens=normalize_text_tokens(keyword_text),
+                    text_tokens=normalize_text_tokens(f"{title_text} {primary_keyword}".strip()),
+                )
+            )
+        return signatures
+
+    def _should_skip_as_covered(
+        self,
+        *,
+        topic: Topic,
+        primary_keyword: Keyword | None,
+        existing_signatures: list[ExistingBriefSignature],
+    ) -> tuple[bool, str | None, bool]:
+        """Return skip decision for already-covered semantic signatures."""
+        if primary_keyword is None:
+            return False, None, False
+
+        primary_keyword_text = str(primary_keyword.keyword or "").strip()
+        comparison_key = build_comparison_key(topic.name or "", primary_keyword_text)
+        family_key = build_family_key(topic.name or "", primary_keyword_text, [])
+        candidate_keyword_tokens = normalize_text_tokens(primary_keyword_text)
+        candidate_text_tokens = normalize_text_tokens(
+            f"{topic.name or ''} {topic.description or ''} {primary_keyword_text}".strip()
+        )
+        candidate_intent = str(topic.dominant_intent or "").strip().lower()
+        candidate_page_type = str(topic.dominant_page_type or "").strip().lower()
+
+        sibling_pairs_allowed = False
+        for signature in existing_signatures:
+            if comparison_key and signature.comparison_key:
+                if is_exact_pair_duplicate(comparison_key, signature.comparison_key):
+                    return True, "existing_pair_covered", sibling_pairs_allowed
+                if is_sibling_pair(comparison_key, signature.comparison_key):
+                    sibling_pairs_allowed = True
+                    continue
+
+            if not candidate_intent or not candidate_page_type:
+                continue
+            if candidate_intent != signature.intent or candidate_page_type != signature.page_type:
+                continue
+            if family_key != signature.family_key and comparison_key is not None:
+                continue
+
+            overlap_score = compute_topic_overlap(
+                keyword_tokens_a=candidate_keyword_tokens,
+                keyword_tokens_b=signature.keyword_tokens,
+                text_tokens_a=candidate_text_tokens,
+                text_tokens_b=signature.text_tokens,
+                serp_domains_a={"no_serp_evidence"},
+                serp_domains_b={"no_serp_evidence"},
+                intent_a=candidate_intent,
+                intent_b=signature.intent,
+                page_type_a=candidate_page_type,
+                page_type_b=signature.page_type,
+            )
+            if overlap_score >= EXISTING_CONTENT_SKIP_THRESHOLD:
+                return True, "existing_content_overlap", sibling_pairs_allowed
+
+        return False, None, sibling_pairs_allowed
 
     async def _build_do_not_target(
         self,
@@ -1279,6 +1427,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             "unchecked_overlap": sum(
                 1 for b in result.briefs if b.get("overlap_status") == "unknown"
             ),
+            "skipped_existing_pair": result.skipped_existing_pair,
+            "skipped_existing_overlap": result.skipped_existing_overlap,
+            "sibling_pairs_allowed": result.sibling_pairs_allowed,
         })
 
         await self.session.commit()

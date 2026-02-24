@@ -16,6 +16,7 @@ from app.models.brand import BrandProfile
 from app.models.generated_dtos import KeywordCreateDTO
 from app.models.keyword import Keyword, SeedTopic
 from app.models.project import Project
+from app.models.topic import Topic
 from app.services.market_diagnosis import (
     collect_known_entities,
     diagnose_market_mode,
@@ -671,6 +672,15 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
 
     async def _persist_results(self, result: ExpansionOutput) -> None:
         """Save expanded keywords to database."""
+        # Clear stale topics before rebuilding keyword universe. In looped discovery
+        # runs, old topics can otherwise point at deleted keyword IDs between
+        # iterations until Step 6 reclusters.
+        existing_topics = await self.session.execute(
+            select(Topic).where(Topic.project_id == self.project_id)
+        )
+        for topic in existing_topics.scalars():
+            await topic.delete(self.session)
+
         # Delete existing expansion keywords for this project
         existing = await self.session.execute(
             select(Keyword).where(

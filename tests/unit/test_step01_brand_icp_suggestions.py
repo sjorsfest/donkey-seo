@@ -1,6 +1,7 @@
 """Unit tests for Step 1 ICP suggestion merge behavior."""
 
 from app.services.steps.setup.brand_shared import (
+    default_visual_style_guide,
     fallback_visual_confidence,
     merge_target_audience,
     normalize_prompt_contract,
@@ -79,6 +80,9 @@ def test_normalize_prompt_contract_enforces_required_placeholders() -> None:
             "forbidden_terms": ["  fake claims  "],
             "fallback_rules": ["  keep it clean "],
             "render_targets": [" blog_hero "],
+            "render_modes": [" component_render "],
+            "component_render_targets": [" hero_card "],
+            "component_template": "Render component for {article_topic}",
         }
     )
 
@@ -97,6 +101,29 @@ def test_normalize_prompt_contract_enforces_required_placeholders() -> None:
     assert contract["forbidden_terms"] == ["fake claims"]
     assert contract["fallback_rules"] == ["keep it clean"]
     assert contract["render_targets"] == ["blog_hero"]
+    assert contract["render_modes"] == ["component_render"]
+    assert contract["component_render_targets"] == ["hero_card"]
+    assert "{audience}" in contract["component_template"]
+
+
+def test_default_visual_style_guide_includes_component_render_fields() -> None:
+    guide = default_visual_style_guide(
+        tone_attributes=["friendly", "playful"],
+        differentiators=["fast setup"],
+        homepage_visual_signals={
+            "observed_hex_colors": ["#F4E08A", "#EF4FA8"],
+            "shape_cues": ["Rounded corners and pill-like controls"],
+            "cta_labels": ["Start for free"],
+            "observed_font_families": ["Baloo 2"],
+        },
+    )
+
+    assert "design_tokens" in guide
+    assert "component_style_rules" in guide
+    assert "component_layout_rules" in guide
+    assert "component_recipes" in guide
+    assert isinstance(guide["component_recipes"], list)
+    assert guide["component_recipes"][0]["name"] == "hero_card"
 
 
 def test_fallback_visual_confidence_boosts_when_assets_exist() -> None:

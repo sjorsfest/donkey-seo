@@ -390,17 +390,16 @@ class DiscoveryLoopSupervisor:
         candidates = [
             topic
             for topic in all_topics
-            if (topic.priority_factors or {}).get("fit_tier") == "primary"
+            if str(topic.fit_tier or "").lower() in {"primary", "secondary"}
         ]
         if not candidates:
             return []
 
         primary_ids = [topic.primary_keyword_id for topic in candidates if topic.primary_keyword_id]
         evidence_ids = [
-            factors.get("serp_evidence_keyword_id")
+            topic.serp_evidence_keyword_id
             for topic in candidates
-            for factors in [topic.priority_factors or {}]
-            if factors.get("serp_evidence_keyword_id")
+            if topic.serp_evidence_keyword_id
         ]
         keyword_ids = list({
             str(keyword_id)
@@ -418,13 +417,29 @@ class DiscoveryLoopSupervisor:
 
         decisions: list[TopicDecision] = []
         for topic in candidates:
-            factors = topic.priority_factors or {}
+            fit_tier = str(topic.fit_tier or "").lower()
+            is_secondary_tier = fit_tier == "secondary"
+            max_keyword_difficulty = (
+                max(0.0, discovery.max_keyword_difficulty - 10.0)
+                if is_secondary_tier
+                else discovery.max_keyword_difficulty
+            )
+            min_domain_diversity = (
+                min(1.0, discovery.min_domain_diversity + 0.10)
+                if is_secondary_tier
+                else discovery.min_domain_diversity
+            )
+            min_serp_intent_confidence = (
+                min(1.0, discovery.min_serp_intent_confidence + 0.10)
+                if is_secondary_tier
+                else discovery.min_serp_intent_confidence
+            )
             primary_keyword = (
                 keyword_by_id.get(str(topic.primary_keyword_id))
                 if topic.primary_keyword_id
                 else None
             )
-            evidence_keyword_id = factors.get("serp_evidence_keyword_id")
+            evidence_keyword_id = topic.serp_evidence_keyword_id
             evidence_keyword = (
                 keyword_by_id.get(str(evidence_keyword_id))
                 if evidence_keyword_id
@@ -456,7 +471,6 @@ class DiscoveryLoopSupervisor:
             )
             topic_market_mode = (
                 topic.market_mode
-                or factors.get("effective_market_mode")
                 or "established_category"
             )
             is_workflow_topic = topic_market_mode == "fragmented_workflow"
@@ -467,7 +481,7 @@ class DiscoveryLoopSupervisor:
                     servedness = topic.serp_servedness_score
                     competitor_density = topic.serp_competitor_density
                     serp_intent_confidence = (
-                        self._to_float(factors.get("serp_intent_confidence")) or 0.0
+                        self._to_float(topic.serp_intent_confidence) or 0.0
                     )
                     if servedness is None or competitor_density is None:
                         rejection_reasons.append("missing_cluster_serp_evidence")
@@ -475,11 +489,11 @@ class DiscoveryLoopSupervisor:
                         rejection_reasons.append("missing_keyword_difficulty")
                     if (
                         keyword_difficulty is not None
-                        and keyword_difficulty > discovery.max_keyword_difficulty
+                        and keyword_difficulty > max_keyword_difficulty
                     ):
                         rejection_reasons.append(
                             "keyword_difficulty_above_threshold:"
-                            f"{keyword_difficulty:.2f}>{discovery.max_keyword_difficulty:.2f}"
+                            f"{keyword_difficulty:.2f}>{max_keyword_difficulty:.2f}"
                         )
                     if (
                         servedness is not None
@@ -493,11 +507,11 @@ class DiscoveryLoopSupervisor:
                         )
                     if (
                         discovery.require_intent_match
-                        and serp_intent_confidence < discovery.min_serp_intent_confidence
+                        and serp_intent_confidence < min_serp_intent_confidence
                     ):
                         rejection_reasons.append(
                             "serp_intent_confidence_below_threshold:"
-                            f"{serp_intent_confidence:.2f}<{discovery.min_serp_intent_confidence:.2f}"
+                            f"{serp_intent_confidence:.2f}<{min_serp_intent_confidence:.2f}"
                         )
                 else:
                     if keyword is None:
@@ -508,16 +522,16 @@ class DiscoveryLoopSupervisor:
                         rejection_reasons.append("missing_keyword_difficulty")
                     if (
                         keyword_difficulty is not None
-                        and keyword_difficulty > discovery.max_keyword_difficulty
+                        and keyword_difficulty > max_keyword_difficulty
                     ):
                         rejection_reasons.append(
                             "keyword_difficulty_above_threshold:"
-                            f"{keyword_difficulty:.2f}>{discovery.max_keyword_difficulty:.2f}"
+                            f"{keyword_difficulty:.2f}>{max_keyword_difficulty:.2f}"
                         )
-                    if domain_diversity < discovery.min_domain_diversity:
+                    if domain_diversity < min_domain_diversity:
                         rejection_reasons.append(
                             "domain_diversity_below_threshold:"
-                            f"{domain_diversity:.2f}<{discovery.min_domain_diversity:.2f}"
+                            f"{domain_diversity:.2f}<{min_domain_diversity:.2f}"
                         )
 
             if (
@@ -529,8 +543,7 @@ class DiscoveryLoopSupervisor:
             ):
                 observed_intent = keyword.validated_intent or topic.dominant_intent
                 alignment = classify_intent_alignment(observed_intent, goal_intent_profile)
-                fit_tier = str(factors.get("fit_tier") or "").lower()
-                fit_score = self._to_float(factors.get("fit_score")) or 0.0
+                fit_score = self._to_float(topic.fit_score) or 0.0
                 intent_mismatch_flag = "intent_mismatch" in keyword.serp_mismatch_flags
                 should_hard_reject = (
                     alignment == "off_goal"
@@ -546,13 +559,21 @@ class DiscoveryLoopSupervisor:
                 elif intent_mismatch_flag and alignment == "off_goal" and fit_tier != "primary":
                     rejection_reasons.append("intent_mismatch_off_goal")
 
+            if is_secondary_tier and rejection_reasons:
+                rejection_reasons.append("secondary_tier_strict_gate")
+
+            diagnostics = (
+                topic.prioritization_diagnostics
+                if isinstance(topic.prioritization_diagnostics, dict)
+                else {}
+            )
             fit_reasons = [
                 str(item)
-                for item in factors.get("fit_reasons", [])
+                for item in diagnostics.get("fit_reasons", [])
                 if item is not None
             ]
             icp_relevance = self._parse_icp_relevance(fit_reasons)
-            is_hard_excluded = any(
+            is_hard_excluded = topic.hard_exclusion_reason is not None or any(
                 reason.lower().startswith("hard exclusion:")
                 for reason in fit_reasons
             )
@@ -561,8 +582,8 @@ class DiscoveryLoopSupervisor:
             decision = TopicDecision(
                 source_topic_id=str(topic.id),
                 topic_name=topic.name,
-                fit_tier=factors.get("fit_tier"),
-                fit_score=self._to_float(factors.get("fit_score")),
+                fit_tier=topic.fit_tier,
+                fit_score=self._to_float(topic.fit_score),
                 keyword_difficulty=keyword_difficulty,
                 domain_diversity=round(domain_diversity, 4),
                 validated_intent=keyword.validated_intent if keyword else None,

@@ -6,6 +6,8 @@ from app.models.content import (
     ContentArticle,
     ContentArticleVersion,
     ContentBrief,
+    ContentFeaturedImage,
+    PublicationWebhookDelivery,
     WriterInstructions,
 )
 from app.models.generated_dtos import (
@@ -17,8 +19,12 @@ from app.models.generated_dtos import (
     ContentArticleVersionPatchDTO,
     ContentBriefCreateDTO,
     ContentBriefPatchDTO,
+    ContentFeaturedImageCreateDTO,
+    ContentFeaturedImagePatchDTO,
     ProjectStyleGuideCreateDTO,
     ProjectStyleGuidePatchDTO,
+    PublicationWebhookDeliveryCreateDTO,
+    PublicationWebhookDeliveryPatchDTO,
     WriterInstructionsCreateDTO,
     WriterInstructionsPatchDTO,
 )
@@ -126,6 +132,37 @@ CONTENT_ARTICLE_VERSION_PATCH_ALLOWLIST = {
     "created_by_regeneration",
 }
 
+CONTENT_FEATURED_IMAGE_PATCH_ALLOWLIST = {
+    "status",
+    "title_text",
+    "style_variant_id",
+    "template_version",
+    "template_spec",
+    "object_key",
+    "mime_type",
+    "width",
+    "height",
+    "byte_size",
+    "sha256",
+    "source",
+    "generation_error",
+    "last_generated_at",
+}
+
+PUBLICATION_WEBHOOK_DELIVERY_PATCH_ALLOWLIST = {
+    "project_id",
+    "article_id",
+    "event_type",
+    "scheduled_for",
+    "status",
+    "attempt_count",
+    "next_attempt_at",
+    "last_attempt_at",
+    "delivered_at",
+    "last_http_status",
+    "last_error",
+}
+
 _CONTENT_BRIEF_ADAPTER = BaseWriteAdapter[
     ContentBrief,
     ContentBriefCreateDTO,
@@ -180,6 +217,24 @@ _CONTENT_ARTICLE_VERSION_ADAPTER = BaseWriteAdapter[
     patch_allowlist=CONTENT_ARTICLE_VERSION_PATCH_ALLOWLIST,
 )
 
+_CONTENT_FEATURED_IMAGE_ADAPTER = BaseWriteAdapter[
+    ContentFeaturedImage,
+    ContentFeaturedImageCreateDTO,
+    ContentFeaturedImagePatchDTO,
+](
+    model_cls=ContentFeaturedImage,
+    patch_allowlist=CONTENT_FEATURED_IMAGE_PATCH_ALLOWLIST,
+)
+
+_PUBLICATION_WEBHOOK_DELIVERY_ADAPTER = BaseWriteAdapter[
+    PublicationWebhookDelivery,
+    PublicationWebhookDeliveryCreateDTO,
+    PublicationWebhookDeliveryPatchDTO,
+](
+    model_cls=PublicationWebhookDelivery,
+    patch_allowlist=PUBLICATION_WEBHOOK_DELIVERY_PATCH_ALLOWLIST,
+)
+
 
 def register() -> None:
     """Register content adapters."""
@@ -191,3 +246,5 @@ def register() -> None:
     register_adapter(BriefDelta, _BRIEF_DELTA_ADAPTER)
     register_adapter(ContentArticle, _CONTENT_ARTICLE_ADAPTER)
     register_adapter(ContentArticleVersion, _CONTENT_ARTICLE_VERSION_ADAPTER)
+    register_adapter(ContentFeaturedImage, _CONTENT_FEATURED_IMAGE_ADAPTER)
+    register_adapter(PublicationWebhookDelivery, _PUBLICATION_WEBHOOK_DELIVERY_ADAPTER)

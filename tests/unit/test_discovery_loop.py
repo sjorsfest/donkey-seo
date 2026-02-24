@@ -222,13 +222,12 @@ async def test_evaluate_decisions_accepts_workflow_topic_with_alternate_serp() -
     topic = SimpleNamespace(
         id="topic-1",
         name="Slack to Notion Workflow",
-        priority_factors={
-            "fit_tier": "primary",
-            "fit_score": 0.81,
-            "fit_reasons": [],
-            "serp_intent_confidence": 0.8,
-            "serp_evidence_keyword_id": "kw-alt",
-        },
+        fit_tier="primary",
+        fit_score=0.81,
+        prioritization_diagnostics={"fit_reasons": []},
+        serp_intent_confidence=0.8,
+        serp_evidence_keyword_id="kw-alt",
+        hard_exclusion_reason=None,
         primary_keyword_id="kw-primary",
         market_mode="fragmented_workflow",
         serp_servedness_score=0.25,
@@ -278,13 +277,12 @@ async def test_evaluate_topic_decisions_rejects_workflow_topic_when_saturated() 
     topic = SimpleNamespace(
         id="topic-2",
         name="CRM Integration",
-        priority_factors={
-            "fit_tier": "primary",
-            "fit_score": 0.77,
-            "fit_reasons": [],
-            "serp_intent_confidence": 0.9,
-            "serp_evidence_keyword_id": "kw-primary",
-        },
+        fit_tier="primary",
+        fit_score=0.77,
+        prioritization_diagnostics={"fit_reasons": []},
+        serp_intent_confidence=0.9,
+        serp_evidence_keyword_id="kw-primary",
+        hard_exclusion_reason=None,
         primary_keyword_id="kw-primary",
         market_mode="fragmented_workflow",
         serp_servedness_score=0.9,
@@ -323,17 +321,17 @@ async def test_evaluate_topic_decisions_rejects_workflow_topic_when_saturated() 
 
 
 @pytest.mark.asyncio
-async def test_evaluate_topic_decisions_skips_secondary_fit_candidates() -> None:
+async def test_evaluate_topic_decisions_rejects_secondary_when_off_goal() -> None:
     topic = SimpleNamespace(
         id="topic-3",
         name="Helpdesk Login Portal",
         dominant_intent="navigational",
-        priority_factors={
-            "fit_tier": "secondary",
-            "fit_score": 0.62,
-            "fit_reasons": [],
-            "serp_evidence_keyword_id": "kw-primary",
-        },
+        fit_tier="secondary",
+        fit_score=0.62,
+        prioritization_diagnostics={"fit_reasons": []},
+        serp_intent_confidence=0.0,
+        serp_evidence_keyword_id="kw-primary",
+        hard_exclusion_reason=None,
         primary_keyword_id="kw-primary",
         market_mode="established_category",
         avg_difficulty=18.0,
@@ -367,7 +365,58 @@ async def test_evaluate_topic_decisions_skips_secondary_fit_candidates() -> None
         ),
     )
 
-    assert decisions == []
+    assert len(decisions) == 1
+    assert decisions[0].decision == "rejected"
+    assert any("secondary_tier_strict_gate" in reason for reason in decisions[0].rejection_reasons)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_topic_decisions_accepts_secondary_with_strict_thresholds() -> None:
+    topic = SimpleNamespace(
+        id="topic-3b",
+        name="Helpdesk Pricing Alternatives",
+        dominant_intent="commercial",
+        fit_tier="secondary",
+        fit_score=0.71,
+        prioritization_diagnostics={"fit_reasons": []},
+        serp_intent_confidence=1.0,
+        serp_evidence_keyword_id="kw-primary",
+        hard_exclusion_reason=None,
+        primary_keyword_id="kw-primary",
+        market_mode="established_category",
+        avg_difficulty=40.0,
+    )
+    keyword = SimpleNamespace(
+        id="kw-primary",
+        serp_top_results=[{"domain": "vendor-a.com"}, {"domain": "vendor-b.com"}],
+        serp_mismatch_flags=[],
+        difficulty=40.0,
+        validated_intent="commercial",
+        validated_page_type="comparison",
+    )
+    supervisor = DiscoveryLoopSupervisor.__new__(DiscoveryLoopSupervisor)
+    supervisor.project_id = "project-1"
+    supervisor.run = SimpleNamespace(
+        id="run-1",
+        steps_config={"primary_goal": "revenue_content", "strategy": {}},
+    )
+    supervisor.session = _SessionSequence([topic], [keyword])
+
+    decisions = await supervisor._evaluate_topic_decisions(  # type: ignore[attr-defined]
+        iteration_index=1,
+        discovery=DiscoveryLoopConfig(
+            require_serp_gate=True,
+            require_intent_match=True,
+            max_keyword_difficulty=65.0,
+            min_domain_diversity=0.5,
+            max_serp_servedness=0.75,
+            max_serp_competitor_density=0.70,
+            min_serp_intent_confidence=0.35,
+        ),
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].decision == "accepted"
 
 
 @pytest.mark.asyncio
@@ -376,12 +425,12 @@ async def test_evaluate_topic_decisions_accepts_core_goal_intent_despite_mismatc
         id="topic-4",
         name="Helpdesk Pricing Software",
         dominant_intent="transactional",
-        priority_factors={
-            "fit_tier": "primary",
-            "fit_score": 0.63,
-            "fit_reasons": [],
-            "serp_evidence_keyword_id": "kw-primary",
-        },
+        fit_tier="primary",
+        fit_score=0.63,
+        prioritization_diagnostics={"fit_reasons": []},
+        serp_intent_confidence=1.0,
+        serp_evidence_keyword_id="kw-primary",
+        hard_exclusion_reason=None,
         primary_keyword_id="kw-primary",
         market_mode="established_category",
         avg_difficulty=22.0,

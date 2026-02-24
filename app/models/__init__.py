@@ -6,6 +6,8 @@ from app.models.content import (
     ContentArticle,
     ContentArticleVersion,
     ContentBrief,
+    ContentFeaturedImage,
+    PublicationWebhookDelivery,
     WriterInstructions,
 )
 from app.models.discovery_snapshot import DiscoveryTopicSnapshot
@@ -32,8 +34,10 @@ __all__ = [
     "Topic",
     "ContentBrief",
     "WriterInstructions",
+    "ContentFeaturedImage",
     "ContentArticle",
     "ContentArticleVersion",
+    "PublicationWebhookDelivery",
     "ProjectStyleGuide",
     "BriefDelta",
     "PipelineRun",

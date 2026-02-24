@@ -15,6 +15,7 @@ from app.models.content import (
     ContentArticle,
     ContentArticleVersion,
     ContentBrief,
+    ContentFeaturedImage,
     WriterInstructions,
 )
 from app.models.generated_dtos import (
@@ -24,6 +25,11 @@ from app.models.generated_dtos import (
 from app.models.project import Project
 from app.models.style_guide import BriefDelta
 from app.services.article_generation import ArticleGenerationService
+from app.services.content_renderer import render_modular_document
+from app.services.featured_image_generation import modular_featured_image_payload
+from app.services.publication_webhook import (
+    schedule_publication_webhook_for_article,
+)
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -52,7 +58,7 @@ class ArticleWriterOutput:
 class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWriterOutput]):
     """Step 14: Generate publish-ready modular content artifacts."""
 
-    step_number = 3
+    step_number = 5
     step_name = "article_generation"
     is_optional = False
 
@@ -82,7 +88,19 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
             .limit(1)
         )
         if not instructions_result.scalars().first():
-            raise ValueError("No writer instructions found. Run Step 2 first.")
+            raise ValueError("No writer instructions found. Run Step 3 first.")
+
+        featured_image_result = await self.session.execute(
+            select(ContentFeaturedImage)
+            .join(ContentBrief, ContentFeaturedImage.brief_id == ContentBrief.id)
+            .where(
+                ContentBrief.project_id == input_data.project_id,
+                ContentFeaturedImage.status == "ready",
+            )
+            .limit(1)
+        )
+        if not featured_image_result.scalars().first():
+            raise ValueError("No featured images found. Run Step 4 first.")
 
     async def _execute(self, input_data: ArticleWriterInput) -> ArticleWriterOutput:
         project = await self._load_project(input_data.project_id)
@@ -102,6 +120,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
 
         instructions = await self._load_writer_instructions(briefs)
         deltas = await self._load_brief_deltas(briefs)
+        featured_images = await self._load_featured_images(briefs)
         existing_article_brief_ids = await self._load_existing_article_brief_ids(briefs)
 
         brand_context = self._build_brand_context(brand)
@@ -120,6 +139,19 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                     {
                         "brief_id": str(brief.id),
                         "reason": "missing_writer_instructions",
+                    }
+                )
+                continue
+            featured_image = featured_images.get(str(brief.id))
+            if (
+                featured_image is None
+                or featured_image.status != "ready"
+                or not featured_image.object_key
+            ):
+                missing_instruction_failures.append(
+                    {
+                        "brief_id": str(brief.id),
+                        "reason": "missing_featured_image",
                     }
                 )
                 continue
@@ -144,7 +176,9 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         async def _generate_for_brief(brief: ContentBrief) -> tuple[ContentBrief, Any | None, str | None]:
             async with semaphore:
                 try:
-                    brief_payload = self._brief_payload(brief)
+                    featured_image = featured_images[str(brief.id)]
+                    locked_title = featured_image.title_text
+                    brief_payload = self._brief_payload(brief, locked_title=locked_title)
                     instructions_payload = instructions[brief.id]
                     delta_payload = deltas.get(brief.id, {})
                     artifact = await generator.generate_with_repair(
@@ -154,6 +188,12 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                         brand_context=brand_context,
                         conversion_intents=strategy.conversion_intents,
                     )
+                    self._enforce_locked_title(artifact.modular_document, locked_title)
+                    artifact.title = locked_title
+                    artifact.modular_document["featured_image"] = modular_featured_image_payload(
+                        featured_image=featured_image
+                    )
+                    artifact.rendered_html = render_modular_document(artifact.modular_document)
                     return brief, artifact, None
                 except Exception as exc:
                     logger.warning(
@@ -222,6 +262,12 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                             generation_temperature=artifact.generation_temperature,
                             created_by_regeneration=False,
                         ),
+                    )
+
+                    await schedule_publication_webhook_for_article(
+                        self.session,
+                        article=article,
+                        proposed_publication_date=brief.proposed_publication_date,
                     )
             except IntegrityError as exc:
                 if self._is_duplicate_article_for_brief_error(exc):
@@ -324,6 +370,17 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
             }
         return payload
 
+    async def _load_featured_images(self, briefs: list[ContentBrief]) -> dict[str, ContentFeaturedImage]:
+        result = await self.session.execute(
+            select(ContentFeaturedImage).where(
+                ContentFeaturedImage.brief_id.in_([brief.id for brief in briefs])
+            )
+        )
+        payload: dict[str, ContentFeaturedImage] = {}
+        for item in result.scalars():
+            payload[str(item.brief_id)] = item
+        return payload
+
     async def _load_existing_article_brief_ids(self, briefs: list[ContentBrief]) -> set[str]:
         result = await self.session.execute(
             select(ContentArticle.brief_id).where(
@@ -332,14 +389,18 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         )
         return set(result.scalars())
 
-    def _brief_payload(self, brief: ContentBrief) -> dict[str, Any]:
+    def _brief_payload(self, brief: ContentBrief, *, locked_title: str | None = None) -> dict[str, Any]:
+        working_titles = brief.working_titles or []
+        if locked_title:
+            working_titles = [locked_title]
         return {
             "id": str(brief.id),
             "primary_keyword": brief.primary_keyword,
             "search_intent": brief.search_intent,
             "page_type": brief.page_type,
             "funnel_stage": brief.funnel_stage,
-            "working_titles": brief.working_titles or [],
+            "working_titles": working_titles,
+            "locked_title": locked_title or "",
             "target_audience": brief.target_audience or "",
             "proposed_publication_date": (
                 brief.proposed_publication_date.isoformat()
@@ -360,6 +421,25 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
             "target_word_count_max": brief.target_word_count_max,
             "must_include_sections": brief.must_include_sections or [],
         }
+
+    @staticmethod
+    def _enforce_locked_title(document: dict[str, Any], locked_title: str) -> None:
+        seo_meta = document.get("seo_meta")
+        if not isinstance(seo_meta, dict):
+            seo_meta = {}
+            document["seo_meta"] = seo_meta
+        seo_meta["h1"] = locked_title
+
+        blocks = document.get("blocks")
+        if not isinstance(blocks, list):
+            return
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("block_type") or "").strip().lower() != "hero":
+                continue
+            block["heading"] = locked_title
+            break
 
     def _build_brand_context(self, brand: BrandProfile | None) -> str:
         if not brand:

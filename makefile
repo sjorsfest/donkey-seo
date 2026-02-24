@@ -4,6 +4,9 @@ start:
 worker:
 	@uv run python -m app.workers.pipeline_worker
 
+webhook-worker:
+	@uv run python -m app.workers.publication_webhook_worker
+
 migrate-create:
 ifndef message
 	@read -p "Migration message: " msg && alembic revision --autogenerate -m "$$msg"

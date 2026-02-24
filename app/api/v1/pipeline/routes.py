@@ -33,6 +33,7 @@ from app.schemas.pipeline import (
     StepExecutionResponse,
 )
 from app.services.pipeline_orchestrator import PipelineOrchestrator
+from app.services.pipelines import CONTENT_DEFAULT_END_STEP
 from app.services.pipeline_task_manager import (
     PipelineQueueFullError,
     get_content_pipeline_task_manager,
@@ -75,15 +76,17 @@ async def start_pipeline(
         skip_steps = request.skip_steps or []
     else:
         start_step = request.start_step or 1
-        end_step = request.end_step or 3
+        end_step = request.end_step or CONTENT_DEFAULT_END_STEP
         skip_steps = request.skip_steps or []
 
     running_result = await session.execute(
-        select(PipelineRun).where(
+        select(PipelineRun.id)
+        .where(
             PipelineRun.project_id == project_id,
             PipelineRun.pipeline_module == pipeline_module,
             PipelineRun.status == "running",
         )
+        .limit(1)
     )
     if running_result.scalar_one_or_none():
         if pipeline_module == "setup":

@@ -1537,10 +1537,14 @@ class PipelineOrchestrator:
         pipeline_module: str,
         excluding_run_id: str | None = None,
     ) -> None:
-        query = select(PipelineRun).where(
-            PipelineRun.project_id == self.project_id,
-            PipelineRun.pipeline_module == pipeline_module,
-            PipelineRun.status == "running",
+        query = (
+            select(PipelineRun.id)
+            .where(
+                PipelineRun.project_id == self.project_id,
+                PipelineRun.pipeline_module == pipeline_module,
+                PipelineRun.status == "running",
+            )
+            .limit(1)
         )
         if excluding_run_id:
             query = query.where(PipelineRun.id != excluding_run_id)

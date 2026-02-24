@@ -21,6 +21,7 @@ from app.models.content import (
     ContentArticle,
     ContentArticleVersion,
     ContentBrief,
+    ContentFeaturedImage,
     WriterInstructions,
 )
 from app.models.generated_dtos import (
@@ -47,20 +48,34 @@ from app.schemas.content import (
     WriterInstructionsResponse,
 )
 from app.services.article_generation import ArticleGenerationService
+from app.services.content_renderer import render_modular_document
+from app.services.featured_image_generation import (
+    FeaturedImageGenerationService,
+    generation_retry_settings,
+    modular_featured_image_payload,
+    retry_with_backoff,
+)
+from app.services.publication_webhook import (
+    reschedule_publication_webhook_for_brief,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _brief_payload(brief: ContentBrief) -> dict:
+def _brief_payload(brief: ContentBrief, *, locked_title: str | None = None) -> dict:
+    working_titles = brief.working_titles or []
+    if locked_title:
+        working_titles = [locked_title]
     return {
         "id": str(brief.id),
         "primary_keyword": brief.primary_keyword,
         "search_intent": brief.search_intent,
         "page_type": brief.page_type,
         "funnel_stage": brief.funnel_stage,
-        "working_titles": brief.working_titles or [],
+        "working_titles": working_titles,
+        "locked_title": locked_title or "",
         "target_audience": brief.target_audience or "",
         "proposed_publication_date": (
             brief.proposed_publication_date.isoformat()
@@ -81,6 +96,25 @@ def _brief_payload(brief: ContentBrief) -> dict:
         "target_word_count_max": brief.target_word_count_max,
         "must_include_sections": brief.must_include_sections or [],
     }
+
+
+def _enforce_locked_title(document: dict, locked_title: str) -> None:
+    seo_meta = document.get("seo_meta")
+    if not isinstance(seo_meta, dict):
+        seo_meta = {}
+        document["seo_meta"] = seo_meta
+    seo_meta["h1"] = locked_title
+
+    blocks = document.get("blocks")
+    if not isinstance(blocks, list):
+        return
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("block_type") or "").strip().lower() != "hero":
+            continue
+        block["heading"] = locked_title
+        break
 
 
 def _writer_instructions_payload(instructions: WriterInstructions | None) -> dict:
@@ -392,10 +426,19 @@ async def update_brief(
         )
 
     update_data = brief_data.model_dump(exclude_unset=True)
+    publication_date_updated = "proposed_publication_date" in update_data
     brief.patch(
         session,
         ContentBriefPatchDTO.from_partial(update_data),
     )
+
+    if publication_date_updated:
+        await reschedule_publication_webhook_for_brief(
+            session,
+            project_id=project_id,
+            brief_id=brief_id,
+            proposed_publication_date=brief.proposed_publication_date,
+        )
 
     await session.flush()
     await session.refresh(brief)
@@ -601,15 +644,41 @@ async def regenerate_article(
     )
     brand = brand_result.scalar_one_or_none()
 
+    featured_image_result = await session.execute(
+        select(ContentFeaturedImage).where(ContentFeaturedImage.brief_id == brief_id)
+    )
+    existing_featured_image = featured_image_result.scalar_one_or_none()
+    featured_image_generator = FeaturedImageGenerationService()
+    attempts, backoff_ms = generation_retry_settings()
+    featured_image = await retry_with_backoff(
+        attempts=attempts,
+        backoff_ms=backoff_ms,
+        coro_factory=lambda: featured_image_generator.generate_for_brief(
+            session=session,
+            project_id=project_id,
+            brief=brief,
+            brand=brand,
+            existing=existing_featured_image,
+            force_regenerate=True,
+        ),
+    )
+    locked_title = featured_image.title_text
+
     conversion_intents = [project.primary_goal] if project.primary_goal else []
     generator = ArticleGenerationService(project.domain)
     artifact = await generator.generate_with_repair(
-        brief=_brief_payload(brief),
+        brief=_brief_payload(brief, locked_title=locked_title),
         writer_instructions=_writer_instructions_payload(instructions),
         brief_delta=_brief_delta_payload(delta),
         brand_context=_build_brand_context(brand),
         conversion_intents=conversion_intents,
     )
+    _enforce_locked_title(artifact.modular_document, locked_title)
+    artifact.title = locked_title
+    artifact.modular_document["featured_image"] = modular_featured_image_payload(
+        featured_image=featured_image
+    )
+    artifact.rendered_html = render_modular_document(artifact.modular_document)
 
     next_version = article.current_version + 1
     article.patch(

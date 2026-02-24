@@ -15,4 +15,4 @@ def test_display_step_number_keeps_setup_unchanged() -> None:
 
 def test_display_step_number_keeps_content_unchanged() -> None:
     assert TaskManager._display_step_number(pipeline_module="content", current_step=1) == 1
-    assert TaskManager._display_step_number(pipeline_module="content", current_step=3) == 3
+    assert TaskManager._display_step_number(pipeline_module="content", current_step=5) == 5

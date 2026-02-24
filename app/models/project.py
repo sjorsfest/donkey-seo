@@ -14,7 +14,7 @@ from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 if TYPE_CHECKING:
     from app.models.brand import BrandProfile
     from app.models.discovery_learning import DiscoveryIterationLearning
-    from app.models.content import ContentArticle, ContentBrief
+    from app.models.content import ContentArticle, ContentBrief, ContentFeaturedImage
     from app.models.discovery_snapshot import DiscoveryTopicSnapshot
     from app.models.keyword import Keyword, SeedTopic
     from app.models.pipeline import PipelineRun
@@ -67,6 +67,8 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
     caching_ttls: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     enabled_steps: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
     skip_steps: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
+    notification_webhook: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    notification_webhook_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Status tracking
     current_step: Mapped[int] = mapped_column(default=0, nullable=False)
@@ -97,6 +99,11 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
     )
     content_briefs: Mapped[list[ContentBrief]] = relationship(
         "ContentBrief",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    content_featured_images: Mapped[list[ContentFeaturedImage]] = relationship(
+        "ContentFeaturedImage",
         back_populates="project",
         cascade="all, delete-orphan",
     )

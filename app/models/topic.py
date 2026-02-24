@@ -67,10 +67,29 @@ class Topic(TypedModelMixin[TopicCreateDTO, TopicPatchDTO], Base, UUIDMixin, Tim
     serp_servedness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     serp_competitor_density: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Step 7: Priority
+    # Step 7: Priority / Fit (typed, breaking schema)
     priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    priority_factors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    fit_tier: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    fit_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    brand_fit_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    opportunity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dynamic_fit_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dynamic_opportunity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    deterministic_priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    llm_rerank_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    llm_fit_adjustment: Mapped[float | None] = mapped_column(Float, nullable=True)
+    llm_tier_recommendation: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    fit_threshold_primary: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fit_threshold_secondary: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hard_exclusion_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    final_cut_reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    serp_intent_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    serp_evidence_keyword_id: Mapped[str | None] = mapped_column(StringUUID(), nullable=True)
+    serp_evidence_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    serp_evidence_keyword_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prioritization_diagnostics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     recommended_url_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     recommended_publish_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     target_money_pages: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
@@ -108,43 +127,3 @@ class Topic(TypedModelMixin[TopicCreateDTO, TopicPatchDTO], Base, UUIDMixin, Tim
 
     def __repr__(self) -> str:
         return f"<Topic {self.name}>"
-
-    @property
-    def fit_score(self) -> float | None:
-        """Convenience accessor for fit score stored in priority_factors."""
-        if not self.priority_factors:
-            return None
-        value = self.priority_factors.get("fit_score")
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    @property
-    def fit_tier(self) -> str | None:
-        """Convenience accessor for fit tier stored in priority_factors."""
-        if not self.priority_factors:
-            return None
-        value = self.priority_factors.get("fit_tier")
-        return value if isinstance(value, str) else None
-
-    @property
-    def fit_reasons(self) -> list[str] | None:
-        """Convenience accessor for fit reasons stored in priority_factors."""
-        if not self.priority_factors:
-            return None
-        value = self.priority_factors.get("fit_reasons")
-        if isinstance(value, list):
-            return [str(v) for v in value]
-        return None
-
-    @property
-    def fit_threshold_used(self) -> float | None:
-        """Convenience accessor for the threshold applied during fit gating."""
-        if not self.priority_factors:
-            return None
-        value = self.priority_factors.get("fit_threshold_used")
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None

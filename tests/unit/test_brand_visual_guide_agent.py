@@ -14,6 +14,7 @@ def test_brand_visual_guide_prompt_includes_required_variables() -> None:
             company_name="Acme",
             tone_attributes=["confident", "pragmatic"],
             brand_assets=[{"role": "logo", "object_key": "projects/p1/logo.png"}],
+            homepage_visual_signals={"observed_hex_colors": ["#F4E08A"]},
         )
     )
 
@@ -23,6 +24,8 @@ def test_brand_visual_guide_prompt_includes_required_variables() -> None:
     assert "visual_goal" in prompt
     assert "brand_voice" in prompt
     assert "asset_refs" in prompt
+    assert "Homepage Visual Signals" in prompt
+    assert "#F4E08A" in prompt
 
 
 def test_brand_visual_guide_output_schema_accepts_strict_payload() -> None:
@@ -36,10 +39,19 @@ def test_brand_visual_guide_output_schema_accepts_strict_payload() -> None:
             "logo_usage_rules": ["Keep clear space"],
             "negative_rules": ["Avoid exaggerated claims"],
             "accessibility_rules": ["Readable overlays"],
+            "design_tokens": {"colors": {"primary": "#003366"}},
+            "component_style_rules": ["Use tokenized spacing"],
+            "component_layout_rules": ["Stack on mobile"],
+            "component_recipes": [{"name": "hero_card"}],
+            "component_negative_rules": ["Avoid framework defaults"],
         },
         "visual_prompt_contract": {
             "template": (
                 "{article_topic} {audience} {intent} "
+                "{visual_goal} {brand_voice} {asset_refs}"
+            ),
+            "component_template": (
+                "component {article_topic} {audience} {intent} "
                 "{visual_goal} {brand_voice} {asset_refs}"
             ),
             "required_variables": [
@@ -53,6 +65,9 @@ def test_brand_visual_guide_output_schema_accepts_strict_payload() -> None:
             "forbidden_terms": ["fake guarantees"],
             "fallback_rules": ["Use neutral composition if no logo is available"],
             "render_targets": ["blog_hero"],
+            "render_modes": ["component_render"],
+            "component_render_targets": ["hero_card"],
+            "component_fallback_rules": ["fallback to template"],
         },
         "extraction_confidence": 0.84,
     }
@@ -61,3 +76,4 @@ def test_brand_visual_guide_output_schema_accepts_strict_payload() -> None:
 
     assert result.extraction_confidence == 0.84
     assert result.visual_prompt_contract.required_variables[-1] == "asset_refs"
+    assert result.visual_style_guide.component_recipes[0]["name"] == "hero_card"
