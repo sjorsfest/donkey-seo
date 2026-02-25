@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
+
+from app.config import settings
 
 INTEGRATION_API_KEY_PREFIX = "dseo_"
 WEBHOOK_SECRET_PREFIX = "whsec_"
@@ -15,9 +18,14 @@ def generate_integration_api_key(token_bytes: int = 32) -> str:
 
 
 def hash_integration_api_key(api_key: str) -> str:
-    """Hash an integration API key for storage and lookup."""
+    """Hash an integration API key for storage and lookup (HMAC + server pepper)."""
     normalized = api_key.strip()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    digest = hmac.new(
+        settings.get_integration_api_key_pepper(),
+        normalized.encode("utf-8"),
+        hashlib.sha256,
+    )
+    return digest.hexdigest()
 
 
 def generate_webhook_secret(token_bytes: int = 32) -> str:

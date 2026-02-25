@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     # External integration API key auth
     integration_api_keys: str = ""
+    integration_api_key_pepper: str | None = None
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/donkeyseo"
@@ -191,10 +192,17 @@ class Settings(BaseSettings):
             if value and value.strip()
         }
 
+    def get_integration_api_key_pepper(self) -> bytes:
+        """Return server-side pepper bytes used for API key HMAC hashing."""
+        pepper_material = self.integration_api_key_pepper or self.jwt_secret_key
+        scoped = f"integration-api-key:{pepper_material}"
+        return scoped.encode("utf-8")
+
     def get_webhook_secret_encryption_key(self) -> bytes:
         """Return a Fernet-compatible key for webhook-secret field encryption."""
         key_material = self.webhook_secret_encryption_key or self.jwt_secret_key
-        digest = hashlib.sha256(key_material.encode("utf-8")).digest()
+        scoped = f"webhook-secret:{key_material}"
+        digest = hashlib.sha256(scoped.encode("utf-8")).digest()
         return base64.urlsafe_b64encode(digest)
 
 
