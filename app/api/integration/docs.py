@@ -85,6 +85,7 @@ SEO-ready blog entities in your own repository and CRM with zero data loss.
 ## 1) Authentication Model
 
 - Use `X-API-Key` on protected integration routes.
+- Use a project-scoped API key generated from `/api/v1/projects/{project_id}/api-key`.
 - Do not send JWT bearer tokens to integration routes.
 - Keep API keys in secret storage and rotate them regularly.
 

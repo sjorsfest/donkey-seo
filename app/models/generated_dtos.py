@@ -1469,6 +1469,9 @@ class ProjectRow:
     skip_steps: list[int] | None
     notification_webhook: str | None
     notification_webhook_secret: str | None
+    integration_api_key_hash: str | None
+    integration_api_key_last4: str | None
+    integration_api_key_created_at: datetime | None
     current_step: int
     status: str
     id: str
@@ -1498,6 +1501,9 @@ class ProjectRow:
             skip_steps=model.skip_steps,
             notification_webhook=model.notification_webhook,
             notification_webhook_secret=model.notification_webhook_secret,
+            integration_api_key_hash=model.integration_api_key_hash,
+            integration_api_key_last4=model.integration_api_key_last4,
+            integration_api_key_created_at=model.integration_api_key_created_at,
             current_step=model.current_step,
             status=model.status,
             id=model.id,
@@ -1529,6 +1535,9 @@ class ProjectCreateDTO:
     skip_steps: list[int] | None = None
     notification_webhook: str | None = None
     notification_webhook_secret: str | None = None
+    integration_api_key_hash: str | None = None
+    integration_api_key_last4: str | None = None
+    integration_api_key_created_at: datetime | None = None
     current_step: int | None = None
     status: str | None = None
 
@@ -1570,6 +1579,9 @@ class ProjectPatchDTO:
     skip_steps: list[int] | None = None
     notification_webhook: str | None = None
     notification_webhook_secret: str | None = None
+    integration_api_key_hash: str | None = None
+    integration_api_key_last4: str | None = None
+    integration_api_key_created_at: datetime | None = None
     current_step: int | None = None
     status: str | None = None
     _provided_fields: set[str] = field(

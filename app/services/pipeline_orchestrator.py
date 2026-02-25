@@ -335,6 +335,56 @@ class PipelineOrchestrator:
             source_topic_id=run.source_topic_id,
         )
 
+    async def pause_queued_or_pending_run(
+        self,
+        *,
+        run_id: str,
+        pipeline_module: PipelineModule,
+        reason: str,
+    ) -> bool:
+        """Pause a non-terminal run that is blocked in queue scheduling."""
+        async with self._active_session() as session:
+            result = await session.execute(
+                select(PipelineRun).where(
+                    PipelineRun.id == run_id,
+                    PipelineRun.project_id == self.project_id,
+                )
+            )
+        run = result.scalar_one_or_none()
+        if run is None:
+            return False
+
+        run_module = self._as_pipeline_module(run.pipeline_module)
+        if run_module != pipeline_module:
+            return False
+        if run.status in {"completed", "paused"}:
+            return False
+
+        module_cfg = self._module_config(run_module)
+        paused_at_step = run.paused_at_step
+        if paused_at_step is None:
+            paused_at_step = (
+                run.start_step if run.start_step is not None else module_cfg["default_start"]
+            )
+
+        await self._update_run_status_with_retry(
+            run_id=str(run.id),
+            status="paused",
+            paused_at_step=paused_at_step,
+            error_message=reason,
+        )
+        await self.task_manager.set_task_state(
+            task_id=str(run.id),
+            status="paused",
+            stage=f"{run_module.capitalize()} pipeline paused",
+            pipeline_module=run_module,
+            source_topic_id=run.source_topic_id,
+            current_step=paused_at_step,
+            current_step_name=module_cfg["step_names"].get(paused_at_step),
+            error_message=reason,
+        )
+        return True
+
     async def run_single_step(
         self,
         step_number: int,
@@ -1550,8 +1600,12 @@ class PipelineOrchestrator:
             query = query.where(PipelineRun.id != excluding_run_id)
         async with self._active_session() as session:
             result = await session.execute(query)
-        if result.scalar_one_or_none() is not None:
-            raise PipelineAlreadyRunningError(self.project_id)
+        blocking_run_id = result.scalar_one_or_none()
+        if blocking_run_id is not None:
+            raise PipelineAlreadyRunningError(
+                self.project_id,
+                blocking_run_id=str(blocking_run_id),
+            )
 
     def _as_pipeline_module(self, module: str) -> PipelineModule:
         if module not in {"setup", "discovery", "content"}:

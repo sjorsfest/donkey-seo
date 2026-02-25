@@ -141,6 +141,23 @@ class ProjectResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProjectWebhookSecretResponse(BaseModel):
+    """Schema for generated project webhook secret."""
+
+    project_id: str
+    notification_webhook_secret: str
+    updated_at: datetime
+
+
+class ProjectApiKeyResponse(BaseModel):
+    """Schema for generated project integration API key."""
+
+    project_id: str
+    api_key: str
+    last4: str
+    created_at: datetime
+
+
 class ProjectListResponse(BaseModel):
     """Schema for project list response."""
 

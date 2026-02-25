@@ -47,6 +47,14 @@ class TopicPrioritization(BaseModel):
     llm_final_cut_rationale: str = Field(
         description="Short rationale for final-cut tier recommendation",
     )
+    recommended_primary_keyword: str = Field(
+        default="",
+        description="Best-fit primary keyword for this topic from provided keyword_candidates",
+    )
+    recommended_primary_keyword_rationale: str = Field(
+        default="",
+        description="Why this keyword is the best primary target for brand-logical content",
+    )
 
     # Role and content type
     expected_role: str = Field(
@@ -186,6 +194,10 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
             name = topic.get("name", f"Topic {i}")
             topic_id = topic.get("topic_id", "")
             primary_kw = topic.get("primary_keyword", "")
+            keyword_candidates = topic.get("keyword_candidates", [])
+            keyword_candidates_text = ", ".join(
+                str(item).strip() for item in keyword_candidates if str(item).strip()
+            ) or "N/A"
             intent = topic.get("dominant_intent", "unknown")
             funnel = topic.get("funnel_stage", "unknown")
             volume = topic.get("total_volume", 0)
@@ -199,6 +211,7 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
                 f"Topic {i}: {name}\n"
                 f"  Topic ID: {topic_id}\n"
                 f"  Primary Keyword: {primary_kw}\n"
+                f"  Keyword Candidates: {keyword_candidates_text}\n"
                 f"  Intent: {intent} | Funnel: {funnel}\n"
                 f"  Volume: {volume} | Difficulty: {difficulty:.1f} | Keywords: {keyword_count}\n"
                 f"  Priority Score: {priority_score:.2f}\n"
@@ -229,11 +242,13 @@ Keep responses concise. For EACH topic, provide:
 3. llm_tier_recommendation (primary/secondary/exclude)
 4. llm_fit_adjustment (-0.15..0.18)
 5. llm_final_cut_rationale
-6. expected_role
-7. recommended_url_type
-8. recommended_publish_order
-9. target_money_pages
-10. validation_notes
+6. recommended_primary_keyword (must be from Keyword Candidates)
+7. recommended_primary_keyword_rationale
+8. expected_role
+9. recommended_url_type
+10. recommended_publish_order
+11. target_money_pages
+12. validation_notes
 
 Also provide overall_strategy_notes for the backlog."""
 
@@ -250,11 +265,13 @@ For EACH topic, provide:
 3. llm_tier_recommendation (primary / secondary / exclude)
 4. llm_fit_adjustment (-0.15 to 0.18)
 5. llm_final_cut_rationale (one sentence)
-6. Expected role (quick_win / authority_builder / revenue_driver)
-7. Recommended URL type (blog / comparison / landing / resource / tool)
-8. Recommended publish order (1, 2, 3, ... for authority building sequence)
-9. Target money pages to link to
-10. Validation notes if the prioritization seems off
+6. recommended_primary_keyword (must be chosen from Keyword Candidates)
+7. recommended_primary_keyword_rationale
+8. Expected role (quick_win / authority_builder / revenue_driver)
+9. Recommended URL type (blog / comparison / landing / resource / tool)
+10. Recommended publish order (1, 2, 3, ... for authority building sequence)
+11. Target money pages to link to
+12. Validation notes if the prioritization seems off
 
 Also provide overall_strategy_notes for the content backlog."""
 

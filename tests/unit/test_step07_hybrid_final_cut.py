@@ -165,3 +165,73 @@ def test_fit_tier_sort_order_keeps_primary_before_secondary() -> None:
         "secondary",
         "excluded",
     ]
+
+
+def test_rank_keywords_for_topic_prioritization_prefers_topic_relevant_keyword() -> None:
+    service = Step07PrioritizationService.__new__(Step07PrioritizationService)
+    topic = SimpleNamespace(
+        name="Chat Widget Implementation",
+        description="Custom chat widgets for support teams",
+        cluster_notes="Developer implementation guides",
+    )
+    relevant = SimpleNamespace(
+        id="kw-1",
+        keyword="custom chat widget implementation",
+        adjusted_volume=200,
+        search_volume=200,
+        intent_score=0.8,
+        difficulty=25.0,
+        discovery_signals={"has_integration_term": True},
+    )
+    outlier = SimpleNamespace(
+        id="kw-2",
+        keyword="elementor google reviews widget",
+        adjusted_volume=900,
+        search_volume=900,
+        intent_score=0.5,
+        difficulty=35.0,
+        discovery_signals={},
+    )
+
+    ranked = service._rank_keywords_for_topic_prioritization(  # type: ignore[attr-defined]
+        topic=topic,
+        keywords=[outlier, relevant],  # type: ignore[arg-type]
+    )
+
+    assert [kw.id for kw in ranked][:2] == ["kw-1", "kw-2"]
+
+
+def test_resolve_post_prioritization_primary_keyword_uses_llm_recommendation() -> None:
+    service = Step07PrioritizationService.__new__(Step07PrioritizationService)
+    topic = SimpleNamespace(
+        primary_keyword_id=None,
+        name="Support Software Alternatives",
+        description="",
+        cluster_notes="",
+    )
+    first = SimpleNamespace(
+        id="kw-1",
+        keyword="generic support software",
+        adjusted_volume=1000,
+        search_volume=1000,
+        intent_score=0.5,
+        difficulty=50.0,
+        discovery_signals={},
+    )
+    second = SimpleNamespace(
+        id="kw-2",
+        keyword="donkey support alternatives",
+        adjusted_volume=120,
+        search_volume=120,
+        intent_score=0.9,
+        difficulty=20.0,
+        discovery_signals={"is_comparison": True},
+    )
+    resolved = service._resolve_post_prioritization_primary_keyword(  # type: ignore[attr-defined]
+        topic=topic,
+        keywords=[first, second],  # type: ignore[arg-type]
+        prioritization={"recommended_primary_keyword": "donkey support alternatives"},
+    )
+
+    assert resolved is not None
+    assert resolved.id == "kw-2"

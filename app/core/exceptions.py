@@ -94,8 +94,16 @@ class StepExecutionError(PipelineError):
 class PipelineAlreadyRunningError(PipelineError):
     """Pipeline is already running for this project."""
 
-    def __init__(self, project_id: str) -> None:
-        super().__init__(f"Pipeline already running for project: {project_id}")
+    def __init__(
+        self,
+        project_id: str,
+        *,
+        blocking_run_id: str | None = None,
+    ) -> None:
+        self.project_id = project_id
+        self.blocking_run_id = blocking_run_id
+        suffix = f" (blocking_run_id={blocking_run_id})" if blocking_run_id else ""
+        super().__init__(f"Pipeline already running for project: {project_id}{suffix}")
 
 
 class PipelineDelayedResumeRequested(PipelineError):

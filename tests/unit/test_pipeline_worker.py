@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.exceptions import PipelineDelayedResumeRequested
+from app.core.exceptions import PipelineAlreadyRunningError, PipelineDelayedResumeRequested
 from app.services.pipeline_task_manager import PipelineTaskJob, PipelineTaskWorker
 from app.workers.pipeline_worker import resolve_modules
 
@@ -185,3 +185,46 @@ async def test_pipeline_task_worker_requeues_when_project_lock_busy(
     assert len(manager.requeued) == 1
     assert manager.requeued[0].run_id == "run-1"
     sleep_mock.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_task_worker_auto_pauses_blocked_run_after_busy_limit(
+    monkeypatch: Any,
+) -> None:
+    job = PipelineTaskJob(kind="resume", project_id="project-1", run_id="run-1")
+    manager = _FakeManager(job)
+    worker = PipelineTaskWorker(
+        manager=manager,
+        poll_timeout_seconds=1,
+        requeue_delay_seconds=0.1,
+        max_requeue_delay_seconds=0.1,
+        max_module_busy_requeues=1,
+    )
+
+    calls = {"count": 0}
+
+    async def _pop_once_then_stop(*, timeout_seconds: int = 5) -> PipelineTaskJob | None:
+        if calls["count"] == 0:
+            calls["count"] += 1
+            worker._stopping.set()
+            return job
+        return None
+
+    async def _busy_execute(_job: PipelineTaskJob) -> bool:
+        raise PipelineAlreadyRunningError(
+            "project-1",
+            blocking_run_id="blocking-run-1",
+        )
+
+    manager.pop_next = _pop_once_then_stop  # type: ignore[method-assign]
+    pause_mock = AsyncMock()
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(worker, "_execute", _busy_execute)
+    monkeypatch.setattr(worker, "_pause_blocked_run", pause_mock)
+    monkeypatch.setattr("app.services.pipeline_task_manager.asyncio.sleep", sleep_mock)
+
+    await worker._worker_loop(worker_index=1)
+
+    pause_mock.assert_awaited_once()
+    sleep_mock.assert_not_awaited()
+    assert manager.requeued == []

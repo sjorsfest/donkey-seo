@@ -32,6 +32,9 @@ PROJECT_PATCH_ALLOWLIST = {
     "skip_steps",
     "notification_webhook",
     "notification_webhook_secret",
+    "integration_api_key_hash",
+    "integration_api_key_last4",
+    "integration_api_key_created_at",
     "current_step",
     "status",
 }

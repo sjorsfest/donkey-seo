@@ -6,6 +6,7 @@ project-specific fit gating before briefing.
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from typing import Any
@@ -373,6 +374,10 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                     "llm_tier_recommendation": prioritization.llm_tier_recommendation,
                     "llm_fit_adjustment": prioritization.llm_fit_adjustment,
                     "llm_final_cut_rationale": prioritization.llm_final_cut_rationale,
+                    "recommended_primary_keyword": prioritization.recommended_primary_keyword,
+                    "recommended_primary_keyword_rationale": (
+                        prioritization.recommended_primary_keyword_rationale
+                    ),
                 }
 
         await self._update_progress(80, "Finalizing hybrid scores...")
@@ -459,9 +464,17 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             topic = st["topic"]
             topic_id = st["topic_id"]
             prioritization = prioritizations_by_topic_id.get(topic_id, {})
+            keywords = st.get("keywords", [])
             fit_assessment = st["fit_assessment"]
             fit_tier = fit_assessment["fit_tier"]
             is_eligible = fit_tier in {"primary", "secondary"}
+            resolved_primary_keyword = self._resolve_post_prioritization_primary_keyword(
+                topic=topic,
+                keywords=keywords,
+                prioritization=prioritization,
+            )
+            resolved_primary_keyword_id = str(resolved_primary_keyword.id) if resolved_primary_keyword else None
+            resolved_primary_keyword_text = resolved_primary_keyword.keyword if resolved_primary_keyword else None
             rank = next_rank if is_eligible else None
             if is_eligible:
                 next_rank += 1
@@ -480,6 +493,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                     "business_alignment": prioritization.get("llm_business_alignment_rationale", ""),
                     "authority": prioritization.get("llm_authority_value_rationale", ""),
                 },
+                "recommended_primary_keyword": prioritization.get("recommended_primary_keyword", ""),
+                "recommended_primary_keyword_rationale": prioritization.get(
+                    "recommended_primary_keyword_rationale",
+                    "",
+                ),
                 "score_explanation": st["explanation"],
                 "diversification": st.get("diversification", {}),
             }
@@ -487,6 +505,8 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             output_topics.append({
                 "topic_id": topic_id,
                 "name": topic.name,
+                "primary_keyword_id": resolved_primary_keyword_id,
+                "primary_keyword": resolved_primary_keyword_text,
                 "priority_rank": rank,
                 "priority_score": st["priority_score"],
                 "deterministic_priority_score": st["deterministic_priority_score"],
@@ -527,6 +547,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 "secondary_topics": sum(1 for t in output_topics if t.get("fit_tier") == "secondary"),
                 "excluded_topics": sum(1 for t in output_topics if t.get("fit_tier") == "excluded"),
                 "final_cut_candidates": len(llm_candidates),
+                "eligible_topics_missing_primary_keyword": sum(
+                    1
+                    for t in output_topics
+                    if t.get("fit_tier") in {"primary", "secondary"} and not t.get("primary_keyword_id")
+                ),
                 **diversification_summary,
             },
         )
@@ -1462,8 +1487,13 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         """Build topic signature used for overlap suppression."""
         topic = scored_topic["topic"]
         keywords: list[Keyword] = list(scored_topic.get("keywords") or [])
-        keyword_texts = [kw.keyword for kw in keywords if getattr(kw, "keyword", None)]
-        primary_keyword = self._resolve_primary_keyword_text(topic=topic, keywords=keywords)
+        ranked_keywords = self._rank_keywords_for_topic_prioritization(
+            topic=topic,
+            keywords=keywords,
+        )
+        ordered_keywords = ranked_keywords if ranked_keywords else keywords
+        keyword_texts = [kw.keyword for kw in ordered_keywords if getattr(kw, "keyword", None)]
+        primary_keyword = keyword_texts[0] if keyword_texts else ""
         topic_text = " ".join(
             [
                 topic.name or "",
@@ -1490,6 +1520,151 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         if keywords:
             return keywords[0].keyword
         return ""
+
+    def _rank_keywords_for_topic_prioritization(
+        self,
+        *,
+        topic: Topic,
+        keywords: list[Keyword],
+    ) -> list[Keyword]:
+        """Rank topic keywords by topic semantic relevance (not just volume)."""
+        if not keywords:
+            return []
+
+        topic_text = " ".join(
+            [
+                topic.name or "",
+                topic.description or "",
+                topic.cluster_notes or "",
+            ]
+        ).strip()
+        topic_tokens = self._tokenize_text(topic_text)
+        keyword_tokens_by_id: dict[str, set[str]] = {}
+        token_frequency: Counter[str] = Counter()
+        volume_values = [self._keyword_volume_value(kw) for kw in keywords]
+        max_volume = max(volume_values) if volume_values else 1.0
+        if max_volume <= 0:
+            max_volume = 1.0
+
+        for keyword in keywords:
+            kw_tokens = self._tokenize_text(str(getattr(keyword, "keyword", "")))
+            keyword_tokens_by_id[str(keyword.id)] = kw_tokens
+            for token in kw_tokens:
+                token_frequency[token] += 1
+
+        max_token_frequency = max(token_frequency.values(), default=1)
+        scored: list[tuple[float, float, float, Keyword]] = []
+
+        for keyword in keywords:
+            kw_tokens = keyword_tokens_by_id.get(str(keyword.id), set())
+            overlap = self._overlap_score(kw_tokens, topic_tokens) if topic_tokens else 0.0
+            representativeness = (
+                (
+                    sum(token_frequency.get(token, 0) for token in kw_tokens)
+                    / max(len(kw_tokens), 1)
+                )
+                / max(max_token_frequency, 1)
+                if kw_tokens else 0.0
+            )
+            raw_intent_score = getattr(keyword, "intent_score", None)
+            intent_score = float(raw_intent_score if raw_intent_score is not None else 0.5)
+            raw_difficulty = getattr(keyword, "difficulty", None)
+            difficulty = float(raw_difficulty if raw_difficulty is not None else 55.0)
+            difficulty_ease = max(0.0, min(1.0, 1.0 - (difficulty / 100.0)))
+            volume = self._keyword_volume_value(keyword)
+            volume_norm = max(0.0, min(1.0, volume / max_volume))
+            raw_signals = getattr(keyword, "discovery_signals", None)
+            signals = raw_signals if isinstance(raw_signals, dict) else {}
+            comparison_bonus = 0.06 if bool(signals.get("is_comparison")) else 0.0
+            integration_bonus = 0.04 if bool(signals.get("has_integration_term")) else 0.0
+
+            score = (
+                (overlap * 0.42)
+                + (representativeness * 0.23)
+                + (intent_score * 0.13)
+                + (difficulty_ease * 0.10)
+                + (volume_norm * 0.08)
+                + comparison_bonus
+                + integration_bonus
+            )
+            scored.append((float(score), float(overlap), float(volume), keyword))
+
+        scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        return [item[3] for item in scored]
+
+    def _keyword_volume_value(self, keyword: Any) -> float:
+        """Resolve keyword volume value as float for ranking math."""
+        adjusted_volume = getattr(keyword, "adjusted_volume", None)
+        if adjusted_volume is not None:
+            try:
+                return float(adjusted_volume)
+            except (TypeError, ValueError):
+                pass
+        search_volume = getattr(keyword, "search_volume", 0)
+        try:
+            return float(search_volume or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _resolve_post_prioritization_primary_keyword(
+        self,
+        *,
+        topic: Topic,
+        keywords: list[Keyword],
+        prioritization: dict[str, Any],
+    ) -> Keyword | None:
+        """Resolve primary keyword after topic-level prioritization decisions."""
+        if not keywords:
+            return None
+
+        suggested_keyword_text = str(
+            prioritization.get("recommended_primary_keyword") or ""
+        ).strip()
+        if suggested_keyword_text:
+            matched = self._match_keyword_by_text(
+                keywords=keywords,
+                candidate_text=suggested_keyword_text,
+            )
+            if matched is not None:
+                return matched
+
+        ranked = self._rank_keywords_for_topic_prioritization(
+            topic=topic,
+            keywords=keywords,
+        )
+        if ranked:
+            return ranked[0]
+
+        if topic.primary_keyword_id:
+            for keyword in keywords:
+                if str(keyword.id) == str(topic.primary_keyword_id):
+                    return keyword
+        return keywords[0]
+
+    def _match_keyword_by_text(
+        self,
+        *,
+        keywords: list[Keyword],
+        candidate_text: str,
+    ) -> Keyword | None:
+        """Match LLM-selected keyword text to an actual keyword row."""
+        normalized_candidate = " ".join(candidate_text.lower().split())
+        if not normalized_candidate:
+            return None
+
+        for keyword in keywords:
+            normalized_keyword = " ".join(keyword.keyword.lower().split())
+            if normalized_keyword == normalized_candidate:
+                return keyword
+
+        for keyword in keywords:
+            normalized_keyword = " ".join(keyword.keyword.lower().split())
+            if (
+                normalized_candidate in normalized_keyword
+                or normalized_keyword in normalized_candidate
+            ):
+                return keyword
+        return None
 
     def _extract_topic_serp_domains(self, *, topic: Topic, keywords: list[Keyword]) -> set[str]:
         """Extract SERP domains from primary/evidence keywords when available."""
@@ -1564,15 +1739,18 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         for i, st in enumerate(batch):
             topic = st["topic"]
             keywords = st["keywords"]
-            primary_kw = next(
-                (kw for kw in keywords if kw.id == topic.primary_keyword_id),
-                keywords[0] if keywords else None,
+            ranked_keywords = self._rank_keywords_for_topic_prioritization(
+                topic=topic,
+                keywords=keywords,
             )
+            primary_kw = ranked_keywords[0] if ranked_keywords else None
+            keyword_candidates = [kw.keyword for kw in ranked_keywords[:8]]
             topic_payload: dict[str, Any] = {
                 "topic_index": i,
                 "topic_id": st["topic_id"],
                 "name": topic.name,
                 "primary_keyword": primary_kw.keyword if primary_kw else "",
+                "keyword_candidates": keyword_candidates,
                 "dominant_intent": topic.dominant_intent,
                 "funnel_stage": topic.funnel_stage,
                 "total_volume": topic.total_volume or 0,
@@ -1598,6 +1776,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         money_pages: list[str],
     ) -> dict[str, Any]:
         """Fallback prioritization when LLM output is missing."""
+        ranked_keywords = self._rank_keywords_for_topic_prioritization(
+            topic=topic,
+            keywords=list(scored_topic.get("keywords") or []),
+        )
+        fallback_primary_keyword = ranked_keywords[0].keyword if ranked_keywords else ""
         return {
             "llm_business_alignment": None,
             "llm_business_alignment_rationale": "",
@@ -1606,6 +1789,10 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             "llm_tier_recommendation": "secondary",
             "llm_fit_adjustment": 0.0,
             "llm_final_cut_rationale": "Deterministic fallback (LLM unavailable)",
+            "recommended_primary_keyword": fallback_primary_keyword,
+            "recommended_primary_keyword_rationale": (
+                "Top cluster-representative keyword from deterministic relevance scoring."
+            ),
             "expected_role": self._infer_role(scored_topic),
             "recommended_url_type": self._infer_url_type(topic),
             "recommended_publish_order": None,
@@ -1763,6 +1950,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
 
             topic.priority_rank = topic_data["priority_rank"]
             topic.priority_score = topic_data["priority_score"]
+            if (
+                topic_data.get("fit_tier") in {"primary", "secondary"}
+                and topic_data.get("primary_keyword_id")
+            ):
+                topic.primary_keyword_id = topic_data["primary_keyword_id"]
             topic.market_mode = topic_data.get("market_mode")
             topic.demand_fragmentation_index = topic_data.get("demand_fragmentation_index")
             topic.adjusted_volume_sum = topic_data.get("adjusted_volume_sum")
@@ -1802,6 +1994,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             "needs_serp_validation": sum(1 for t in result.topics if t.get("needs_serp_validation")),
             "workflow_topics": sum(1 for t in result.topics if t.get("market_mode") == "fragmented_workflow"),
             "established_topics": sum(1 for t in result.topics if t.get("market_mode") == "established_category"),
+            "eligible_topics_missing_primary_keyword": sum(
+                1
+                for t in result.topics
+                if t.get("fit_tier") in {"primary", "secondary"} and not t.get("primary_keyword_id")
+            ),
             "exact_pair_duplicates_removed": sum(
                 1 for t in result.topics if t.get("final_cut_reason_code") == "exact_pair_duplicate"
             ),

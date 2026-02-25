@@ -33,6 +33,35 @@ class StringUUID(TypeDecorator):
         return value
 
 
+class EncryptedString(TypeDecorator):
+    """Encrypted string type using Fernet symmetric encryption."""
+
+    impl = String
+    cache_ok = False
+
+    def __init__(self, length: int = 1024) -> None:
+        super().__init__(length=length)
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+
+        from app.core.field_encryption import encrypt_webhook_secret
+
+        return encrypt_webhook_secret(normalized)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+
+        from app.core.field_encryption import decrypt_webhook_secret
+
+        return decrypt_webhook_secret(str(value))
+
+
 class Base(DeclarativeBase):
     """Base class for all SQLAlchemy models."""
 

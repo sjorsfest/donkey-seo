@@ -177,15 +177,23 @@ class PipelineTaskWorker:
         manager: PipelineTaskManager,
         poll_timeout_seconds: int = 5,
         requeue_delay_seconds: float = 1.0,
+        max_requeue_delay_seconds: float = 30.0,
+        max_module_busy_requeues: int = 20,
     ) -> None:
         self.manager = manager
         self.poll_timeout_seconds = max(1, int(poll_timeout_seconds))
         self.requeue_delay_seconds = max(0.1, float(requeue_delay_seconds))
+        self.max_requeue_delay_seconds = max(
+            self.requeue_delay_seconds,
+            float(max_requeue_delay_seconds),
+        )
+        self.max_module_busy_requeues = max(1, int(max_module_busy_requeues))
         self._workers: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
         self._run_locks: dict[str, asyncio.Lock] = {}
         # Enforce one in-flight job per project/module to avoid run-start races.
         self._project_locks: dict[str, asyncio.Lock] = {}
+        self._module_busy_retry_counts: dict[str, int] = {}
 
     async def start(self) -> None:
         """Start worker tasks if not already running."""
@@ -275,6 +283,7 @@ class PipelineTaskWorker:
                 project_lock_acquired = False
                 try:
                     if project_lock.locked():
+                        self._module_busy_retry_counts.pop(job.run_id, None)
                         logger.info(
                             "Project already in progress for module, requeueing job",
                             extra={
@@ -291,6 +300,7 @@ class PipelineTaskWorker:
                         project_lock_acquired = True
                         try:
                             should_requeue = await self._execute(job)
+                            self._module_busy_retry_counts.pop(job.run_id, None)
                             if should_requeue:
                                 logger.info(
                                     "Pipeline job slice complete; scheduling continuation",
@@ -303,6 +313,7 @@ class PipelineTaskWorker:
                                     },
                                 )
                         except PipelineDelayedResumeRequested as exc:
+                            self._module_busy_retry_counts.pop(job.run_id, None)
                             logger.info(
                                 "Pipeline slice requested delayed auto-resume",
                                 extra={
@@ -321,19 +332,50 @@ class PipelineTaskWorker:
                                 project_id=job.project_id,
                                 run_id=job.run_id,
                             )
-                        except PipelineAlreadyRunningError:
-                            logger.info(
-                                "Pipeline module busy, requeueing job",
-                                extra={
-                                    "pipeline_module": self.manager.pipeline_module,
-                                    "project_id": job.project_id,
-                                    "run_id": job.run_id,
-                                    "worker_index": worker_index,
-                                },
-                            )
-                            should_requeue = True
-                            requeue_delay = self.requeue_delay_seconds
+                        except PipelineAlreadyRunningError as exc:
+                            retries = self._module_busy_retry_counts.get(job.run_id, 0) + 1
+                            self._module_busy_retry_counts[job.run_id] = retries
+                            blocking_run_id = exc.blocking_run_id
+                            if retries >= self.max_module_busy_requeues:
+                                self._module_busy_retry_counts.pop(job.run_id, None)
+                                reason = (
+                                    "Queue scheduling blocked by another running pipeline"
+                                    f" for {self.manager.pipeline_module}."
+                                )
+                                if blocking_run_id:
+                                    reason = f"{reason} Blocking run: {blocking_run_id}."
+                                reason = (
+                                    f"{reason} Auto-paused after {retries} busy retries "
+                                    "to avoid an infinite requeue loop."
+                                )
+                                await self._pause_blocked_run(
+                                    job=job,
+                                    worker_index=worker_index,
+                                    reason=reason,
+                                    blocking_run_id=blocking_run_id,
+                                    retries=retries,
+                                )
+                                should_requeue = False
+                                requeue_delay = 0.0
+                            else:
+                                delay = self._compute_busy_requeue_delay(retries)
+                                logger.info(
+                                    "Pipeline module busy, requeueing job",
+                                    extra={
+                                        "pipeline_module": self.manager.pipeline_module,
+                                        "project_id": job.project_id,
+                                        "run_id": job.run_id,
+                                        "worker_index": worker_index,
+                                        "blocking_run_id": blocking_run_id,
+                                        "busy_retry_count": retries,
+                                        "busy_retry_limit": self.max_module_busy_requeues,
+                                        "requeue_delay_seconds": delay,
+                                    },
+                                )
+                                should_requeue = True
+                                requeue_delay = delay
                         except Exception:
+                            self._module_busy_retry_counts.pop(job.run_id, None)
                             logger.exception(
                                 "Pipeline worker job failed",
                                 extra={
@@ -387,6 +429,65 @@ class PipelineTaskWorker:
             pipeline_module=self.manager.pipeline_module,
             job_kind=job.kind,
         )
+
+    def _compute_busy_requeue_delay(self, retries: int) -> float:
+        clamped_retries = max(1, retries)
+        exponent = min(clamped_retries - 1, 6)
+        delay = self.requeue_delay_seconds * (2**exponent)
+        return min(self.max_requeue_delay_seconds, delay)
+
+    async def _pause_blocked_run(
+        self,
+        *,
+        job: PipelineTaskJob,
+        worker_index: int,
+        reason: str,
+        blocking_run_id: str | None,
+        retries: int,
+    ) -> None:
+        # Local import avoids a circular dependency at module import time.
+        from app.services.pipeline_orchestrator import PipelineOrchestrator
+
+        logger.warning(
+            "Pipeline module remained busy; auto-pausing blocked run",
+            extra={
+                "pipeline_module": self.manager.pipeline_module,
+                "project_id": job.project_id,
+                "run_id": job.run_id,
+                "worker_index": worker_index,
+                "blocking_run_id": blocking_run_id,
+                "busy_retry_count": retries,
+                "busy_retry_limit": self.max_module_busy_requeues,
+            },
+        )
+        orchestrator = PipelineOrchestrator(None, job.project_id)
+        try:
+            paused = await orchestrator.pause_queued_or_pending_run(
+                run_id=job.run_id,
+                pipeline_module=self.manager.pipeline_module,
+                reason=reason,
+            )
+            if not paused:
+                logger.info(
+                    "Blocked run no longer pausable; skipping auto-pause",
+                    extra={
+                        "pipeline_module": self.manager.pipeline_module,
+                        "project_id": job.project_id,
+                        "run_id": job.run_id,
+                        "worker_index": worker_index,
+                    },
+                )
+        except Exception:
+            logger.exception(
+                "Failed to auto-pause blocked run after busy retries",
+                extra={
+                    "pipeline_module": self.manager.pipeline_module,
+                    "project_id": job.project_id,
+                    "run_id": job.run_id,
+                    "worker_index": worker_index,
+                    "blocking_run_id": blocking_run_id,
+                },
+            )
 
 
 _discovery_pipeline_task_manager: PipelineTaskManager | None = None

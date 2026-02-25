@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
+from app.agents.brief_diversifier import BriefDiversifierAgent, BriefDiversifierInput
 from app.agents.brief_generator import BriefGeneratorAgent, BriefGeneratorInput
 from app.models.brand import BrandProfile
 from app.models.content import ContentBrief
@@ -26,12 +27,15 @@ from app.services.discovery.topic_overlap import (
     compute_topic_overlap,
     is_exact_pair_duplicate,
     is_sibling_pair,
+    jaccard,
     normalize_text_tokens,
 )
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
 EXISTING_CONTENT_SKIP_THRESHOLD = 0.82
+IN_BATCH_DIVERSIFICATION_OVERLAP_THRESHOLD = 0.82
+BRIEF_DIVERSIFIER_RETRY_ATTEMPTS = 2
 
 
 @dataclass
@@ -62,6 +66,7 @@ class BriefOutput:
     skipped_existing_pair: int = 0
     skipped_existing_overlap: int = 0
     sibling_pairs_allowed: int = 0
+    skipped_batch_diversification: int = 0
 
 
 @dataclass(frozen=True)
@@ -204,9 +209,12 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             [str(topic.id) for topic in selected_topics]
         )
         existing_signatures = await self._load_existing_brief_signatures(input_data.project_id)
+        existing_brief_history = await self._load_existing_brief_history(input_data.project_id)
         skipped_existing_pair = 0
         skipped_existing_overlap = 0
         sibling_pairs_allowed = 0
+        skipped_batch_diversification = 0
+        diversification_notes = ""
         topics_to_generate: list[Topic] = []
         for topic in selected_topics:
             topic_id = str(topic.id)
@@ -227,6 +235,15 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     skipped_existing_overlap += 1
                 continue
             topics_to_generate.append(topic)
+
+        topics_to_generate, skipped_batch_diversification, diversification_notes = (
+            await self._apply_batch_diversification_selection(
+                topics=topics_to_generate,
+                primary_keywords_by_topic_id=primary_keywords_by_topic_id,
+                existing_history=existing_brief_history,
+                target_count=input_data.max_briefs,
+            )
+        )
         skipped_existing = len(selected_topics) - len(topics_to_generate)
         logger.info(
             "Brief generation starting",
@@ -242,6 +259,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 "skipped_existing_pair": skipped_existing_pair,
                 "skipped_existing_overlap": skipped_existing_overlap,
                 "sibling_pairs_allowed": sibling_pairs_allowed,
+                "skipped_batch_diversification": skipped_batch_diversification,
+                "diversification_notes": diversification_notes or None,
             },
         )
 
@@ -252,6 +271,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 skipped_existing_pair=skipped_existing_pair,
                 skipped_existing_overlap=skipped_existing_overlap,
                 sibling_pairs_allowed=sibling_pairs_allowed,
+                skipped_batch_diversification=skipped_batch_diversification,
             )
 
         # Prepare brand context
@@ -484,6 +504,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 "skipped_existing_pair": skipped_existing_pair,
                 "skipped_existing_overlap": skipped_existing_overlap,
                 "sibling_pairs_allowed": sibling_pairs_allowed,
+                "skipped_batch_diversification": skipped_batch_diversification,
             },
         )
 
@@ -496,6 +517,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             skipped_existing_pair=skipped_existing_pair,
             skipped_existing_overlap=skipped_existing_overlap,
             sibling_pairs_allowed=sibling_pairs_allowed,
+            skipped_batch_diversification=skipped_batch_diversification,
         )
 
     def _is_topic_eligible(self, topic: Topic) -> bool:
@@ -992,6 +1014,249 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             )
         return signatures
 
+    async def _load_existing_brief_history(
+        self,
+        project_id: str,
+        *,
+        limit: int = 80,
+    ) -> list[dict[str, str]]:
+        """Load existing brief history rows used for LLM diversity memory."""
+        result = await self.session.execute(
+            select(ContentBrief)
+            .where(ContentBrief.project_id == project_id)
+            .order_by(ContentBrief.created_at.desc())
+            .limit(limit)
+        )
+        rows: list[dict[str, str]] = []
+        for brief in result.scalars().all():
+            topic_name = ""
+            titles = brief.working_titles or []
+            if titles:
+                topic_name = str(titles[0] or "").strip()
+            rows.append({
+                "topic_name": topic_name,
+                "primary_keyword": str(brief.primary_keyword or "").strip(),
+                "search_intent": str(brief.search_intent or "").strip(),
+                "page_type": str(brief.page_type or "").strip(),
+                "created_at": (
+                    brief.created_at.isoformat()
+                    if getattr(brief, "created_at", None) is not None
+                    else ""
+                ),
+            })
+        return rows
+
+    async def _apply_batch_diversification_selection(
+        self,
+        *,
+        topics: list[Topic],
+        primary_keywords_by_topic_id: dict[str, Keyword | None],
+        existing_history: list[dict[str, str]],
+        target_count: int,
+    ) -> tuple[list[Topic], int, str]:
+        """Apply LLM-assisted in-batch diversification with deterministic fallback."""
+        if len(topics) <= 1:
+            return topics, 0, ""
+
+        max_count = max(1, min(target_count, len(topics)))
+        candidates_payload = self._build_diversifier_candidates_payload(
+            topics=topics,
+            primary_keywords_by_topic_id=primary_keywords_by_topic_id,
+        )
+        if not candidates_payload:
+            return topics[:max_count], max(0, len(topics) - max_count), "no_candidates_payload"
+
+        agent = BriefDiversifierAgent()
+        output = await self._run_brief_diversifier_with_retry(
+            agent=agent,
+            candidates=candidates_payload,
+            existing_history=existing_history,
+            target_count=max_count,
+        )
+
+        if output is not None:
+            topic_by_id = {str(topic.id): topic for topic in topics}
+            included_ids: list[str] = []
+            for decision in output.decisions:
+                decision_topic_id = str(decision.topic_id or "").strip()
+                if not decision_topic_id or decision_topic_id not in topic_by_id:
+                    continue
+                if decision.decision.strip().lower() != "include":
+                    continue
+                if decision_topic_id not in included_ids:
+                    included_ids.append(decision_topic_id)
+                if len(included_ids) >= max_count:
+                    break
+            if included_ids:
+                selected = [topic_by_id[topic_id] for topic_id in included_ids if topic_id in topic_by_id]
+                return selected, len(topics) - len(selected), output.overall_notes or "llm_diversifier_selected"
+
+        fallback_selected = self._deterministic_batch_diversification_fallback(
+            topics=topics,
+            primary_keywords_by_topic_id=primary_keywords_by_topic_id,
+            target_count=max_count,
+        )
+        if fallback_selected:
+            return (
+                fallback_selected,
+                len(topics) - len(fallback_selected),
+                "deterministic_diversification_fallback",
+            )
+        return topics[:max_count], max(0, len(topics) - max_count), "diversification_noop"
+
+    async def _run_brief_diversifier_with_retry(
+        self,
+        *,
+        agent: BriefDiversifierAgent,
+        candidates: list[dict[str, Any]],
+        existing_history: list[dict[str, str]],
+        target_count: int,
+    ) -> Any | None:
+        """Run brief diversifier with compact retry."""
+        for attempt in range(BRIEF_DIVERSIFIER_RETRY_ATTEMPTS):
+            compact_mode = attempt > 0
+            try:
+                return await agent.run(
+                    BriefDiversifierInput(
+                        candidates=candidates,
+                        existing_topics=existing_history,
+                        target_count=target_count,
+                        compact_mode=compact_mode,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Brief diversification LLM attempt failed",
+                    extra={"attempt": attempt + 1, "compact_mode": compact_mode},
+                )
+        return None
+
+    def _build_diversifier_candidates_payload(
+        self,
+        *,
+        topics: list[Topic],
+        primary_keywords_by_topic_id: dict[str, Keyword | None],
+    ) -> list[dict[str, Any]]:
+        """Build compact candidate payload for diversification selector."""
+        payload: list[dict[str, Any]] = []
+        for topic in topics:
+            topic_id = str(topic.id)
+            primary_kw = primary_keywords_by_topic_id.get(topic_id)
+            payload.append({
+                "topic_id": topic_id,
+                "name": topic.name,
+                "primary_keyword": str(primary_kw.keyword).strip() if primary_kw is not None else "",
+                "intent": str(topic.dominant_intent or "").strip(),
+                "page_type": str(topic.dominant_page_type or "").strip(),
+                "funnel_stage": str(topic.funnel_stage or "").strip(),
+                "fit_tier": str(topic.fit_tier or "").strip(),
+                "fit_score": self._topic_fit_score(topic),
+                "priority_rank": topic.priority_rank,
+                "priority_score": topic.priority_score,
+            })
+        return payload
+
+    def _deterministic_batch_diversification_fallback(
+        self,
+        *,
+        topics: list[Topic],
+        primary_keywords_by_topic_id: dict[str, Keyword | None],
+        target_count: int,
+    ) -> list[Topic]:
+        """Greedy fallback that suppresses near-duplicates within this batch."""
+        if not topics:
+            return []
+        max_count = max(1, min(target_count, len(topics)))
+
+        signatures: dict[str, dict[str, Any]] = {}
+        for topic in topics:
+            topic_id = str(topic.id)
+            primary_kw = primary_keywords_by_topic_id.get(topic_id)
+            primary_keyword_text = str(primary_kw.keyword).strip() if primary_kw is not None else ""
+            signatures[topic_id] = {
+                "comparison_key": build_comparison_key(topic.name or "", primary_keyword_text),
+                "family_key": build_family_key(topic.name or "", primary_keyword_text, []),
+                "keyword_tokens": normalize_text_tokens(primary_keyword_text),
+                "text_tokens": normalize_text_tokens(
+                    f"{topic.name or ''} {topic.description or ''} {primary_keyword_text}".strip()
+                ),
+                "keyword_norm_text": re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", primary_keyword_text.lower())).strip(),
+                "intent": str(topic.dominant_intent or "").strip().lower(),
+                "page_type": str(topic.dominant_page_type or "").strip().lower(),
+            }
+
+        selected: list[Topic] = []
+        for topic in topics:
+            if len(selected) >= max_count:
+                break
+            topic_id = str(topic.id)
+            signature = signatures[topic_id]
+            is_duplicate = False
+            for kept in selected:
+                kept_signature = signatures[str(kept.id)]
+                if is_exact_pair_duplicate(
+                    signature.get("comparison_key"),
+                    kept_signature.get("comparison_key"),
+                ):
+                    is_duplicate = True
+                    break
+                if is_sibling_pair(
+                    signature.get("comparison_key"),
+                    kept_signature.get("comparison_key"),
+                ):
+                    continue
+                keyword_norm_text = str(signature.get("keyword_norm_text") or "")
+                kept_keyword_norm_text = str(kept_signature.get("keyword_norm_text") or "")
+                if (
+                    signature.get("intent") == kept_signature.get("intent")
+                    and signature.get("page_type") == kept_signature.get("page_type")
+                    and keyword_norm_text
+                    and kept_keyword_norm_text
+                    and (
+                        keyword_norm_text in kept_keyword_norm_text
+                        or kept_keyword_norm_text in keyword_norm_text
+                    )
+                ):
+                    is_duplicate = True
+                    break
+                keyword_jaccard = jaccard(
+                    signature.get("keyword_tokens", set()),
+                    kept_signature.get("keyword_tokens", set()),
+                )
+                text_jaccard = jaccard(
+                    signature.get("text_tokens", set()),
+                    kept_signature.get("text_tokens", set()),
+                )
+                if (
+                    signature.get("intent") == kept_signature.get("intent")
+                    and signature.get("page_type") == kept_signature.get("page_type")
+                    and keyword_jaccard >= 0.66
+                    and text_jaccard >= 0.66
+                ):
+                    is_duplicate = True
+                    break
+                overlap_score = compute_topic_overlap(
+                    keyword_tokens_a=signature.get("keyword_tokens", set()),
+                    keyword_tokens_b=kept_signature.get("keyword_tokens", set()),
+                    text_tokens_a=signature.get("text_tokens", set()),
+                    text_tokens_b=kept_signature.get("text_tokens", set()),
+                    serp_domains_a={"no_serp_evidence"},
+                    serp_domains_b={"no_serp_evidence"},
+                    intent_a=signature.get("intent"),
+                    intent_b=kept_signature.get("intent"),
+                    page_type_a=signature.get("page_type"),
+                    page_type_b=kept_signature.get("page_type"),
+                )
+                if overlap_score >= IN_BATCH_DIVERSIFICATION_OVERLAP_THRESHOLD:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                selected.append(topic)
+
+        if not selected:
+            return topics[:1]
+        return selected
+
     def _should_skip_as_covered(
         self,
         *,
@@ -1430,6 +1695,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             "skipped_existing_pair": result.skipped_existing_pair,
             "skipped_existing_overlap": result.skipped_existing_overlap,
             "sibling_pairs_allowed": result.sibling_pairs_allowed,
+            "skipped_batch_diversification": result.skipped_batch_diversification,
         })
 
         await self.session.commit()

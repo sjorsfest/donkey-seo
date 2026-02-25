@@ -1,6 +1,7 @@
 """Project API endpoints."""
 
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -9,6 +10,11 @@ from sqlalchemy import func, select
 from app.api.v1.dependencies import get_user_project
 from app.api.v1.pipeline.constants import PIPELINE_QUEUE_FULL_DETAIL
 from app.api.v1.projects.constants import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.core.integration_keys import (
+    generate_integration_api_key,
+    generate_webhook_secret,
+    hash_integration_api_key,
+)
 from app.dependencies import CurrentUser, DbSession
 from app.models.generated_dtos import PipelineRunCreateDTO, ProjectCreateDTO, ProjectPatchDTO
 from app.models.pipeline import PipelineRun
@@ -18,8 +24,10 @@ from app.schemas.project import (
     ProjectListResponse,
     ProjectOnboardingBootstrapRequest,
     ProjectOnboardingBootstrapResponse,
+    ProjectApiKeyResponse,
     ProjectResponse,
     ProjectUpdate,
+    ProjectWebhookSecretResponse,
 )
 from app.schemas.task import TaskStatusResponse
 from app.services.pipeline_task_manager import (
@@ -262,6 +270,90 @@ async def get_project(
 ) -> Project:
     """Get a specific project by ID."""
     return await get_user_project(project_id, current_user, session)
+
+
+@router.post(
+    "/{project_id}/api-key",
+    response_model=ProjectApiKeyResponse,
+    summary="Generate project integration API key",
+    description=(
+        "Generate and persist a new integration API key for this project. "
+        "Calling this endpoint rotates any previous key."
+    ),
+)
+async def generate_project_api_key(
+    project_id: str,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> ProjectApiKeyResponse:
+    """Create or rotate integration API key for a project."""
+    project = await get_user_project(project_id, current_user, session)
+    api_key = generate_integration_api_key()
+    created_at = datetime.now(timezone.utc)
+    last4 = api_key[-4:]
+    project.patch(
+        session,
+        ProjectPatchDTO.from_partial(
+            {
+                "integration_api_key_hash": hash_integration_api_key(api_key),
+                "integration_api_key_last4": last4,
+                "integration_api_key_created_at": created_at,
+            }
+        ),
+    )
+    await session.flush()
+
+    logger.info(
+        "Project integration API key rotated",
+        extra={"project_id": str(project.id), "user_id": str(current_user.id)},
+    )
+
+    return ProjectApiKeyResponse(
+        project_id=str(project.id),
+        api_key=api_key,
+        last4=last4,
+        created_at=created_at,
+    )
+
+
+@router.post(
+    "/{project_id}/webhook-secret",
+    response_model=ProjectWebhookSecretResponse,
+    summary="Generate project webhook secret",
+    description=(
+        "Generate and persist a new webhook signing secret for this project. "
+        "Calling this endpoint rotates any previous secret."
+    ),
+)
+async def generate_project_webhook_secret(
+    project_id: str,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> ProjectWebhookSecretResponse:
+    """Create or rotate project webhook signing secret."""
+    project = await get_user_project(project_id, current_user, session)
+    webhook_secret = generate_webhook_secret()
+    project.patch(
+        session,
+        ProjectPatchDTO.from_partial(
+            {"notification_webhook_secret": webhook_secret}
+        ),
+    )
+    await session.flush()
+
+    if project.notification_webhook:
+        await backfill_project_publication_webhook_deliveries(
+            session,
+            project_id=str(project.id),
+        )
+
+    await session.refresh(project)
+
+    return ProjectWebhookSecretResponse(
+        project_id=str(project.id),
+        notification_webhook_secret=webhook_secret,
+        updated_at=project.updated_at,
+    )
 
 
 @router.put(

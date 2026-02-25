@@ -11,6 +11,7 @@ def test_prompt_formatting_handles_mixed_factor_types() -> None:
                 {
                     "name": "Helpdesk Alternatives",
                     "primary_keyword": "helpdesk alternatives",
+                    "keyword_candidates": ["helpdesk alternatives", "zendesk alternatives", "support software alternatives"],
                     "dominant_intent": "commercial",
                     "funnel_stage": "mofu",
                     "total_volume": 1200,
@@ -34,6 +35,7 @@ def test_prompt_formatting_handles_mixed_factor_types() -> None:
     assert "effective_market_mode: established_category" in prompt
     assert "has_money_page: true" in prompt
     assert "note: null" in prompt
+    assert "Keyword Candidates: helpdesk alternatives, zendesk alternatives, support software alternatives" in prompt
 
 
 def test_prompt_compact_mode_uses_concise_instruction_block() -> None:
@@ -44,6 +46,7 @@ def test_prompt_compact_mode_uses_concise_instruction_block() -> None:
                 {
                     "name": "Support Pricing",
                     "primary_keyword": "support pricing",
+                    "keyword_candidates": ["support pricing", "helpdesk pricing"],
                     "dominant_intent": "commercial",
                     "funnel_stage": "bofu",
                     "total_volume": 900,
@@ -58,3 +61,4 @@ def test_prompt_compact_mode_uses_concise_instruction_block() -> None:
     )
 
     assert "Keep responses concise." in prompt
+    assert "recommended_primary_keyword" in prompt

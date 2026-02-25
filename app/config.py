@@ -1,5 +1,7 @@
 """Application configuration using pydantic-settings."""
 
+import base64
+import hashlib
 from functools import lru_cache
 from typing import ClassVar, Literal
 
@@ -72,6 +74,7 @@ class Settings(BaseSettings):
     stripe_price_agency_yearly: str | None = None
     stripe_price_article_addon: str | None = None
     stripe_free_trial_days: int = 0
+    webhook_secret_encryption_key: str | None = None
 
     # LLM Configuration
     default_llm_model: str = "openai:gpt-4-turbo"
@@ -187,6 +190,12 @@ class Settings(BaseSettings):
             for value in self.integration_api_keys.split(",")
             if value and value.strip()
         }
+
+    def get_webhook_secret_encryption_key(self) -> bytes:
+        """Return a Fernet-compatible key for webhook-secret field encryption."""
+        key_material = self.webhook_secret_encryption_key or self.jwt_secret_key
+        digest = hashlib.sha256(key_material.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest)
 
 
 @lru_cache

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, StringUUID, TimestampMixin, TypedModelMixin, UUIDMixin
+from app.models.base import (
+    Base,
+    EncryptedString,
+    StringUUID,
+    TimestampMixin,
+    TypedModelMixin,
+    UUIDMixin,
+)
 from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 
 if TYPE_CHECKING:
@@ -68,7 +76,21 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
     enabled_steps: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
     skip_steps: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
     notification_webhook: Mapped[str | None] = mapped_column(String(2000), nullable=True)
-    notification_webhook_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notification_webhook_secret: Mapped[str | None] = mapped_column(
+        EncryptedString(length=1024),
+        nullable=True,
+    )
+    integration_api_key_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+    integration_api_key_last4: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    integration_api_key_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     # Status tracking
     current_step: Mapped[int] = mapped_column(default=0, nullable=False)
