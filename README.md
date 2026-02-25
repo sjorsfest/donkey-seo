@@ -279,14 +279,14 @@ Start content-only module:
 - `GET /api/v1/content/{project_id}/articles/{article_id}/versions/{version_number}` - Get article version
 
 ### Integration API (Public docs + API-key protected data routes)
-- `GET /api/integration/docs` - Integration Swagger docs (unprotected)
-- `GET /api/integration/openapi.json` - Integration OpenAPI schema (unprotected)
-- `GET /api/integration/guide/donkey-client` - Client implementation guide (unprotected)
-- `GET /api/integration/guide/donkey-client.md` - Same guide as markdown (unprotected)
-- `GET /api/integration/article/{article_id}?project_id={project_id}` - Latest article version
-- `GET /api/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
+- `GET /api/v1/integration/docs` - Integration Swagger docs (unprotected)
+- `GET /api/v1/integration/openapi.json` - Integration OpenAPI schema (unprotected)
+- `GET /api/v1/integration/guide/donkey-client` - Client implementation guide (unprotected)
+- `GET /api/v1/integration/guide/donkey-client.md` - Same guide as markdown (unprotected)
+- `GET /api/v1/integration/article/{article_id}?project_id={project_id}` - Latest article version
+- `GET /api/v1/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
   - Specific immutable article version
-- `PATCH /api/integration/article/{article_id}/publication?project_id={project_id}`
+- `PATCH /api/v1/integration/article/{article_id}/publication?project_id={project_id}`
   - Callback route to persist `publish_status`, `published_at`, and `published_url`
 
 ## Configuration
@@ -296,7 +296,8 @@ Key environment variables:
 ```env
 # API
 API_V1_PREFIX=/api/v1
-INTEGRATION_API_PREFIX=/api/integration
+INTERNAL_API_PREFIX=
+INTEGRATION_API_PREFIX=/integration
 INTEGRATION_API_KEYS=comma,separated,long,random,keys
 
 # Database

@@ -1,6 +1,7 @@
 """SQLAlchemy database models."""
 from dotenv import load_dotenv
 from app.models.base import Base
+from app.models.author import Author
 from app.models.brand import BrandProfile
 from app.models.content import (
     ContentArticle,
@@ -28,6 +29,7 @@ __all__ = [
     "User",
     "OAuthAccount",
     "Project",
+    "Author",
     "BrandProfile",
     "Keyword",
     "SeedTopic",

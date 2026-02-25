@@ -12,6 +12,109 @@ from typing import Any, ClassVar
 
 
 @dataclass(slots=True)
+class AuthorRow:
+    """Read DTO for `Author`."""
+
+    project_id: str
+    name: str
+    bio: str | None
+    social_urls: dict | None
+    basic_info: dict | None
+    profile_image_source_url: str | None
+    profile_image_object_key: str | None
+    profile_image_mime_type: str | None
+    profile_image_width: int | None
+    profile_image_height: int | None
+    profile_image_byte_size: int | None
+    profile_image_sha256: str | None
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "AuthorRow":
+        return cls(
+            project_id=model.project_id,
+            name=model.name,
+            bio=model.bio,
+            social_urls=model.social_urls,
+            basic_info=model.basic_info,
+            profile_image_source_url=model.profile_image_source_url,
+            profile_image_object_key=model.profile_image_object_key,
+            profile_image_mime_type=model.profile_image_mime_type,
+            profile_image_width=model.profile_image_width,
+            profile_image_height=model.profile_image_height,
+            profile_image_byte_size=model.profile_image_byte_size,
+            profile_image_sha256=model.profile_image_sha256,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class AuthorCreateDTO:
+    """Create DTO for `Author`."""
+
+    project_id: str
+    name: str
+    bio: str | None = None
+    social_urls: dict | None = None
+    basic_info: dict | None = None
+    profile_image_source_url: str | None = None
+    profile_image_object_key: str | None = None
+    profile_image_mime_type: str | None = None
+    profile_image_width: int | None = None
+    profile_image_height: int | None = None
+    profile_image_byte_size: int | None = None
+    profile_image_sha256: str | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = set()
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class AuthorPatchDTO:
+    """Sparse patch DTO for `Author`."""
+
+    project_id: str | None = None
+    name: str | None = None
+    bio: str | None = None
+    social_urls: dict | None = None
+    basic_info: dict | None = None
+    profile_image_source_url: str | None = None
+    profile_image_object_key: str | None = None
+    profile_image_mime_type: str | None = None
+    profile_image_width: int | None = None
+    profile_image_height: int | None = None
+    profile_image_byte_size: int | None = None
+    profile_image_sha256: str | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "AuthorPatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
 class BrandProfileRow:
     """Read DTO for `BrandProfile`."""
 
@@ -283,6 +386,7 @@ class ContentArticleRow:
 
     project_id: str
     brief_id: str
+    author_id: str | None
     title: str
     slug: str
     primary_keyword: str
@@ -306,6 +410,7 @@ class ContentArticleRow:
         return cls(
             project_id=model.project_id,
             brief_id=model.brief_id,
+            author_id=model.author_id,
             title=model.title,
             slug=model.slug,
             primary_keyword=model.primary_keyword,
@@ -336,6 +441,7 @@ class ContentArticleCreateDTO:
     primary_keyword: str
     modular_document: dict
     rendered_html: str
+    author_id: str | None = None
     qa_report: dict | None = None
     status: str | None = None
     publish_status: str | None = None
@@ -365,6 +471,7 @@ class ContentArticlePatchDTO:
 
     project_id: str | None = None
     brief_id: str | None = None
+    author_id: str | None = None
     title: str | None = None
     slug: str | None = None
     primary_keyword: str | None = None
@@ -2498,6 +2605,9 @@ class WriterInstructionsPatchDTO:
         }
 
 __all__ = [
+    "AuthorRow",
+    "AuthorCreateDTO",
+    "AuthorPatchDTO",
     "BrandProfileRow",
     "BrandProfileCreateDTO",
     "BrandProfilePatchDTO",

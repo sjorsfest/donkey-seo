@@ -93,9 +93,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Include API router
-    app.include_router(api_router, prefix=settings.api_v1_prefix)
-    app.mount(settings.integration_api_prefix, integration_app)
+    # Include API routers
+    app.include_router(api_router, prefix=settings.resolved_internal_api_prefix)
+    app.mount(settings.versioned_integration_api_prefix, integration_app)
 
     @app.get(
         "/health",

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.config import settings
+
 INTEGRATION_DOCS_TAG_DESCRIPTION = """
 Public documentation endpoints for external Donkey SEO clients.
 """
@@ -75,6 +77,8 @@ This API is split into:
 - API-key protected content routes for machine-to-machine article retrieval and publication callbacks
 """
 
+INTEGRATION_PUBLIC_BASE_PATH = settings.versioned_integration_api_prefix
+
 DONKEY_CLIENT_GUIDE_MARKDOWN = """
 # Donkey SEO Client Implementation Guide (For Coding Agents)
 
@@ -91,11 +95,11 @@ SEO-ready blog entities in your own repository and CRM with zero data loss.
 
 ## 2) Endpoints To Implement
 
-- `GET /api/integration/article/{article_id}?project_id={project_id}`
+- `GET __INTEGRATION_BASE_PATH__/article/{article_id}?project_id={project_id}`
   - Returns latest immutable version for that article.
-- `GET /api/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
+- `GET __INTEGRATION_BASE_PATH__/article/{article_id}/versions/{version_number}?project_id={project_id}`
   - Returns explicit immutable version.
-- `PATCH /api/integration/article/{article_id}/publication?project_id={project_id}`
+- `PATCH __INTEGRATION_BASE_PATH__/article/{article_id}/publication?project_id={project_id}`
   - Receives publication status updates from your CMS/blog integration.
 - Response source of truth is `content_article_versions`.
 
@@ -419,4 +423,4 @@ End-to-end sequence:
 1. Donkey SEO sends publish-request webhook with latest immutable article version.
 2. Your integration publishes to your CMS/blog.
 3. Your integration PATCHes publication result back to Donkey SEO.
-"""
+""".replace("__INTEGRATION_BASE_PATH__", INTEGRATION_PUBLIC_BASE_PATH)

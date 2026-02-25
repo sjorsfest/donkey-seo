@@ -102,6 +102,7 @@ BRIEF_DELTA_PATCH_ALLOWLIST = {
 }
 
 CONTENT_ARTICLE_PATCH_ALLOWLIST = {
+    "author_id",
     "title",
     "slug",
     "primary_keyword",

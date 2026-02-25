@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover - bootstrap before DTO regeneration
     PublicationWebhookDeliveryPatchDTO = Any  # type: ignore[assignment]
 
 if TYPE_CHECKING:
+    from app.models.author import Author
     from app.models.keyword import Keyword
     from app.models.project import Project
     from app.models.topic import Topic
@@ -272,6 +273,12 @@ class ContentArticle(
         unique=True,
         index=True,
     )
+    author_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("authors.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     slug: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -300,6 +307,7 @@ class ContentArticle(
 
     project: Mapped[Project] = relationship("Project", back_populates="content_articles")
     brief: Mapped[ContentBrief] = relationship("ContentBrief", back_populates="content_article")
+    author: Mapped[Author | None] = relationship("Author", back_populates="content_articles")
     versions: Mapped[list[ContentArticleVersion]] = relationship(
         "ContentArticleVersion",
         back_populates="article",

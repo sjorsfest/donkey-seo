@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.pipeline import PipelineRunStrategy
+from app.schemas.author import AuthorCreate
 from app.schemas.task import TaskStatusResponse
 
 _DOMAIN_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
@@ -101,6 +102,7 @@ class ProjectCreate(BaseModel):
     goals: ProjectGoals | None = None
     constraints: ProjectConstraints | None = None
     settings: ProjectSettings | None = None
+    authors: list[AuthorCreate] | None = None
 
     @field_validator("domain")
     @classmethod
@@ -179,6 +181,10 @@ class ProjectOnboardingBootstrapRequest(BaseModel):
     goals: ProjectGoals | None = None
     constraints: ProjectConstraints | None = None
     settings: ProjectSettings | None = None
+    authors: list[AuthorCreate] | None = Field(
+        default=None,
+        description="Optional recommended list of author profiles for byline assignment.",
+    )
     strategy: PipelineRunStrategy | None = None
 
     @field_validator("domain")

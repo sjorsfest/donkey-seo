@@ -26,7 +26,8 @@ class Settings(BaseSettings):
 
     # API
     api_v1_prefix: str = "/api/v1"
-    integration_api_prefix: str = "/api/integration"
+    internal_api_prefix: str = ""
+    integration_api_prefix: str = "/integration"
     cors_origins: list[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
@@ -191,6 +192,35 @@ class Settings(BaseSettings):
             for value in self.integration_api_keys.split(",")
             if value and value.strip()
         }
+
+    @staticmethod
+    def _normalize_route_prefix(prefix: str) -> str:
+        """Normalize route prefix values to `/segment` form."""
+        normalized = prefix.strip()
+        if not normalized or normalized == "/":
+            return ""
+        return f"/{normalized.strip('/')}"
+
+    @staticmethod
+    def _join_route_prefixes(*prefixes: str) -> str:
+        """Join route prefixes while preventing duplicate slashes."""
+        segments: list[str] = []
+        for prefix in prefixes:
+            normalized = Settings._normalize_route_prefix(prefix)
+            if not normalized:
+                continue
+            segments.extend(segment for segment in normalized.split("/") if segment)
+        return f"/{'/'.join(segments)}" if segments else ""
+
+    @property
+    def resolved_internal_api_prefix(self) -> str:
+        """Resolve internal API router prefix."""
+        return  self._join_route_prefixes(self.api_v1_prefix, self.internal_api_prefix)
+
+    @property
+    def versioned_integration_api_prefix(self) -> str:
+        """Resolve integration mount path under the API v1 namespace."""
+        return self._join_route_prefixes(self.api_v1_prefix, self.integration_api_prefix)
 
     def get_integration_api_key_pepper(self) -> bytes:
         """Return server-side pepper bytes used for API key HMAC hashing."""

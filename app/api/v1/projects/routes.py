@@ -16,9 +16,16 @@ from app.core.integration_keys import (
     hash_integration_api_key,
 )
 from app.dependencies import CurrentUser, DbSession
-from app.models.generated_dtos import PipelineRunCreateDTO, ProjectCreateDTO, ProjectPatchDTO
+from app.models.author import Author
+from app.models.generated_dtos import (
+    AuthorCreateDTO,
+    PipelineRunCreateDTO,
+    ProjectCreateDTO,
+    ProjectPatchDTO,
+)
 from app.models.pipeline import PipelineRun
 from app.models.project import Project
+from app.schemas.author import AuthorCreate
 from app.schemas.project import (
     ProjectCreate,
     ProjectListResponse,
@@ -30,6 +37,7 @@ from app.schemas.project import (
     ProjectWebhookSecretResponse,
 )
 from app.schemas.task import TaskStatusResponse
+from app.services.author_profiles import sync_author_profile_image_from_source
 from app.services.pipeline_task_manager import (
     PipelineQueueFullError,
     get_setup_pipeline_task_manager,
@@ -447,12 +455,50 @@ async def _create_project(
         ),
     )
 
+    await session.flush()
+
     if settings_fields.notification_webhook or settings_fields.notification_webhook_secret:
         await backfill_project_publication_webhook_deliveries(
             session,
             project_id=str(project.id),
         )
 
+    await _create_project_authors(
+        session=session,
+        project_id=str(project.id),
+        authors=payload.authors,
+    )
+
     await session.flush()
     await session.refresh(project)
     return project
+
+
+async def _create_project_authors(
+    *,
+    session: DbSession,
+    project_id: str,
+    authors: list[AuthorCreate] | None,
+) -> None:
+    if not authors:
+        return
+
+    for author_payload in authors:
+        author = Author.create(
+            session,
+            AuthorCreateDTO(
+                project_id=project_id,
+                name=author_payload.name,
+                bio=author_payload.bio,
+                social_urls=author_payload.social_urls,
+                basic_info=author_payload.basic_info,
+                profile_image_source_url=author_payload.profile_image_source_url,
+            ),
+        )
+
+        if author_payload.profile_image_source_url:
+            await sync_author_profile_image_from_source(
+                session=session,
+                author=author,
+                strict=False,
+            )

@@ -33,6 +33,9 @@ from app.integrations.content_image_store import ContentImageStore
 from app.services.internal_link_resolver import (
     resolve_deferred_internal_links_for_published_article,
 )
+from app.services.author_profiles import (
+    enrich_modular_document_with_signed_author_image,
+)
 from app.services.publication_webhook import (
     cancel_pending_publication_webhook_deliveries,
 )
@@ -117,27 +120,25 @@ def _enrich_modular_document_with_signed_featured_image(
 ) -> dict[str, Any]:
     if not isinstance(modular_document, dict):
         return {}
-
-    featured_image = modular_document.get("featured_image")
-    if not isinstance(featured_image, dict):
-        return dict(modular_document)
-
-    object_key = str(featured_image.get("object_key") or "").strip()
-    if not object_key:
-        return dict(modular_document)
-
     payload = dict(modular_document)
-    enriched_featured_image = dict(featured_image)
-    try:
-        store = ContentImageStore()
-        enriched_featured_image["signed_url"] = store.create_signed_read_url(object_key=object_key)
-    except Exception as exc:
-        logger.warning(
-            "Failed to enrich featured image with signed URL",
-            extra={"object_key": object_key, "error": str(exc)},
-        )
-    payload["featured_image"] = enriched_featured_image
-    return payload
+    featured_image = payload.get("featured_image")
+    if isinstance(featured_image, dict):
+        object_key = str(featured_image.get("object_key") or "").strip()
+        if object_key:
+            enriched_featured_image = dict(featured_image)
+            try:
+                store = ContentImageStore()
+                enriched_featured_image["signed_url"] = store.create_signed_read_url(
+                    object_key=object_key
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to enrich featured image with signed URL",
+                    extra={"object_key": object_key, "error": str(exc)},
+                )
+            payload["featured_image"] = enriched_featured_image
+
+    return enrich_modular_document_with_signed_author_image(payload)
 
 
 @public_router.get(

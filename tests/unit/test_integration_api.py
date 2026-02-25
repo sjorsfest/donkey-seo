@@ -15,6 +15,8 @@ from app.config import settings
 from app.core.database import get_session
 from app.main import create_app
 
+INTEGRATION_API_BASE_PATH = settings.versioned_integration_api_prefix
+
 
 class _FakeExecuteResult:
     def __init__(self, value: Any) -> None:
@@ -82,9 +84,9 @@ class _FakePublicationSession:
 
 def test_integration_docs_and_guide_are_public() -> None:
     with TestClient(create_app()) as client:
-        docs_response = client.get("/api/integration/docs")
-        openapi_response = client.get("/api/integration/openapi.json")
-        guide_response = client.get("/api/integration/guide/donkey-client")
+        docs_response = client.get(f"{INTEGRATION_API_BASE_PATH}/docs")
+        openapi_response = client.get(f"{INTEGRATION_API_BASE_PATH}/openapi.json")
+        guide_response = client.get(f"{INTEGRATION_API_BASE_PATH}/guide/donkey-client")
 
     assert docs_response.status_code == 200
     assert openapi_response.status_code == 200
@@ -99,7 +101,7 @@ def test_integration_docs_and_guide_are_public() -> None:
 
 def test_integration_index_exposes_publication_callback_template() -> None:
     with TestClient(create_app()) as client:
-        response = client.get("/api/integration/")
+        response = client.get(f"{INTEGRATION_API_BASE_PATH}/")
 
     assert response.status_code == 200
     payload = response.json()
@@ -142,7 +144,7 @@ def test_integration_article_requires_api_key() -> None:
     try:
         with TestClient(create_app()) as client:
             response = client.get(
-                "/api/integration/article/article_1",
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1",
                 params={"project_id": "project_1"},
             )
     finally:
@@ -197,7 +199,7 @@ def test_integration_article_returns_latest_version() -> None:
     try:
         with TestClient(create_app()) as client:
             response = client.get(
-                "/api/integration/article/article_1",
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1",
                 params={"project_id": "project_1"},
                 headers={"X-API-Key": "valid-key"},
             )
@@ -226,7 +228,7 @@ def test_integration_publication_patch_requires_api_key() -> None:
     try:
         with TestClient(create_app()) as client:
             response = client.patch(
-                "/api/integration/article/article_1/publication",
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1/publication",
                 params={"project_id": "project_1"},
                 json={"publish_status": "scheduled"},
             )
@@ -261,7 +263,7 @@ def test_integration_publication_patch_updates_article_and_cancels_pending(monke
     try:
         with TestClient(create_app()) as client:
             response = client.patch(
-                "/api/integration/article/article_1/publication",
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1/publication",
                 params={"project_id": "project_1"},
                 headers={"X-API-Key": "valid-key"},
                 json={
@@ -299,7 +301,7 @@ def test_integration_publication_patch_validates_required_published_fields() -> 
     try:
         with TestClient(create_app()) as client:
             response = client.patch(
-                "/api/integration/article/article_1/publication",
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1/publication",
                 params={"project_id": "project_1"},
                 headers={"X-API-Key": "valid-key"},
                 json={"publish_status": "published"},
@@ -324,7 +326,7 @@ def test_integration_publication_patch_rejects_empty_payload() -> None:
     try:
         with TestClient(create_app()) as client:
             response = client.patch(
-                "/api/integration/article/article_1/publication",
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1/publication",
                 params={"project_id": "project_1"},
                 headers={"X-API-Key": "valid-key"},
                 json={},

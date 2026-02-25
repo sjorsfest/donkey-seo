@@ -16,6 +16,7 @@ from app.api.v1.content.constants import (
 )
 from app.api.v1.dependencies import get_user_project
 from app.dependencies import CurrentUser, DbSession
+from app.models.author import Author
 from app.models.brand import BrandProfile
 from app.models.content import (
     ContentArticle,
@@ -48,6 +49,10 @@ from app.schemas.content import (
     WriterInstructionsResponse,
 )
 from app.services.article_generation import ArticleGenerationService
+from app.services.author_profiles import (
+    author_modular_document_payload,
+    choose_random_author,
+)
 from app.services.content_renderer import render_modular_document
 from app.services.featured_image_generation import (
     FeaturedImageGenerationService,
@@ -178,6 +183,36 @@ def _build_brand_context(brand: BrandProfile | None) -> str:
     if brand.restricted_claims:
         parts.append(f"Restricted Claims: {', '.join(brand.restricted_claims[:6])}")
     return "\n".join(parts)
+
+
+async def _load_project_authors(session: DbSession, project_id: str) -> list[Author]:
+    result = await session.execute(
+        select(Author)
+        .where(Author.project_id == project_id)
+        .order_by(Author.created_at.asc())
+    )
+    return list(result.scalars())
+
+
+async def _resolve_author_for_regeneration(
+    *,
+    session: DbSession,
+    project_id: str,
+    existing_author_id: str | None,
+) -> Author | None:
+    if existing_author_id:
+        existing_result = await session.execute(
+            select(Author).where(
+                Author.id == existing_author_id,
+                Author.project_id == project_id,
+            )
+        )
+        existing_author = existing_result.scalar_one_or_none()
+        if existing_author is not None:
+            return existing_author
+
+    project_authors = await _load_project_authors(session, project_id)
+    return choose_random_author(project_authors)
 
 
 def _resolve_calendar_state(
@@ -675,6 +710,15 @@ async def regenerate_article(
     )
     _enforce_locked_title(artifact.modular_document, locked_title)
     artifact.title = locked_title
+    assigned_author = await _resolve_author_for_regeneration(
+        session=session,
+        project_id=project_id,
+        existing_author_id=article.author_id,
+    )
+    if assigned_author is not None:
+        artifact.modular_document["author"] = author_modular_document_payload(assigned_author)
+    else:
+        artifact.modular_document.pop("author", None)
     artifact.modular_document["featured_image"] = modular_featured_image_payload(
         featured_image=featured_image
     )
@@ -688,6 +732,7 @@ async def regenerate_article(
                 "title": artifact.title,
                 "slug": artifact.slug,
                 "primary_keyword": artifact.primary_keyword,
+                "author_id": str(assigned_author.id) if assigned_author is not None else None,
                 "modular_document": artifact.modular_document,
                 "rendered_html": artifact.rendered_html,
                 "qa_report": artifact.qa_report,

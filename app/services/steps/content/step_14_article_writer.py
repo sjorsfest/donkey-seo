@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.author import Author
 from app.models.brand import BrandProfile
 from app.models.content import (
     ContentArticle,
@@ -25,6 +26,10 @@ from app.models.generated_dtos import (
 from app.models.project import Project
 from app.models.style_guide import BriefDelta
 from app.services.article_generation import ArticleGenerationService
+from app.services.author_profiles import (
+    author_modular_document_payload,
+    choose_random_author,
+)
 from app.services.content_renderer import render_modular_document
 from app.services.featured_image_generation import modular_featured_image_payload
 from app.services.publication_webhook import (
@@ -122,6 +127,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         deltas = await self._load_brief_deltas(briefs)
         featured_images = await self._load_featured_images(briefs)
         existing_article_brief_ids = await self._load_existing_article_brief_ids(briefs)
+        project_authors = await self._load_project_authors(input_data.project_id)
 
         brand_context = self._build_brand_context(brand)
         generator = ArticleGenerationService(project.domain)
@@ -173,11 +179,14 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
 
         semaphore = asyncio.Semaphore(4)
 
-        async def _generate_for_brief(brief: ContentBrief) -> tuple[ContentBrief, Any | None, str | None]:
+        async def _generate_for_brief(
+            brief: ContentBrief,
+        ) -> tuple[ContentBrief, Any | None, str | None, str | None]:
             async with semaphore:
                 try:
                     featured_image = featured_images[str(brief.id)]
                     locked_title = featured_image.title_text
+                    assigned_author = choose_random_author(project_authors)
                     brief_payload = self._brief_payload(brief, locked_title=locked_title)
                     instructions_payload = instructions[brief.id]
                     delta_payload = deltas.get(brief.id, {})
@@ -190,17 +199,25 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                     )
                     self._enforce_locked_title(artifact.modular_document, locked_title)
                     artifact.title = locked_title
+                    if assigned_author is not None:
+                        artifact.modular_document["author"] = author_modular_document_payload(
+                            assigned_author
+                        )
+                    else:
+                        artifact.modular_document.pop("author", None)
                     artifact.modular_document["featured_image"] = modular_featured_image_payload(
                         featured_image=featured_image
                     )
                     artifact.rendered_html = render_modular_document(artifact.modular_document)
-                    return brief, artifact, None
+                    return brief, artifact, None, (
+                        str(assigned_author.id) if assigned_author is not None else None
+                    )
                 except Exception as exc:
                     logger.warning(
                         "Article generation failed for brief",
                         extra={"brief_id": str(brief.id), "error": str(exc)},
                     )
-                    return brief, None, str(exc)
+                    return brief, None, str(exc), None
 
         results = await asyncio.gather(*[_generate_for_brief(brief) for brief in eligible_briefs])
 
@@ -213,7 +230,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         article_ids: list[str] = []
         skipped_due_duplicate = 0
 
-        for brief, artifact, error in results:
+        for brief, artifact, error, assigned_author_id in results:
             if artifact is None:
                 failed += 1
                 failures.append(
@@ -231,6 +248,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                         ContentArticleCreateDTO(
                             project_id=self.project_id,
                             brief_id=str(brief.id),
+                            author_id=assigned_author_id,
                             title=artifact.title,
                             slug=artifact.slug,
                             primary_keyword=artifact.primary_keyword,
@@ -388,6 +406,14 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
             )
         )
         return set(result.scalars())
+
+    async def _load_project_authors(self, project_id: str) -> list[Author]:
+        result = await self.session.execute(
+            select(Author)
+            .where(Author.project_id == project_id)
+            .order_by(Author.created_at.asc())
+        )
+        return list(result.scalars())
 
     def _brief_payload(self, brief: ContentBrief, *, locked_title: str | None = None) -> dict[str, Any]:
         working_titles = brief.working_titles or []

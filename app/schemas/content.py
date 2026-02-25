@@ -182,6 +182,7 @@ class ContentArticleResponse(BaseModel):
     id: str
     project_id: str
     brief_id: str
+    author_id: str | None
     title: str
     slug: str
     primary_keyword: str

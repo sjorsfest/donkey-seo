@@ -20,6 +20,7 @@ from app.models.base import (
 from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 
 if TYPE_CHECKING:
+    from app.models.author import Author
     from app.models.brand import BrandProfile
     from app.models.discovery_learning import DiscoveryIterationLearning
     from app.models.content import ContentArticle, ContentBrief, ContentFeaturedImage
@@ -126,6 +127,11 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
     )
     content_featured_images: Mapped[list[ContentFeaturedImage]] = relationship(
         "ContentFeaturedImage",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    authors: Mapped[list[Author]] = relationship(
+        "Author",
         back_populates="project",
         cascade="all, delete-orphan",
     )

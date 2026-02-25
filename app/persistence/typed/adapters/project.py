@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from app.models.author import Author
 from app.models.brand import BrandProfile
 from app.models.generated_dtos import (
+    AuthorCreateDTO,
+    AuthorPatchDTO,
     BrandProfileCreateDTO,
     BrandProfilePatchDTO,
     ProjectCreateDTO,
@@ -70,9 +73,32 @@ BRAND_PROFILE_PATCH_ALLOWLIST = {
     "visual_last_synced_at",
 }
 
+AUTHOR_PATCH_ALLOWLIST = {
+    "name",
+    "bio",
+    "social_urls",
+    "basic_info",
+    "profile_image_source_url",
+    "profile_image_object_key",
+    "profile_image_mime_type",
+    "profile_image_width",
+    "profile_image_height",
+    "profile_image_byte_size",
+    "profile_image_sha256",
+}
+
 _PROJECT_ADAPTER = BaseWriteAdapter[Project, ProjectCreateDTO, ProjectPatchDTO](
     model_cls=Project,
     patch_allowlist=PROJECT_PATCH_ALLOWLIST,
+)
+
+_AUTHOR_ADAPTER = BaseWriteAdapter[
+    Author,
+    AuthorCreateDTO,
+    AuthorPatchDTO,
+](
+    model_cls=Author,
+    patch_allowlist=AUTHOR_PATCH_ALLOWLIST,
 )
 
 _BRAND_PROFILE_ADAPTER = BaseWriteAdapter[
@@ -90,4 +116,5 @@ def register() -> None:
     from app.persistence.typed.registry import register_adapter
 
     register_adapter(Project, _PROJECT_ADAPTER)
+    register_adapter(Author, _AUTHOR_ADAPTER)
     register_adapter(BrandProfile, _BRAND_PROFILE_ADAPTER)
