@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env sh
+set -eu
 
 BRANCH="${DEPLOY_BRANCH:-main}"
 API_SERVICE="${API_SERVICE:-donkeyseo-api}"
@@ -7,17 +7,17 @@ WORKER_SERVICE="${WORKER_SERVICE:-donkeyseo-worker}"
 TUNNEL_SERVICE="${TUNNEL_SERVICE:-cloudflared-donkeyseo}"
 FOLLOW_LOGS="${FOLLOW_LOGS:-0}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${SCRIPT_DIR}"
 
 unit_exists() {
-  local unit="$1"
-  local unit_type="$2"
+  unit="$1"
+  unit_type="$2"
   systemctl list-unit-files --type="$unit_type" --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"
 }
 
 require_cmd() {
-  local cmd="$1"
+  cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Missing required command: $cmd"
     exit 1
@@ -30,7 +30,7 @@ require_cmd uv
 require_cmd curl
 require_cmd systemctl
 
-if [[ -n "$(git status --porcelain)" ]]; then
+if [ -n "$(git status --porcelain)" ]; then
   echo "Working tree has uncommitted changes. Commit/stash them before deploying."
   exit 1
 fi
@@ -39,7 +39,7 @@ echo "Fetching latest code (${BRANCH})..."
 git fetch origin "${BRANCH}"
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "${CURRENT_BRANCH}" != "${BRANCH}" ]]; then
+if [ "${CURRENT_BRANCH}" != "${BRANCH}" ]; then
   if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
     git switch "${BRANCH}"
   else
@@ -50,7 +50,22 @@ fi
 git pull --ff-only origin "${BRANCH}"
 
 echo "Ensuring Postgres/Redis are running..."
-docker compose up -d db redis
+docker compose up -d db
+
+set +e
+redis_up_output="$(docker compose up -d redis 2>&1)"
+redis_up_status=$?
+set -e
+
+if [ "${redis_up_status}" -eq 0 ]; then
+  printf '%s\n' "${redis_up_output}"
+elif printf '%s\n' "${redis_up_output}" | grep -q "bind: address already in use"; then
+  echo "Redis port 6379 is already in use; skipping redis container startup."
+  echo "Continuing deploy with the existing Redis instance."
+else
+  printf '%s\n' "${redis_up_output}"
+  exit "${redis_up_status}"
+fi
 
 echo "Syncing Python dependencies..."
 uv sync --frozen
@@ -81,12 +96,12 @@ echo "Local health checks:"
 curl -fsS http://127.0.0.1:8000/health && echo
 curl -fsS http://127.0.0.1:8000/health/queue && echo
 
-if [[ -n "${PUBLIC_HOST:-}" ]]; then
+if [ -n "${PUBLIC_HOST:-}" ]; then
   echo "Public health check (${PUBLIC_HOST}):"
   curl -fsS "https://${PUBLIC_HOST}/health" && echo
 fi
 
-if [[ "${FOLLOW_LOGS}" == "1" ]]; then
+if [ "${FOLLOW_LOGS}" = "1" ]; then
   echo "Following logs (Ctrl+C to stop)..."
   if unit_exists "${TUNNEL_SERVICE}" service; then
     sudo journalctl -u "${API_SERVICE}" -u "${WORKER_SERVICE}" -u "${TUNNEL_SERVICE}" -f
