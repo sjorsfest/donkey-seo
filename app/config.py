@@ -2,10 +2,13 @@
 
 import base64
 import hashlib
+import json
+from ast import literal_eval
 from functools import lru_cache
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -28,7 +31,7 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     internal_api_prefix: str = ""
     integration_api_prefix: str = "/integration"
-    cors_origins: list[str] = [
+    cors_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:8000",
@@ -199,6 +202,44 @@ class Settings(BaseSettings):
             for value in self.integration_api_keys.split(",")
             if value and value.strip()
         }
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, value: object) -> object:
+        """Accept JSON list/string or comma-separated values for CORS_ORIGINS."""
+        def normalize(origin: object) -> str:
+            cleaned = str(origin).strip().strip("'\"")
+            if cleaned.startswith("[") and cleaned.endswith("]"):
+                cleaned = cleaned[1:-1].strip().strip("'\"")
+            return cleaned
+
+        if isinstance(value, list):
+            return [normalize(origin) for origin in value if normalize(origin)]
+        if not isinstance(value, str):
+            return value
+
+        raw = value.strip()
+        if not raw:
+            return []
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                parsed = literal_eval(raw)
+            except (ValueError, SyntaxError):
+                parsed = [normalize(origin) for origin in raw.split(",")]
+                return [origin for origin in parsed if origin]
+
+        if isinstance(parsed, str):
+            parsed = [parsed]
+        if isinstance(parsed, tuple | set):
+            parsed = list(parsed)
+        if not isinstance(parsed, list):
+            raise ValueError(
+                "CORS_ORIGINS must be a JSON array, JSON string, or comma-separated string.",
+            )
+        return [normalize(origin) for origin in parsed if normalize(origin)]
 
     @staticmethod
     def _normalize_route_prefix(prefix: str) -> str:
