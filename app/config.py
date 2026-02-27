@@ -203,6 +203,26 @@ class Settings(BaseSettings):
             if value and value.strip()
         }
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value: object) -> object:
+        """Normalize sync Postgres URLs to asyncpg for async SQLAlchemy usage."""
+        if not isinstance(value, str):
+            return value
+
+        raw = value.strip()
+        if raw.startswith("postgresql+asyncpg://"):
+            return raw
+        if raw.startswith("postgresql+psycopg2://"):
+            return raw.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+        if raw.startswith("postgresql+psycopg://"):
+            return raw.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+        if raw.startswith("postgresql://"):
+            return raw.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if raw.startswith("postgres://"):
+            return raw.replace("postgres://", "postgresql+asyncpg://", 1)
+        return raw
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors_origins(cls, value: object) -> object:
