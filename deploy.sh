@@ -30,6 +30,27 @@ require_cmd uv
 require_cmd curl
 require_cmd systemctl
 
+compose_up_service_allow_port_in_use() {
+  service="$1"
+  port="$2"
+  service_label="$3"
+
+  set +e
+  up_output="$(docker compose up -d "${service}" 2>&1)"
+  up_status=$?
+  set -e
+
+  if [ "${up_status}" -eq 0 ]; then
+    printf '%s\n' "${up_output}"
+  elif printf '%s\n' "${up_output}" | grep -q ":${port}: bind: address already in use"; then
+    echo "${service_label} port ${port} is already in use; skipping ${service} container startup."
+    echo "Continuing deploy with the existing ${service_label} instance."
+  else
+    printf '%s\n' "${up_output}"
+    exit "${up_status}"
+  fi
+}
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "Working tree has uncommitted changes. Commit/stash them before deploying."
   exit 1
@@ -50,22 +71,8 @@ fi
 git pull --ff-only origin "${BRANCH}"
 
 echo "Ensuring Postgres/Redis are running..."
-docker compose up -d db
-
-set +e
-redis_up_output="$(docker compose up -d redis 2>&1)"
-redis_up_status=$?
-set -e
-
-if [ "${redis_up_status}" -eq 0 ]; then
-  printf '%s\n' "${redis_up_output}"
-elif printf '%s\n' "${redis_up_output}" | grep -q "bind: address already in use"; then
-  echo "Redis port 6379 is already in use; skipping redis container startup."
-  echo "Continuing deploy with the existing Redis instance."
-else
-  printf '%s\n' "${redis_up_output}"
-  exit "${redis_up_status}"
-fi
+compose_up_service_allow_port_in_use db 5432 Postgres
+compose_up_service_allow_port_in_use redis 6379 Redis
 
 echo "Syncing Python dependencies..."
 uv sync --frozen
