@@ -35,9 +35,13 @@ from app.services.featured_image_generation import modular_featured_image_payloa
 from app.services.publication_webhook import (
     schedule_publication_webhook_for_article,
 )
+from app.services.subscription_limits import resolve_subscription_usage_for_project
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
+ARTICLE_QUOTA_EXHAUSTED_ERROR = (
+    "Article quota exhausted: no remaining article capacity in the current usage window."
+)
 
 
 @dataclass
@@ -172,6 +176,35 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                 failures=missing_instruction_failures,
             )
 
+        current_run = await self._load_pipeline_run()
+        current_run_id = str(current_run.id) if current_run is not None else None
+        usage = await resolve_subscription_usage_for_project(
+            session=self.session,
+            project_id=input_data.project_id,
+            exclude_run_id=current_run_id,
+        )
+        write_budget = usage.remaining_article_write_slots
+        if write_budget <= 0:
+            raise ValueError(ARTICLE_QUOTA_EXHAUSTED_ERROR)
+        if len(eligible_briefs) > write_budget:
+            dropped_briefs = eligible_briefs[write_budget:]
+            eligible_briefs = eligible_briefs[:write_budget]
+            missing_instruction_failures.extend(
+                {
+                    "brief_id": str(brief.id),
+                    "reason": "article_quota_reached",
+                }
+                for brief in dropped_briefs
+            )
+            logger.info(
+                "Truncated article generation to remaining write capacity",
+                extra={
+                    "project_id": input_data.project_id,
+                    "remaining_write_capacity": write_budget,
+                    "dropped_briefs": len(dropped_briefs),
+                },
+            )
+
         await self._update_progress(
             20,
             f"Generating modular articles for {len(eligible_briefs)} briefs...",
@@ -221,6 +254,15 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
 
         results = await asyncio.gather(*[_generate_for_brief(brief) for brief in eligible_briefs])
 
+        write_usage = await resolve_subscription_usage_for_project(
+            session=self.session,
+            project_id=input_data.project_id,
+            exclude_run_id=current_run_id,
+        )
+        persist_budget = write_usage.remaining_article_write_slots
+        if persist_budget <= 0:
+            raise ValueError(ARTICLE_QUOTA_EXHAUSTED_ERROR)
+
         await self._update_progress(75, "Saving generated articles and versions...")
 
         generated = 0
@@ -237,6 +279,15 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                     {
                         "brief_id": str(brief.id),
                         "reason": error or "unknown_error",
+                    }
+                )
+                continue
+            if generated >= persist_budget:
+                failed += 1
+                failures.append(
+                    {
+                        "brief_id": str(brief.id),
+                        "reason": "article_quota_reached",
                     }
                 )
                 continue

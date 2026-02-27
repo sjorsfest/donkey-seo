@@ -189,6 +189,9 @@ Per-topic accept/reject decisions are persisted per iteration as discovery snaps
 - `POST /api/v1/auth/login` - Login, get tokens
 - `POST /api/v1/auth/refresh` - Refresh token
 - `GET /api/v1/auth/me` - Get current user
+- `POST /api/v1/auth/verify-email` - Verify email from token
+- `GET /api/v1/auth/verify-email?token=...` - Verify email from email link
+- `POST /api/v1/auth/verify-email/resend` - Resend verification email for current user
 
 ### Projects
 - `POST /api/v1/projects/` - Create project

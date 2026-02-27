@@ -7,7 +7,7 @@ import time
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
 from app.api.v1.auth.constants import (
@@ -19,6 +19,7 @@ from app.api.v1.auth.constants import (
 )
 from app.api.v1.auth.utils import (
     b64url_encode,
+    build_email_verification_url,
     decode_oauth_state,
     default_frontend_redirect,
     encode_oauth_state,
@@ -32,10 +33,13 @@ from app.api.v1.auth.utils import (
     oauth_success_redirect,
     require_google_oauth_config,
     require_twitter_oauth_config,
+    sanitize_auth_email,
+    verify_user_email_with_token,
 )
 from app.config import settings
 from app.core.security import (
     create_access_token,
+    create_email_verification_token,
     create_refresh_token,
     get_password_hash,
     verify_password,
@@ -45,11 +49,34 @@ from app.dependencies import CurrentUser, DbSession
 from app.integrations.stripe_billing import StripeBillingClient
 from app.models.generated_dtos import UserCreateDTO
 from app.models.user import User
-from app.schemas.auth import Token, TokenRefresh, UserCreate, UserLogin, UserResponse
+from app.schemas.auth import (
+    AuthMessageResponse,
+    EmailVerificationTokenRequest,
+    Token,
+    TokenRefresh,
+    UserCreate,
+    UserLogin,
+    UserResponse,
+)
+from app.services.verification_email import (
+    render_email_verification_result_html,
+    send_verification_email,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _send_verification_email_for_user(user: User) -> None:
+    """Issue and send verification email for user."""
+    verification_token = create_email_verification_token(subject=str(user.id), email=user.email)
+    verification_url = build_email_verification_url(verification_token)
+    await send_verification_email(
+        email=user.email,
+        name=user.full_name,
+        verification_url=verification_url,
+    )
 
 
 @router.post(
@@ -61,13 +88,14 @@ router = APIRouter()
 )
 async def register(user_data: UserCreate, session: DbSession) -> User:
     """Register a new user account."""
-    logger.info("User registration attempt", extra={"email": user_data.email})
+    sanitized_email = sanitize_auth_email(user_data.email)
+    logger.info("User registration attempt", extra={"email": sanitized_email})
 
-    result = await session.execute(select(User).where(User.email == user_data.email))
+    result = await session.execute(select(User).where(User.email == sanitized_email))
     existing_user = result.scalar_one_or_none()
 
     if existing_user:
-        logger.warning("Registration failed: email exists", extra={"email": user_data.email})
+        logger.warning("Registration failed: email exists", extra={"email": sanitized_email})
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email already exists",
@@ -76,7 +104,7 @@ async def register(user_data: UserCreate, session: DbSession) -> User:
     user = User.create(
         session,
         UserCreateDTO(
-            email=user_data.email,
+            email=sanitized_email,
             hashed_password=get_password_hash(user_data.password),
             full_name=user_data.full_name,
         ),
@@ -87,7 +115,7 @@ async def register(user_data: UserCreate, session: DbSession) -> User:
         try:
             async with StripeBillingClient() as stripe:
                 stripe_customer = await stripe.create_customer(
-                    email=user_data.email,
+                    email=user.email,
                     full_name=user_data.full_name,
                     metadata={"app_user_id": str(user.id)},
                 )
@@ -103,6 +131,14 @@ async def register(user_data: UserCreate, session: DbSession) -> User:
             ) from exc
 
     await session.refresh(user)
+    if not user.email_verified:
+        try:
+            await _send_verification_email_for_user(user)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to send verification email after registration",
+                extra={"user_id": str(user.id)},
+            )
 
     logger.info("User registered", extra={"user_id": str(user.id), "email": user.email})
 
@@ -117,9 +153,10 @@ async def register(user_data: UserCreate, session: DbSession) -> User:
 )
 async def login(credentials: UserLogin, session: DbSession) -> Token:
     """Login and get access/refresh tokens."""
-    logger.info("Login attempt", extra={"email": credentials.email})
+    sanitized_email = sanitize_auth_email(credentials.email)
+    logger.info("Login attempt", extra={"email": sanitized_email})
 
-    result = await session.execute(select(User).where(User.email == credentials.email))
+    result = await session.execute(select(User).where(User.email == sanitized_email))
     user = result.scalar_one_or_none()
 
     if (
@@ -127,7 +164,7 @@ async def login(credentials: UserLogin, session: DbSession) -> Token:
         or not user.hashed_password
         or not verify_password(credentials.password, user.hashed_password)
     ):
-        logger.warning("Login failed: invalid credentials", extra={"email": credentials.email})
+        logger.warning("Login failed: invalid credentials", extra={"email": sanitized_email})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -135,7 +172,7 @@ async def login(credentials: UserLogin, session: DbSession) -> Token:
         )
 
     if not user.is_active:
-        logger.warning("Login failed: inactive user", extra={"email": credentials.email})
+        logger.warning("Login failed: inactive user", extra={"email": sanitized_email})
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is deactivated",
@@ -192,6 +229,77 @@ async def refresh_token(token_data: TokenRefresh, session: DbSession) -> Token:
 async def get_current_user_info(current_user: CurrentUser) -> User:
     """Get current user information."""
     return current_user
+
+
+@router.post(
+    "/verify-email",
+    response_model=UserResponse,
+    summary="Verify email address",
+    description="Consume a signed email verification token and mark the user's email as verified.",
+)
+async def verify_email(payload: EmailVerificationTokenRequest, session: DbSession) -> User:
+    """Verify email from API token payload."""
+    try:
+        return await verify_user_email_with_token(session, payload.token)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/verify-email",
+    response_class=HTMLResponse,
+    summary="Verify email from link",
+    description="Consume a signed email verification token from URL query and render result page.",
+)
+async def verify_email_from_link(
+    session: DbSession,
+    token: str = Query(..., min_length=1),
+) -> HTMLResponse:
+    """Verify email from browser link click and render styled HTML result."""
+    try:
+        await verify_user_email_with_token(session, token)
+        return HTMLResponse(
+            content=render_email_verification_result_html(
+                success=True,
+                message="Your email address has been verified. You can now continue in DonkeySEO.",
+            )
+        )
+    except ValueError as exc:
+        return HTMLResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=render_email_verification_result_html(
+                success=False,
+                message=f"Could not verify email: {exc}",
+            ),
+        )
+
+
+@router.post(
+    "/verify-email/resend",
+    response_model=AuthMessageResponse,
+    summary="Resend verification email",
+    description="Send another verification email for the authenticated user if not yet verified.",
+)
+async def resend_verification_email(current_user: CurrentUser) -> AuthMessageResponse:
+    """Resend verification email for authenticated user."""
+    if current_user.email_verified:
+        return AuthMessageResponse(message="email_already_verified")
+
+    try:
+        await _send_verification_email_for_user(current_user)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to resend verification email",
+            extra={"user_id": str(current_user.id)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="verification_email_send_failed",
+        ) from None
+    return AuthMessageResponse(message="verification_email_sent")
 
 
 @router.get(

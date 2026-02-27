@@ -2385,6 +2385,7 @@ class UserRow:
     email: str
     hashed_password: str | None
     full_name: str | None
+    email_verified: bool
     is_active: bool
     is_superuser: bool
     stripe_customer_id: str | None
@@ -2405,6 +2406,7 @@ class UserRow:
             email=model.email,
             hashed_password=model.hashed_password,
             full_name=model.full_name,
+            email_verified=model.email_verified,
             is_active=model.is_active,
             is_superuser=model.is_superuser,
             stripe_customer_id=model.stripe_customer_id,
@@ -2427,6 +2429,7 @@ class UserCreateDTO:
     email: str
     hashed_password: str | None = None
     full_name: str | None = None
+    email_verified: bool | None = None
     is_active: bool | None = None
     is_superuser: bool | None = None
     stripe_customer_id: str | None = None
@@ -2439,6 +2442,7 @@ class UserCreateDTO:
     stripe_price_id: str | None = None
 
     _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "email_verified",
         "is_active",
         "is_superuser",
         "subscription_status",
@@ -2458,6 +2462,7 @@ class UserPatchDTO:
     email: str | None = None
     hashed_password: str | None = None
     full_name: str | None = None
+    email_verified: bool | None = None
     is_active: bool | None = None
     is_superuser: bool | None = None
     stripe_customer_id: str | None = None

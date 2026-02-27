@@ -25,6 +25,8 @@ from app.api.v1.auth.constants import (
     TWITTER_USERINFO_URL,
 )
 from app.config import settings
+from app.core.exceptions import InvalidTokenError
+from app.core.security import verify_email_verification_token
 from app.integrations.stripe_billing import StripeBillingClient
 from app.models.generated_dtos import (
     OAuthAccountCreateDTO,
@@ -49,6 +51,21 @@ def default_frontend_redirect() -> str:
     if settings.cors_origins:
         return settings.cors_origins[0]
     return "http://localhost:3000"
+
+
+def _resolve_public_api_base_url() -> str:
+    """Resolve absolute API base URL for links sent via email."""
+    for candidate in (
+        settings.public_api_base_url,
+        settings.google_callback_url,
+        settings.twitter_callback_url,
+    ):
+        if not candidate:
+            continue
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    return "http://localhost:8000"
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -167,6 +184,30 @@ def _build_social_placeholder_email(provider: str, provider_user_id: str) -> str
     return f"{provider}-{normalized_user_id}@oauth.local"
 
 
+def build_email_verification_url(token: str) -> str:
+    """Build public email verification link."""
+    default_callback = (
+        f"{_resolve_public_api_base_url()}{settings.resolved_internal_api_prefix}/auth/verify-email"
+    )
+    callback_url = settings.email_verification_callback_url or default_callback
+    if not is_valid_redirect_uri(callback_url):
+        callback_url = default_callback
+    return build_redirect_url(callback_url, {"token": token})
+
+
+def sanitize_auth_email(email: str) -> str:
+    """Normalize auth email and strip plus aliases from the local part."""
+    normalized = email.strip().lower()
+    local_part, separator, domain_part = normalized.partition("@")
+    if not separator:
+        return normalized
+
+    local_part = local_part.split("+", 1)[0]
+    if not local_part:
+        return normalized
+    return f"{local_part}@{domain_part}"
+
+
 async def _ensure_unique_email(session: AsyncSession, base_email: str) -> str:
     """Ensure generated email is unique in users table."""
     local_part, domain_part = base_email.split("@", 1)
@@ -189,6 +230,8 @@ async def find_or_create_oauth_user(
     full_name: str | None,
 ) -> User:
     """Find or create a local user from provider identity."""
+    email = sanitize_auth_email(email) if email is not None else None
+
     oauth_result = await session.execute(
         select(OAuthAccount).where(
             OAuthAccount.provider == provider,
@@ -207,6 +250,19 @@ async def find_or_create_oauth_user(
             oauth_account.patch(
                 session,
                 OAuthAccountPatchDTO.from_partial({"email": email}),
+            )
+        if email and linked_user.email != email:
+            existing_user_result = await session.execute(select(User).where(User.email == email))
+            existing_user = existing_user_result.scalar_one_or_none()
+            if existing_user is None or existing_user.id == linked_user.id:
+                linked_user.patch(
+                    session,
+                    UserPatchDTO.from_partial({"email": email}),
+                )
+        if email and linked_user.email == email and not linked_user.email_verified:
+            linked_user.patch(
+                session,
+                UserPatchDTO.from_partial({"email_verified": True}),
             )
         if full_name and not linked_user.full_name:
             linked_user.patch(
@@ -233,6 +289,7 @@ async def find_or_create_oauth_user(
                 email=user_email,
                 hashed_password=None,
                 full_name=full_name,
+                email_verified=email is not None,
             ),
         )
         await session.flush()
@@ -253,6 +310,12 @@ async def find_or_create_oauth_user(
             UserPatchDTO.from_partial({"full_name": full_name}),
         )
 
+    if email and user.email == email and not user.email_verified:
+        user.patch(
+            session,
+            UserPatchDTO.from_partial({"email_verified": True}),
+        )
+
     OAuthAccount.create(
         session,
         OAuthAccountCreateDTO(
@@ -264,6 +327,32 @@ async def find_or_create_oauth_user(
     )
     await session.flush()
     await session.refresh(user)
+    return user
+
+
+async def verify_user_email_with_token(session: AsyncSession, token: str) -> User:
+    """Mark user email as verified from a signed verification token."""
+    try:
+        user_id, token_email = verify_email_verification_token(token)
+    except InvalidTokenError as exc:
+        raise ValueError("invalid_or_expired_token") from exc
+
+    normalized_token_email = sanitize_auth_email(token_email)
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("verification_user_not_found")
+
+    if sanitize_auth_email(user.email) != normalized_token_email:
+        raise ValueError("verification_email_mismatch")
+
+    if not user.email_verified:
+        user.patch(
+            session,
+            UserPatchDTO.from_partial({"email_verified": True}),
+        )
+        await session.flush()
+        await session.refresh(user)
     return user
 
 
@@ -389,9 +478,16 @@ async def fetch_twitter_profile(provider_access_token: str) -> tuple[str, str | 
     if not isinstance(provider_user_id, str) or not provider_user_id:
         raise ValueError("twitter_profile_missing_id")
 
+    # X may include email either on `data` or the response root when users.email is granted.
+    email: str | None = None
+    if isinstance(user_data.get("email"), str):
+        email = user_data["email"]
+    elif isinstance(body.get("email"), str):
+        email = body["email"]
+
     full_name = user_data.get("name") if isinstance(user_data.get("name"), str) else None
     username = user_data.get("username") if isinstance(user_data.get("username"), str) else None
     if full_name is None and username:
         full_name = username
 
-    return provider_user_id, None, full_name
+    return provider_user_id, email, full_name

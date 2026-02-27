@@ -83,6 +83,34 @@ def create_refresh_token(
     )
 
 
+def create_email_verification_token(
+    subject: str,
+    email: str,
+    expires_delta: timedelta | None = None,
+) -> str:
+    """Create a JWT email verification token."""
+    logger.info("Creating email verification token", extra={"subject": subject, "email": email})
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(
+            hours=settings.email_verification_token_expire_hours
+        )
+
+    to_encode: dict[str, Any] = {
+        "sub": subject,
+        "email": email,
+        "exp": expire,
+        "type": "email_verification",
+    }
+
+    return jwt.encode(
+        to_encode,
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
 def decode_token(token: str, expected_type: str = "access") -> dict[str, Any]:
     """Decode and validate a JWT token."""
     try:
@@ -120,3 +148,13 @@ def verify_refresh_token(token: str) -> str:
     """Verify refresh token and return the subject (user_id)."""
     payload = decode_token(token, expected_type="refresh")
     return payload["sub"]
+
+
+def verify_email_verification_token(token: str) -> tuple[str, str]:
+    """Verify email verification token and return (user_id, email)."""
+    payload = decode_token(token, expected_type="email_verification")
+    email = payload.get("email")
+    if not isinstance(email, str) or not email:
+        logger.warning("Email verification token missing email claim")
+        raise InvalidTokenError("Token missing email")
+    return payload["sub"], email

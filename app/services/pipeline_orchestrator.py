@@ -54,6 +54,7 @@ from app.services.pipelines.discovery.loop import (
     DiscoveryLoopResult,
     DiscoveryLoopSupervisor,
 )
+from app.services.subscription_limits import resolve_subscription_usage_for_project
 from app.services.steps.base_step import BaseStepService
 from app.services.task_manager import TaskManager
 
@@ -1256,6 +1257,24 @@ class PipelineOrchestrator:
             return
 
         async with self._active_session() as session:
+            usage = await resolve_subscription_usage_for_project(
+                session=session,
+                project_id=self.project_id,
+            )
+            dispatch_budget = usage.remaining_article_slots
+            if dispatch_budget <= 0:
+                logger.info(
+                    "Skipping discovery auto-dispatch because article limit is exhausted",
+                    extra={
+                        "project_id": self.project_id,
+                        "run_id": str(run.id),
+                        "article_limit": usage.article_limit,
+                        "used_articles": usage.used_articles,
+                        "reserved_article_slots": usage.reserved_article_slots,
+                    },
+                )
+                return
+
             existing_result = await session.execute(
                 select(PipelineRun.source_topic_id).where(
                     PipelineRun.parent_run_id == str(run.id),
@@ -1264,12 +1283,25 @@ class PipelineOrchestrator:
                 )
             )
             dispatched_topic_ids = {str(topic_id) for topic_id in existing_result.scalars() if topic_id}
-        newly_accepted_topic_ids = [topic_id for topic_id in accepted_topic_ids if topic_id not in dispatched_topic_ids]
+        newly_accepted_topic_ids = [
+            topic_id for topic_id in accepted_topic_ids if topic_id not in dispatched_topic_ids
+        ]
         if not newly_accepted_topic_ids:
             return
+        topic_ids_to_dispatch = newly_accepted_topic_ids[:dispatch_budget]
+        if len(topic_ids_to_dispatch) < len(newly_accepted_topic_ids):
+            logger.info(
+                "Truncating discovery auto-dispatch to remaining article capacity",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": str(run.id),
+                    "requested_topics": len(newly_accepted_topic_ids),
+                    "dispatch_budget": dispatch_budget,
+                },
+            )
 
         queue = get_content_pipeline_task_manager()
-        for topic_id in newly_accepted_topic_ids:
+        for topic_id in topic_ids_to_dispatch:
             step_inputs = {
                 "1": {
                     "topic_ids": [topic_id],

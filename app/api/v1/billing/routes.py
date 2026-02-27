@@ -37,6 +37,7 @@ from app.services.billing import (
     PlanKey,
     apply_subscription_payload,
     configured_plan_prices,
+    normalize_plan,
     resolve_article_limit,
     resolve_price_id,
     resolve_usage_window,
@@ -56,9 +57,7 @@ def _assert_stripe_enabled() -> None:
 
 
 def _normalize_plan(value: str | None) -> PlanKey | None:
-    if value in {"starter", "growth", "agency"}:
-        return cast(PlanKey, value)
-    return None
+    return normalize_plan(value)
 
 
 def _normalize_interval(value: str | None) -> PlanInterval | None:

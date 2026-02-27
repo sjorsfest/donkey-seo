@@ -9,7 +9,12 @@ from sqlalchemy import func, select
 
 from app.api.v1.dependencies import get_user_project
 from app.api.v1.pipeline.constants import PIPELINE_QUEUE_FULL_DETAIL
-from app.api.v1.projects.constants import DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from app.api.v1.projects.constants import (
+    DEFAULT_PAGE,
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    PROJECT_LIMIT_REACHED_DETAIL,
+)
 from app.core.integration_keys import (
     generate_integration_api_key,
     generate_webhook_secret,
@@ -45,6 +50,7 @@ from app.services.pipeline_task_manager import (
 from app.services.publication_webhook import (
     backfill_project_publication_webhook_deliveries,
 )
+from app.services.subscription_limits import resolve_subscription_usage_for_user
 from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -57,6 +63,27 @@ class _ProjectSettingsCreateFields:
     skip_steps: list[int] | None
     notification_webhook: str | None
     notification_webhook_secret: str | None
+
+
+async def _assert_project_creation_allowed(
+    *,
+    session: DbSession,
+    user_id: str,
+    subscription_plan: str | None,
+) -> None:
+    usage = await resolve_subscription_usage_for_user(
+        session=session,
+        user_id=str(user_id),
+        subscription_plan=subscription_plan,
+    )
+    if usage.remaining_project_slots <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"{PROJECT_LIMIT_REACHED_DETAIL} "
+                f"(limit={usage.project_limit}, used={usage.used_projects})"
+            ),
+        )
 
 
 def _project_settings_create_fields(
@@ -116,6 +143,7 @@ async def create_project(
     project = await _create_project(
         session=session,
         user_id=current_user.id,
+        subscription_plan=current_user.subscription_plan,
         payload=project_data,
     )
 
@@ -150,6 +178,7 @@ async def bootstrap_onboarding_project(
     project = await _create_project(
         session=session,
         user_id=current_user.id,
+        subscription_plan=current_user.subscription_plan,
         payload=request,
     )
 
@@ -433,9 +462,16 @@ async def _create_project(
     *,
     session: DbSession,
     user_id: str,
+    subscription_plan: str | None,
     payload: ProjectCreate | ProjectOnboardingBootstrapRequest,
 ) -> Project:
     """Persist a project from either standard create or onboarding bootstrap payload."""
+    await _assert_project_creation_allowed(
+        session=session,
+        user_id=str(user_id),
+        subscription_plan=subscription_plan,
+    )
+
     settings_fields = _project_settings_create_fields(payload)
     project = Project.create(
         session,

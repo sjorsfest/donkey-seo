@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.v1.dependencies import get_user_project
 from app.api.v1.pipeline.constants import (
+    CONTENT_ARTICLE_LIMIT_REACHED_DETAIL,
     CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL,
     DEFAULT_RUN_LIMIT,
     DISCOVERY_PIPELINE_ALREADY_RUNNING_DETAIL,
@@ -40,11 +41,30 @@ from app.services.pipeline_task_manager import (
     get_discovery_pipeline_task_manager,
     get_setup_pipeline_task_manager,
 )
+from app.services.subscription_limits import (
+    coerce_positive_int,
+    resolve_subscription_usage_for_user,
+)
 from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _resolve_content_start_max_briefs(
+    *,
+    requested_max_briefs: int,
+    remaining_article_slots: int,
+    limit_reached_detail: str | None = None,
+) -> int:
+    """Resolve effective content run max_briefs under subscription hard cap."""
+    if remaining_article_slots <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=limit_reached_detail or CONTENT_ARTICLE_LIMIT_REACHED_DETAIL,
+        )
+    return max(1, min(requested_max_briefs, remaining_article_slots))
 
 
 @router.post(
@@ -103,6 +123,27 @@ async def start_pipeline(
     if content_config is None:
         content_config = ContentPipelineConfig()
     content_payload = content_config.model_dump()
+    if pipeline_module == "content":
+        usage = await resolve_subscription_usage_for_user(
+            session=session,
+            user_id=str(current_user.id),
+            subscription_plan=current_user.subscription_plan,
+        )
+        requested_max_briefs = coerce_positive_int(
+            content_payload.get("max_briefs"),
+            default=20,
+        )
+        effective_max_briefs = _resolve_content_start_max_briefs(
+            requested_max_briefs=requested_max_briefs,
+            remaining_article_slots=usage.remaining_article_slots,
+            limit_reached_detail=(
+                f"{CONTENT_ARTICLE_LIMIT_REACHED_DETAIL} "
+                f"(limit={usage.article_limit}, used={usage.used_articles}, "
+                f"reserved={usage.reserved_article_slots})"
+            ),
+        )
+        content_payload["max_briefs"] = effective_max_briefs
+
     step_inputs_payload: dict[str, dict[str, object]] = {}
     if pipeline_module == "content":
         step_inputs_payload["1"] = {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.config import settings
 from app.integrations.stripe_billing import stripe_unix_to_datetime
@@ -30,7 +30,13 @@ MONTHLY_ARTICLE_LIMITS: dict[PlanKey, int] = {
     "growth": 100,
     "agency": 350,
 }
-FREE_LIFETIME_ARTICLE_LIMIT = 5
+PROJECT_LIMITS: dict[PlanKey | None, int] = {
+    None: 1,
+    "starter": 1,
+    "growth": 3,
+    "agency": 10,
+}
+FREE_LIFETIME_ARTICLE_LIMIT = 3
 
 
 @dataclass(frozen=True)
@@ -154,11 +160,23 @@ def apply_subscription_payload(*, user: User, subscription: dict[str, Any]) -> N
     user.subscription_trial_ends_at = stripe_unix_to_datetime(subscription.get("trial_end"))
 
 
+def normalize_plan(value: str | None) -> PlanKey | None:
+    """Normalize raw subscription plan to known internal plan key."""
+    if value in {"starter", "growth", "agency"}:
+        return cast(PlanKey, value)
+    return None
+
+
 def resolve_article_limit(plan: PlanKey | None) -> int:
     """Resolve article limit for current subscription plan."""
     if plan is None:
         return FREE_LIFETIME_ARTICLE_LIMIT
     return MONTHLY_ARTICLE_LIMITS.get(plan, FREE_LIFETIME_ARTICLE_LIMIT)
+
+
+def resolve_project_limit(plan: PlanKey | None) -> int:
+    """Resolve project limit for current subscription plan."""
+    return PROJECT_LIMITS.get(plan, PROJECT_LIMITS[None])
 
 
 def resolve_usage_window(plan: PlanKey | None, *, now: datetime | None = None) -> UsageWindow:

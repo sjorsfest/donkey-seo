@@ -13,3 +13,4 @@ MULTIPLE_RUNNING_PIPELINES_DETAIL = (
 NO_PAUSED_PIPELINE_DETAIL = "No paused pipeline found"
 PIPELINE_RUN_NOT_FOUND_DETAIL = "Pipeline run not found"
 PIPELINE_QUEUE_FULL_DETAIL = "Pipeline queue is full, try again shortly"
+CONTENT_ARTICLE_LIMIT_REACHED_DETAIL = "Article limit reached for current subscription plan"

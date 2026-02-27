@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     twitter_client_secret: str | None = None
     twitter_callback_url: str | None = None
     oauth_state_secret: str = "change-me-oauth-state-secret"
+    public_api_base_url: str | None = None
+
+    # Transactional email (Resend)
+    resend_api_key: str | None = None
+    resend_from_email: str = "DonkeySEO <onboarding@donkey.support>" # Change this when going for the resend PRO subscription
+    email_verification_callback_url: str | None = None
+    email_verification_token_expire_hours: int = 48
 
     # Stripe billing
     stripe_secret_key: str | None = None

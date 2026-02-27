@@ -16,6 +16,7 @@ USER_PATCH_ALLOWLIST = {
     "email",
     "hashed_password",
     "full_name",
+    "email_verified",
     "is_active",
     "is_superuser",
     "stripe_customer_id",

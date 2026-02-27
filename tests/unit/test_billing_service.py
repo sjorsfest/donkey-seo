@@ -13,8 +13,11 @@ from app.integrations.stripe_billing import StripeBillingClient, StripeSignature
 from app.services.billing import (
     FREE_LIFETIME_ARTICLE_LIMIT,
     MONTHLY_ARTICLE_LIMITS,
+    PROJECT_LIMITS,
     apply_subscription_payload,
+    normalize_plan,
     resolve_article_limit,
+    resolve_project_limit,
     resolve_plan_from_price_id,
     resolve_price_id,
     resolve_usage_window,
@@ -161,3 +164,16 @@ def test_resolve_article_limit() -> None:
     assert resolve_article_limit("growth") == MONTHLY_ARTICLE_LIMITS["growth"]
     assert resolve_article_limit("agency") == MONTHLY_ARTICLE_LIMITS["agency"]
     assert resolve_article_limit(None) == FREE_LIFETIME_ARTICLE_LIMIT
+
+
+def test_normalize_plan_and_resolve_project_limit() -> None:
+    assert normalize_plan("starter") == "starter"
+    assert normalize_plan("growth") == "growth"
+    assert normalize_plan("agency") == "agency"
+    assert normalize_plan("enterprise") is None
+    assert normalize_plan(None) is None
+
+    assert resolve_project_limit("starter") == PROJECT_LIMITS["starter"]
+    assert resolve_project_limit("growth") == PROJECT_LIMITS["growth"]
+    assert resolve_project_limit("agency") == PROJECT_LIMITS["agency"]
+    assert resolve_project_limit(None) == PROJECT_LIMITS[None]

@@ -24,6 +24,7 @@ class User(TypedModelMixin[UserCreateDTO, UserPatchDTO], Base, UUIDMixin, Timest
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email_verified: Mapped[bool] = mapped_column(default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(default=False, nullable=False)
     stripe_customer_id: Mapped[str | None] = mapped_column(

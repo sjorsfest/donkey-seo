@@ -24,6 +24,7 @@ class UserResponse(BaseModel):
     id: str
     email: str
     full_name: str | None
+    email_verified: bool
     is_active: bool
 
     model_config = {"from_attributes": True}
@@ -38,6 +39,18 @@ class Token(BaseModel):
 
 
 class TokenRefresh(BaseModel):
-    """Schema for token refresh request."""
+    """Schema for refresh token request."""
 
     refresh_token: str
+
+
+class EmailVerificationTokenRequest(BaseModel):
+    """Schema for verifying email with a token."""
+
+    token: str = Field(min_length=1)
+
+
+class AuthMessageResponse(BaseModel):
+    """Simple auth message response."""
+
+    message: str
