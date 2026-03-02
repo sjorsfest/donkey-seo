@@ -121,21 +121,22 @@ class Settings(BaseSettings):
     prod_model_standard: str | None = None
     prod_model_fast: str | None = None
 
+    _UNIFIED_DEFAULT_MODEL: ClassVar[str] = "openrouter:minimax/minimax-m2.5"
     _MODEL_DEFAULTS: ClassVar[dict[str, dict[str, str]]] = {
         "development": {
-            "reasoning": "openrouter:minimax/minimax-m2.5",
-            "standard": "openrouter:minimax/minimax-m2.5",
-            "fast": "openrouter:minimax/minimax-m2.5",
+            "reasoning": _UNIFIED_DEFAULT_MODEL,
+            "standard": _UNIFIED_DEFAULT_MODEL,
+            "fast": _UNIFIED_DEFAULT_MODEL,
         },
         "staging": {
-            "reasoning": "openrouter:google/gemma-3-27b-it:free",
-            "standard": "openrouter:google/gemma-3-27b-it:free",
-            "fast": "openrouter:google/gemma-3-27b-it:free",
+            "reasoning": _UNIFIED_DEFAULT_MODEL,
+            "standard": _UNIFIED_DEFAULT_MODEL,
+            "fast": _UNIFIED_DEFAULT_MODEL,
         },
         "production": {
-            "reasoning": "anthropic:claude-sonnet-4-5",
-            "standard": "anthropic:claude-sonnet-4-5",
-            "fast": "anthropic:claude-sonnet-4-5",
+            "reasoning": _UNIFIED_DEFAULT_MODEL,
+            "standard": _UNIFIED_DEFAULT_MODEL,
+            "fast": _UNIFIED_DEFAULT_MODEL,
         },
     }
 
