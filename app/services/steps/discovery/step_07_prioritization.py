@@ -209,6 +209,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 if brand_context
                 else learning_context
             )
+        offer_terms = self._collect_offer_terms(brand, strategy)
         money_pages = self._extract_money_pages(brand)
         primary_goal = project.primary_goal or ""
         raw_volume_reference = self._calculate_volume_reference(all_topics)
@@ -334,6 +335,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 brand_context=brand_context,
                 money_pages=money_pages,
                 primary_goal=primary_goal,
+                offer_terms=offer_terms,
             )
             if output is None:
                 logger.warning(
@@ -346,6 +348,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                         scored_topic=st,
                         topic=topic,
                         money_pages=money_pages,
+                        offer_terms=offer_terms,
                     )
                     prioritizations_by_topic_id[st["topic_id"]]["final_cut_reason_code"] = "deterministic_fallback"
                 continue
@@ -391,6 +394,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                     scored_topic=st,
                     topic=topic,
                     money_pages=money_pages,
+                    offer_terms=offer_terms,
                 )
                 prioritization["final_cut_reason_code"] = "deterministic_fallback"
                 prioritizations_by_topic_id[topic_id] = prioritization
@@ -472,6 +476,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 topic=topic,
                 keywords=keywords,
                 prioritization=prioritization,
+                offer_terms=offer_terms,
             )
             resolved_primary_keyword_id = str(resolved_primary_keyword.id) if resolved_primary_keyword else None
             resolved_primary_keyword_text = resolved_primary_keyword.keyword if resolved_primary_keyword else None
@@ -1526,11 +1531,13 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         *,
         topic: Topic,
         keywords: list[Keyword],
+        offer_terms: set[str] | None = None,
     ) -> list[Keyword]:
-        """Rank topic keywords by topic semantic relevance (not just volume)."""
+        """Rank topic keywords for brand-logical blog targeting."""
         if not keywords:
             return []
 
+        keyword_offer_terms = offer_terms if offer_terms else None
         topic_text = " ".join(
             [
                 topic.name or "",
@@ -1553,11 +1560,16 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 token_frequency[token] += 1
 
         max_token_frequency = max(token_frequency.values(), default=1)
-        scored: list[tuple[float, float, float, Keyword]] = []
+        scored: list[tuple[float, float, float, float, float, Keyword]] = []
 
         for keyword in keywords:
             kw_tokens = keyword_tokens_by_id.get(str(keyword.id), set())
             overlap = self._overlap_score(kw_tokens, topic_tokens) if topic_tokens else 0.0
+            offer_overlap = (
+                self._overlap_score(kw_tokens, keyword_offer_terms)
+                if keyword_offer_terms
+                else overlap
+            )
             representativeness = (
                 (
                     sum(token_frequency.get(token, 0) for token in kw_tokens)
@@ -1575,22 +1587,122 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             volume_norm = max(0.0, min(1.0, volume / max_volume))
             raw_signals = getattr(keyword, "discovery_signals", None)
             signals = raw_signals if isinstance(raw_signals, dict) else {}
-            comparison_bonus = 0.06 if bool(signals.get("is_comparison")) else 0.0
-            integration_bonus = 0.04 if bool(signals.get("has_integration_term")) else 0.0
+            comparison_bonus = 0.03 if bool(signals.get("is_comparison")) else 0.0
+            integration_bonus = 0.03 if bool(signals.get("has_integration_term")) else 0.0
+            blog_compatibility = self._keyword_blog_compatibility_score(
+                topic=topic,
+                keyword=keyword,
+            )
 
             score = (
-                (overlap * 0.42)
-                + (representativeness * 0.23)
-                + (intent_score * 0.13)
-                + (difficulty_ease * 0.10)
-                + (volume_norm * 0.08)
+                (overlap * 0.27)
+                + (offer_overlap * 0.21)
+                + (blog_compatibility * 0.18)
+                + (representativeness * 0.15)
+                + (intent_score * 0.08)
+                + (difficulty_ease * 0.06)
+                + (volume_norm * 0.02)
                 + comparison_bonus
                 + integration_bonus
             )
-            scored.append((float(score), float(overlap), float(volume), keyword))
+            scored.append(
+                (
+                    float(score),
+                    float(blog_compatibility),
+                    float(offer_overlap),
+                    float(overlap),
+                    float(volume),
+                    keyword,
+                )
+            )
 
-        scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-        return [item[3] for item in scored]
+        scored.sort(
+            key=lambda item: (item[0], item[1], item[2], item[3], item[4]),
+            reverse=True,
+        )
+        return [item[5] for item in scored]
+
+    def _build_keyword_candidate_profiles(
+        self,
+        *,
+        topic: Topic,
+        ranked_keywords: list[Keyword],
+        offer_terms: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Build compact candidate metadata so LLM can avoid volume-only picks."""
+        topic_name_tokens = self._tokenize_text(topic.name or "")
+        profiles: list[dict[str, Any]] = []
+        for keyword in ranked_keywords:
+            keyword_text = str(getattr(keyword, "keyword", "") or "").strip()
+            if not keyword_text:
+                continue
+            keyword_tokens = self._tokenize_text(keyword_text)
+            brand_overlap = (
+                self._overlap_score(keyword_tokens, offer_terms)
+                if offer_terms
+                else self._overlap_score(keyword_tokens, topic_name_tokens)
+            )
+            profiles.append(
+                {
+                    "keyword": keyword_text,
+                    "intent": str(getattr(keyword, "intent", "") or "unknown"),
+                    "recommended_page_type": str(
+                        getattr(keyword, "recommended_page_type", "") or "unknown"
+                    ),
+                    "blog_compatibility": round(
+                        self._keyword_blog_compatibility_score(topic=topic, keyword=keyword),
+                        2,
+                    ),
+                    "brand_overlap": round(brand_overlap, 2),
+                    "adjusted_volume": int(self._keyword_volume_value(keyword)),
+                    "difficulty": round(
+                        float(getattr(keyword, "difficulty", 0.0) or 0.0),
+                        1,
+                    ),
+                }
+            )
+        return profiles
+
+    def _keyword_blog_compatibility_score(
+        self,
+        *,
+        topic: Topic,
+        keyword: Keyword,
+    ) -> float:
+        """Estimate if keyword can be served with a strong brand-relevant blog post."""
+        page_type = str(getattr(keyword, "recommended_page_type", "") or "").strip().lower()
+        intent = str(
+            getattr(keyword, "intent", "") or getattr(topic, "dominant_intent", "") or ""
+        ).strip().lower()
+        score = 0.52
+
+        if page_type in {"guide", "blog", "glossary", "list"}:
+            score += 0.26
+        elif page_type in {"comparison", "alternatives"}:
+            score += 0.20
+        elif page_type in {"landing", "product", "category"}:
+            score -= 0.30
+        elif page_type == "tool":
+            score -= 0.10
+
+        if intent == "informational":
+            score += 0.16
+        elif intent == "commercial":
+            score += 0.10
+        elif intent == "navigational":
+            score -= 0.16
+        elif intent == "transactional":
+            score -= 0.22
+
+        raw_signals = getattr(keyword, "discovery_signals", None)
+        signals = raw_signals if isinstance(raw_signals, dict) else {}
+        topic_page_type = str(getattr(topic, "dominant_page_type", "") or "")
+        if signals.get("is_comparison") and topic_page_type in {"comparison", "alternatives"}:
+            score += 0.06
+        if signals.get("has_integration_term"):
+            score += 0.04
+
+        return self._clamp(score, 0.0, 1.0)
 
     def _keyword_volume_value(self, keyword: Any) -> float:
         """Resolve keyword volume value as float for ranking math."""
@@ -1612,6 +1724,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         topic: Topic,
         keywords: list[Keyword],
         prioritization: dict[str, Any],
+        offer_terms: set[str] | None = None,
     ) -> Keyword | None:
         """Resolve primary keyword after topic-level prioritization decisions."""
         if not keywords:
@@ -1631,6 +1744,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         ranked = self._rank_keywords_for_topic_prioritization(
             topic=topic,
             keywords=keywords,
+            offer_terms=offer_terms,
         )
         if ranked:
             return ranked[0]
@@ -1711,6 +1825,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         brand_context: str,
         money_pages: list[str],
         primary_goal: str,
+        offer_terms: set[str] | None = None,
     ) -> Any | None:
         """Run prioritization agent with compact-mode retry."""
         for attempt in range(LLM_RETRY_ATTEMPTS):
@@ -1718,7 +1833,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             try:
                 output = await agent.run(
                     PrioritizationAgentInput(
-                        topics=self._build_agent_topics(batch=batch, compact_mode=compact_mode),
+                        topics=self._build_agent_topics(
+                            batch=batch,
+                            compact_mode=compact_mode,
+                            offer_terms=offer_terms,
+                        ),
                         brand_context=brand_context if not compact_mode else brand_context[:600],
                         money_pages=money_pages,
                         primary_goal=primary_goal,
@@ -1733,7 +1852,13 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 )
         return None
 
-    def _build_agent_topics(self, *, batch: list[dict[str, Any]], compact_mode: bool) -> list[dict[str, Any]]:
+    def _build_agent_topics(
+        self,
+        *,
+        batch: list[dict[str, Any]],
+        compact_mode: bool,
+        offer_terms: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Build batch payload for prioritization agent."""
         agent_topics: list[dict[str, Any]] = []
         for i, st in enumerate(batch):
@@ -1742,15 +1867,22 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             ranked_keywords = self._rank_keywords_for_topic_prioritization(
                 topic=topic,
                 keywords=keywords,
+                offer_terms=offer_terms,
             )
             primary_kw = ranked_keywords[0] if ranked_keywords else None
             keyword_candidates = [kw.keyword for kw in ranked_keywords[:8]]
+            keyword_candidate_profiles = self._build_keyword_candidate_profiles(
+                topic=topic,
+                ranked_keywords=ranked_keywords[:8],
+                offer_terms=offer_terms,
+            )
             topic_payload: dict[str, Any] = {
                 "topic_index": i,
                 "topic_id": st["topic_id"],
                 "name": topic.name,
                 "primary_keyword": primary_kw.keyword if primary_kw else "",
                 "keyword_candidates": keyword_candidates,
+                "keyword_candidate_profiles": keyword_candidate_profiles,
                 "dominant_intent": topic.dominant_intent,
                 "funnel_stage": topic.funnel_stage,
                 "total_volume": topic.total_volume or 0,
@@ -1774,11 +1906,13 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         scored_topic: dict[str, Any],
         topic: Topic,
         money_pages: list[str],
+        offer_terms: set[str] | None = None,
     ) -> dict[str, Any]:
         """Fallback prioritization when LLM output is missing."""
         ranked_keywords = self._rank_keywords_for_topic_prioritization(
             topic=topic,
             keywords=list(scored_topic.get("keywords") or []),
+            offer_terms=offer_terms,
         )
         fallback_primary_keyword = ranked_keywords[0].keyword if ranked_keywords else ""
         return {

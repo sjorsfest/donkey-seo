@@ -365,10 +365,59 @@ This API is split into:
 - API-key protected content routes for machine-to-machine article retrieval
   and publication callbacks
 
-Start with these guides:
+Core client contract:
+- Donkey SEO is the source of truth for immutable article versions.
+- Your integration fetches versions, preserves `modular_document` structure,
+  publishes to your CMS/viewer, and reports publication state back.
+
+How `modular_document` works:
+- It is the canonical structured article payload, not just plain text.
+- Top-level keys include:
+  - `schema_version`
+  - `seo_meta` (`h1`, `meta_title`, `meta_description`, `slug`, `primary_keyword`)
+  - `conversion_plan` (`primary_intent`, `cta_strategy`)
+  - optional `author` and optional `featured_image`
+  - ordered `blocks[]`
+- `blocks[]` is parsed by `block_type` (never by position).
+- Supported `block_type` values:
+  `hero`, `summary`, `section`, `list`, `comparison_table`,
+  `steps`, `faq`, `cta`, `conclusion`, `sources`.
+- Preserve order and nested structures (`faq_items`, `cta`, `links`,
+  `table_columns/table_rows`) exactly.
+- Signed image URLs in `author.profile_image.signed_url` and
+  `featured_image.signed_url` are short-lived and should not be stored durably.
+
+How publication webhooks work:
+- Outbound event type: `content.article.publish_requested`.
+- Payload includes:
+  - `event_id`, `event_type`, `occurred_at`
+  - `project` (`id`, `domain`, `locale`)
+  - `article` (`article_id`, `brief_id`, `version_number`, `title`, `slug`,
+    `primary_keyword`, `proposed_publication_date`)
+  - `modular_document`
+  - `rendered_html`
+- Headers include:
+  - `X-Donkey-Event`
+  - `X-Donkey-Delivery-Id`
+  - `X-Donkey-Timestamp`
+  - `X-Donkey-Signature`
+- Verify signature with HMAC SHA256 over:
+  `{X-Donkey-Timestamp}.{raw_request_body}`
+  using `DONKEY_SEO_WEBHOOK_SECRET`.
+- Delivery policy:
+  - success on any 2xx
+  - retries on network/non-2xx errors
+  - max 5 attempts
+  - exponential backoff: 60s, 120s, 240s, 480s
+- Use `event_id` as idempotency key.
+
+Credentials for client implementers:
+- `DONKEY_SEO_API_KEY`: send as `X-API-Key` on protected routes.
+- `DONKEY_SEO_WEBHOOK_SECRET`: verify webhook signatures.
+- Generate both in the Donkey SEO dashboard for the target project.
+
+Full implementation guide:
 - `GET __INTEGRATION_BASE_PATH__/guide/donkey-client`
-- `GET __INTEGRATION_BASE_PATH__/guide/modular-document`
-- `GET __INTEGRATION_BASE_PATH__/guide/webhooks`
 """.replace("__INTEGRATION_BASE_PATH__", INTEGRATION_PUBLIC_BASE_PATH)
 
 DONKEY_CLIENT_GUIDE_MARKDOWN = """
@@ -395,6 +444,8 @@ How to obtain values:
 
 ## 2) Endpoints To Implement
 
+- `GET __INTEGRATION_BASE_PATH__/articles?project_id={project_id}&page={page}&page_size={page_size}`
+  - Returns a lightweight paginated list for article selection/sync.
 - `GET __INTEGRATION_BASE_PATH__/article/{article_id}?project_id={project_id}`
   - Returns latest immutable article version.
 - `GET __INTEGRATION_BASE_PATH__/article/{article_id}/versions/{version_number}`
@@ -582,11 +633,10 @@ Recommended storage model:
 These are best-practice defaults. You can choose a different architecture if it better
 fits your product constraints.
 
-## 10) Extra Guide Routes (Visible in `/documentation`)
+## 10) Documentation Access
 
-For users not using LLM coding workflows:
-- `GET __INTEGRATION_BASE_PATH__/guide/modular-document`
-  - Field-by-field modular document + block behavior reference.
-- `GET __INTEGRATION_BASE_PATH__/guide/webhooks`
-  - Webhook event catalog, payload fields, headers, signature, retry policy.
+- `GET __INTEGRATION_BASE_PATH__/guide/donkey-client`
+  - Full implementation guide (markdown + structured JSON sections).
+- `GET __INTEGRATION_BASE_PATH__/guide/donkey-client.md`
+  - Markdown-only version of the same guide.
 """.replace("__INTEGRATION_BASE_PATH__", INTEGRATION_PUBLIC_BASE_PATH)

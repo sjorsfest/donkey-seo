@@ -21,6 +21,7 @@ from app.models.generated_dtos import ContentBriefCreateDTO, ContentBriefPatchDT
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
+from app.services.content_keyword_tracking import sync_brief_keywords
 from app.services.discovery.topic_overlap import (
     build_comparison_key,
     build_family_key,
@@ -320,6 +321,13 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             if not primary_kw:
                 continue
 
+            supporting_keyword_models = [kw for kw in keywords if kw.id != primary_kw.id]
+            supporting_keyword_texts = [kw.keyword for kw in supporting_keyword_models]
+            supporting_keyword_ids = [
+                str(kw.id)
+                for kw in supporting_keyword_models
+            ]
+
             serp_profile = self._resolve_brief_serp_profile(primary_kw, topic)
             resolved_intent = serp_profile["search_intent"]
             resolved_page_type = serp_profile["page_type"]
@@ -361,9 +369,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 agent_input = BriefGeneratorInput(
                     topic_name=topic.name,
                     primary_keyword=primary_kw.keyword,
-                    supporting_keywords=[
-                        kw.keyword for kw in keywords if kw.id != primary_kw.id
-                    ][:15],
+                    supporting_keywords=supporting_keyword_texts[:15],
                     search_intent=resolved_intent,
                     page_type=resolved_page_type,
                     funnel_stage=topic.funnel_stage or "tofu",
@@ -388,6 +394,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "topic_id": str(topic.id),
                     "topic_name": topic.name,
                     "primary_keyword": primary_kw.keyword,
+                    "primary_keyword_id": str(primary_kw.id),
                     "search_intent": resolved_intent,
                     "page_type": resolved_page_type,
                     "funnel_stage": topic.funnel_stage,
@@ -415,12 +422,11 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                         }
                         for s in brief_data.outline
                     ],
-                    "supporting_keywords": [
-                        kw.keyword for kw in keywords if kw.id != primary_kw.id
-                    ],
+                    "supporting_keywords": supporting_keyword_texts,
+                    "supporting_keyword_ids": supporting_keyword_ids,
                     "supporting_keywords_map": self._build_keyword_section_map(
                         brief_data.outline,
-                        [kw.keyword for kw in keywords if kw.id != primary_kw.id],
+                        supporting_keyword_texts,
                     ),
                     "examples_required": brief_data.examples_required,
                     "faq_questions": brief_data.faq_questions,
@@ -470,6 +476,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "topic_id": str(topic.id),
                     "topic_name": topic.name,
                     "primary_keyword": primary_kw.keyword,
+                    "primary_keyword_id": str(primary_kw.id),
                     "search_intent": resolved_intent,
                     "page_type": resolved_page_type,
                     "funnel_stage": topic.funnel_stage,
@@ -484,9 +491,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "target_audience": "To be defined",
                     "reader_job_to_be_done": "To be defined",
                     "outline": [],
-                    "supporting_keywords": [
-                        kw.keyword for kw in keywords if kw.id != primary_kw.id
-                    ],
+                    "supporting_keywords": supporting_keyword_texts,
+                    "supporting_keyword_ids": supporting_keyword_ids,
                     "target_word_count": {"min": 1500, "max": 2500},
                     "proposed_publication_date": fallback_publication_date,
                     "has_warnings": True,
@@ -1577,6 +1583,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 else {}
             )
             primary_keyword = str(brief_data.get("primary_keyword") or "")
+            primary_keyword_id = self._optional_str(brief_data.get("primary_keyword_id"))
             search_intent = self._optional_str(brief_data.get("search_intent"))
             page_type = self._optional_str(brief_data.get("page_type"))
             funnel_stage = self._optional_str(brief_data.get("funnel_stage"))
@@ -1585,6 +1592,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             reader_job_to_be_done = self._optional_str(brief_data.get("reader_job_to_be_done"))
             outline = self._dict_list_or_none(brief_data.get("outline"))
             supporting_keywords = self._str_list_or_none(brief_data.get("supporting_keywords"))
+            supporting_keyword_ids = self._str_list_or_none(brief_data.get("supporting_keyword_ids"))
             supporting_keywords_map = self._dict_or_none(brief_data.get("supporting_keywords_map"))
             examples_required = self._str_list_or_none(brief_data.get("examples_required"))
             faq_questions = self._str_list_or_none(brief_data.get("faq_questions"))
@@ -1638,6 +1646,14 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     self.session,
                     ContentBriefPatchDTO.from_partial(payload),
                 )
+                await sync_brief_keywords(
+                    self.session,
+                    brief=existing,
+                    primary_keyword=primary_keyword,
+                    supporting_keywords=supporting_keywords,
+                    primary_keyword_id=primary_keyword_id,
+                    supporting_keyword_ids=supporting_keyword_ids,
+                )
                 continue
 
             create_dto = ContentBriefCreateDTO(
@@ -1667,9 +1683,18 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 status="draft",
             )
 
-            ContentBrief.create(
+            created_brief = ContentBrief.create(
                 self.session,
                 create_dto,
+            )
+            await self.session.flush()
+            await sync_brief_keywords(
+                self.session,
+                brief=created_brief,
+                primary_keyword=primary_keyword,
+                supporting_keywords=supporting_keywords,
+                primary_keyword_id=primary_keyword_id,
+                supporting_keyword_ids=supporting_keyword_ids,
             )
 
         # Update project step

@@ -19,6 +19,24 @@ from app.services.seo_checklist import DeterministicAuditReport, run_determinist
 logger = logging.getLogger(__name__)
 
 _LINK_VALIDATION_TIMEOUT_SECONDS = 4.0
+_TOPIC_TOKEN_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "vs",
+    "with",
+}
 
 _ALLOWED_BLOCK_TYPES = {
     "hero",
@@ -164,6 +182,7 @@ class ArticleGenerationService:
                     document,
                     rendered_html,
                     primary_keyword=str(brief.get("primary_keyword") or ""),
+                    topic_anchor=self._topic_anchor(brief=brief, document=document),
                     page_type=brief.get("page_type"),
                     search_intent=brief.get("search_intent"),
                     required_sections=required_sections,
@@ -393,16 +412,29 @@ class ArticleGenerationService:
                 feedback.append(item.strip())
 
         keyword = str(brief.get("primary_keyword") or "").strip()
+        topic_anchor = self._topic_anchor(brief=brief, document=None)
         search_intent = str(brief.get("search_intent") or "informational").strip()
         target_audience = str(brief.get("target_audience") or "").strip()
         if keyword:
-            feedback.append(f"Preserve primary keyword strategy for '{keyword}'.")
+            overlap_ratio = self._keyword_topic_overlap_ratio(keyword, topic_anchor)
+            if topic_anchor and overlap_ratio < 0.34:
+                feedback.append(
+                    f"Prioritize the working-title topic '{topic_anchor}'. "
+                    f"Use primary keyword '{keyword}' naturally where relevant."
+                )
+            else:
+                feedback.append(
+                    f"Preserve primary keyword strategy for '{keyword}' without keyword stuffing."
+                )
         feedback.append(f"Preserve search intent: '{search_intent}'.")
         if target_audience:
             feedback.append(f"Preserve ICP hook for audience: '{target_audience}'.")
         feedback.append(
             "Apply minimal targeted edits; keep existing structure unless "
             "a failing check requires change."
+        )
+        feedback.append(
+            "Never use em dashes (—); use commas, periods, or parentheses instead."
         )
 
         return self._dedupe_strings(feedback)
@@ -532,7 +564,24 @@ class ArticleGenerationService:
             ]
 
         normalized["conversion_plan"] = conversion_plan
-        return normalized
+        sanitized = self._sanitize_em_dashes(normalized)
+        return sanitized if isinstance(sanitized, dict) else normalized
+
+    def _sanitize_em_dashes(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._sanitize_em_dash_text(value)
+        if isinstance(value, list):
+            return [self._sanitize_em_dashes(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._sanitize_em_dashes(item) for key, item in value.items()}
+        return value
+
+    def _sanitize_em_dash_text(self, text: str) -> str:
+        if "—" not in text:
+            return text
+        sanitized = re.sub(r"\s*—\s*", ", ", text)
+        sanitized = re.sub(r"\s{2,}", " ", sanitized)
+        return sanitized
 
     async def _filter_invalid_document_links(
         self,
@@ -849,6 +898,10 @@ class ArticleGenerationService:
                 "cta": raw_block.get("cta") if isinstance(raw_block.get("cta"), dict) else None,
                 "links": raw_block.get("links") if isinstance(raw_block.get("links"), list) else [],
             }
+            if block_type in {"list", "steps"} and not block["items"]:
+                block["items"] = self._items_from_table_rows(block["table_rows"])
+            if block_type == "faq" and not block["faq_items"]:
+                block["faq_items"] = self._faq_items_from_table_rows(block["table_rows"])
             normalized.append(block)
 
         if hero_count == 0:
@@ -874,6 +927,18 @@ class ArticleGenerationService:
 
     def _required_sections(self, brief: dict[str, Any], brief_delta: dict[str, Any]) -> list[str]:
         required: list[str] = []
+        seen: set[str] = set()
+
+        def _append(section: str) -> None:
+            normalized = section.strip()
+            if not normalized:
+                return
+            key = normalized.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            required.append(normalized)
+
         for source in (
             brief.get("must_include_sections"),
             brief_delta.get("must_include_sections"),
@@ -882,10 +947,81 @@ class ArticleGenerationService:
                 for item in source:
                     if not isinstance(item, str):
                         continue
-                    stripped = item.strip()
-                    if stripped and stripped.lower() not in {x.lower() for x in required}:
-                        required.append(stripped)
+                    _append(item)
+
+        for section in _as_list(brief.get("outline")):
+            if not isinstance(section, dict):
+                continue
+            level = section.get("level")
+            if isinstance(level, int) and level != 2:
+                continue
+            heading = section.get("heading")
+            if isinstance(heading, str):
+                _append(heading)
+
         return required
+
+    def _topic_anchor(self, *, brief: dict[str, Any], document: dict[str, Any] | None) -> str:
+        locked_title = str(brief.get("locked_title") or "").strip()
+        if locked_title:
+            return locked_title
+
+        for candidate in _as_list(brief.get("working_titles")):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+
+        if isinstance(document, dict):
+            seo_meta = _as_dict(document.get("seo_meta"))
+            h1 = str(seo_meta.get("h1") or "").strip()
+            if h1:
+                return h1
+        return ""
+
+    def _keyword_topic_overlap_ratio(self, primary_keyword: str, topic_anchor: str) -> float:
+        keyword_tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]+", primary_keyword.lower())
+            if token and token not in _TOPIC_TOKEN_STOPWORDS
+        }
+        if not keyword_tokens:
+            return 1.0
+
+        topic_tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]+", topic_anchor.lower())
+            if token and token not in _TOPIC_TOKEN_STOPWORDS
+        }
+        if not topic_tokens:
+            return 1.0
+
+        overlap = keyword_tokens.intersection(topic_tokens)
+        return len(overlap) / len(keyword_tokens)
+
+    def _items_from_table_rows(self, table_rows: list[Any]) -> list[str]:
+        items: list[str] = []
+        for row in table_rows:
+            if not isinstance(row, list):
+                continue
+            cells = [str(cell).strip() for cell in row if str(cell).strip()]
+            if not cells:
+                continue
+            if len(cells) >= 2:
+                items.append(f"{cells[0]}: {'; '.join(cells[1:])}")
+            else:
+                items.append(cells[0])
+        return items
+
+    def _faq_items_from_table_rows(self, table_rows: list[Any]) -> list[dict[str, str]]:
+        faq_items: list[dict[str, str]] = []
+        for row in table_rows:
+            if not isinstance(row, list) or len(row) < 2:
+                continue
+            question = str(row[0]).strip()
+            answer = str(row[1]).strip()
+            if not question:
+                continue
+            faq_items.append({"question": question, "answer": answer})
+        return faq_items
 
     def _min_link_count(self, writer_instructions: dict[str, Any], key: str) -> int:
         mins = writer_instructions.get("internal_linking_minimums")

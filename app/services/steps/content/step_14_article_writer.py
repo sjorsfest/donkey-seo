@@ -30,6 +30,11 @@ from app.services.author_profiles import (
     author_modular_document_payload,
     choose_random_author,
 )
+from app.services.content_keyword_tracking import (
+    analyze_keyword_usage,
+    persist_article_keyword_usages,
+    with_keyword_coverage_report,
+)
 from app.services.content_renderer import render_modular_document
 from app.services.featured_image_generation import modular_featured_image_payload
 from app.services.publication_webhook import (
@@ -293,6 +298,24 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                 continue
 
             try:
+                keyword_usages = []
+                try:
+                    keyword_coverage_report, keyword_usages = await analyze_keyword_usage(
+                        session=self.session,
+                        brief=brief,
+                        document=artifact.modular_document,
+                        article_version_number=1,
+                    )
+                    artifact.qa_report = with_keyword_coverage_report(
+                        artifact.qa_report,
+                        keyword_coverage_report,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Keyword coverage analysis failed during article persistence",
+                        extra={"brief_id": str(brief.id), "error": str(exc)},
+                    )
+
                 async with self.session.begin_nested():
                     article = ContentArticle.create(
                         self.session,
@@ -337,6 +360,13 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                         self.session,
                         article=article,
                         proposed_publication_date=brief.proposed_publication_date,
+                    )
+                    await persist_article_keyword_usages(
+                        session=self.session,
+                        article_id=str(article.id),
+                        article_version_number=1,
+                        brief_id=str(brief.id),
+                        keyword_usages=keyword_usages,
                     )
             except IntegrityError as exc:
                 if self._is_duplicate_article_for_brief_error(exc):

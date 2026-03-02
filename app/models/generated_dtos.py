@@ -508,6 +508,142 @@ class ContentArticlePatchDTO:
         }
 
 @dataclass(slots=True)
+class ContentArticleKeywordUsageRow:
+    """Read DTO for `ContentArticleKeywordUsage`."""
+
+    article_id: str
+    article_version_number: int
+    brief_id: str
+    brief_keyword_id: str | None
+    keyword_id: str | None
+    keyword_text: str
+    keyword_role: str
+    keyword_intent: str | None
+    search_volume: int | None
+    adjusted_volume: int | None
+    used: bool
+    usage_count: int
+    usage_density_pct: float
+    in_h1: bool
+    in_first_150_words: bool
+    in_h2_h3: bool
+    section_hits: int
+    seo_incorporation_score: int
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "ContentArticleKeywordUsageRow":
+        return cls(
+            article_id=model.article_id,
+            article_version_number=model.article_version_number,
+            brief_id=model.brief_id,
+            brief_keyword_id=model.brief_keyword_id,
+            keyword_id=model.keyword_id,
+            keyword_text=model.keyword_text,
+            keyword_role=model.keyword_role,
+            keyword_intent=model.keyword_intent,
+            search_volume=model.search_volume,
+            adjusted_volume=model.adjusted_volume,
+            used=model.used,
+            usage_count=model.usage_count,
+            usage_density_pct=model.usage_density_pct,
+            in_h1=model.in_h1,
+            in_first_150_words=model.in_first_150_words,
+            in_h2_h3=model.in_h2_h3,
+            section_hits=model.section_hits,
+            seo_incorporation_score=model.seo_incorporation_score,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class ContentArticleKeywordUsageCreateDTO:
+    """Create DTO for `ContentArticleKeywordUsage`."""
+
+    article_id: str
+    article_version_number: int
+    brief_id: str
+    keyword_text: str
+    keyword_role: str
+    brief_keyword_id: str | None = None
+    keyword_id: str | None = None
+    keyword_intent: str | None = None
+    search_volume: int | None = None
+    adjusted_volume: int | None = None
+    used: bool | None = None
+    usage_count: int | None = None
+    usage_density_pct: float | None = None
+    in_h1: bool | None = None
+    in_first_150_words: bool | None = None
+    in_h2_h3: bool | None = None
+    section_hits: int | None = None
+    seo_incorporation_score: int | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "used",
+        "usage_count",
+        "usage_density_pct",
+        "in_h1",
+        "in_first_150_words",
+        "in_h2_h3",
+        "section_hits",
+        "seo_incorporation_score",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class ContentArticleKeywordUsagePatchDTO:
+    """Sparse patch DTO for `ContentArticleKeywordUsage`."""
+
+    article_id: str | None = None
+    article_version_number: int | None = None
+    brief_id: str | None = None
+    brief_keyword_id: str | None = None
+    keyword_id: str | None = None
+    keyword_text: str | None = None
+    keyword_role: str | None = None
+    keyword_intent: str | None = None
+    search_volume: int | None = None
+    adjusted_volume: int | None = None
+    used: bool | None = None
+    usage_count: int | None = None
+    usage_density_pct: float | None = None
+    in_h1: bool | None = None
+    in_first_150_words: bool | None = None
+    in_h2_h3: bool | None = None
+    section_hits: int | None = None
+    seo_incorporation_score: int | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "ContentArticleKeywordUsagePatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
 class ContentArticleVersionRow:
     """Read DTO for `ContentArticleVersion`."""
 
@@ -768,6 +904,87 @@ class ContentBriefPatchDTO:
 
     @classmethod
     def from_partial(cls, payload: dict[str, Any]) -> "ContentBriefPatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
+class ContentBriefKeywordRow:
+    """Read DTO for `ContentBriefKeyword`."""
+
+    brief_id: str
+    keyword_id: str | None
+    keyword_text: str
+    keyword_text_normalized: str
+    keyword_role: str
+    position: int
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "ContentBriefKeywordRow":
+        return cls(
+            brief_id=model.brief_id,
+            keyword_id=model.keyword_id,
+            keyword_text=model.keyword_text,
+            keyword_text_normalized=model.keyword_text_normalized,
+            keyword_role=model.keyword_role,
+            position=model.position,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class ContentBriefKeywordCreateDTO:
+    """Create DTO for `ContentBriefKeyword`."""
+
+    brief_id: str
+    keyword_text: str
+    keyword_text_normalized: str
+    keyword_role: str
+    keyword_id: str | None = None
+    position: int | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "position",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class ContentBriefKeywordPatchDTO:
+    """Sparse patch DTO for `ContentBriefKeyword`."""
+
+    brief_id: str | None = None
+    keyword_id: str | None = None
+    keyword_text: str | None = None
+    keyword_text_normalized: str | None = None
+    keyword_role: str | None = None
+    position: int | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "ContentBriefKeywordPatchDTO":
         obj = cls(**payload)
         obj._provided_fields = set(payload.keys())
         return obj
@@ -2622,12 +2839,18 @@ __all__ = [
     "ContentArticleRow",
     "ContentArticleCreateDTO",
     "ContentArticlePatchDTO",
+    "ContentArticleKeywordUsageRow",
+    "ContentArticleKeywordUsageCreateDTO",
+    "ContentArticleKeywordUsagePatchDTO",
     "ContentArticleVersionRow",
     "ContentArticleVersionCreateDTO",
     "ContentArticleVersionPatchDTO",
     "ContentBriefRow",
     "ContentBriefCreateDTO",
     "ContentBriefPatchDTO",
+    "ContentBriefKeywordRow",
+    "ContentBriefKeywordCreateDTO",
+    "ContentBriefKeywordPatchDTO",
     "ContentFeaturedImageRow",
     "ContentFeaturedImageCreateDTO",
     "ContentFeaturedImagePatchDTO",

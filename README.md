@@ -286,8 +286,8 @@ Start content-only module:
 - `GET /api/v1/integration/openapi.json` - Integration OpenAPI schema (unprotected)
 - `GET /api/v1/integration/guide/donkey-client` - Client implementation guide (unprotected)
 - `GET /api/v1/integration/guide/donkey-client.md` - Same guide as markdown (unprotected)
-- `GET /api/v1/integration/guide/modular-document` - Field-level modular document + block guide
-- `GET /api/v1/integration/guide/webhooks` - Webhook event catalog + payload/header/signature guide
+- `GET /api/v1/integration/articles?project_id={project_id}&page={page}&page_size={page_size}`
+  - Lightweight article list (id/title/status/publication metadata)
 - `GET /api/v1/integration/article/{article_id}?project_id={project_id}` - Latest article version
 - `GET /api/v1/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
   - Specific immutable article version

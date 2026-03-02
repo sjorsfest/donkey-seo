@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from app.models.content import (
+    ContentArticleKeywordUsage,
     ContentArticle,
     ContentArticleVersion,
     ContentBrief,
+    ContentBriefKeyword,
     ContentFeaturedImage,
     PublicationWebhookDelivery,
     WriterInstructions,
@@ -13,11 +15,15 @@ from app.models.content import (
 from app.models.generated_dtos import (
     BriefDeltaCreateDTO,
     BriefDeltaPatchDTO,
+    ContentArticleKeywordUsageCreateDTO,
+    ContentArticleKeywordUsagePatchDTO,
     ContentArticleCreateDTO,
     ContentArticlePatchDTO,
     ContentArticleVersionCreateDTO,
     ContentArticleVersionPatchDTO,
     ContentBriefCreateDTO,
+    ContentBriefKeywordCreateDTO,
+    ContentBriefKeywordPatchDTO,
     ContentBriefPatchDTO,
     ContentFeaturedImageCreateDTO,
     ContentFeaturedImagePatchDTO,
@@ -133,6 +139,36 @@ CONTENT_ARTICLE_VERSION_PATCH_ALLOWLIST = {
     "created_by_regeneration",
 }
 
+CONTENT_BRIEF_KEYWORD_PATCH_ALLOWLIST = {
+    "brief_id",
+    "keyword_id",
+    "keyword_text",
+    "keyword_text_normalized",
+    "keyword_role",
+    "position",
+}
+
+CONTENT_ARTICLE_KEYWORD_USAGE_PATCH_ALLOWLIST = {
+    "article_id",
+    "article_version_number",
+    "brief_id",
+    "brief_keyword_id",
+    "keyword_id",
+    "keyword_text",
+    "keyword_role",
+    "keyword_intent",
+    "search_volume",
+    "adjusted_volume",
+    "used",
+    "usage_count",
+    "usage_density_pct",
+    "in_h1",
+    "in_first_150_words",
+    "in_h2_h3",
+    "section_hits",
+    "seo_incorporation_score",
+}
+
 CONTENT_FEATURED_IMAGE_PATCH_ALLOWLIST = {
     "status",
     "title_text",
@@ -218,6 +254,24 @@ _CONTENT_ARTICLE_VERSION_ADAPTER = BaseWriteAdapter[
     patch_allowlist=CONTENT_ARTICLE_VERSION_PATCH_ALLOWLIST,
 )
 
+_CONTENT_BRIEF_KEYWORD_ADAPTER = BaseWriteAdapter[
+    ContentBriefKeyword,
+    ContentBriefKeywordCreateDTO,
+    ContentBriefKeywordPatchDTO,
+](
+    model_cls=ContentBriefKeyword,
+    patch_allowlist=CONTENT_BRIEF_KEYWORD_PATCH_ALLOWLIST,
+)
+
+_CONTENT_ARTICLE_KEYWORD_USAGE_ADAPTER = BaseWriteAdapter[
+    ContentArticleKeywordUsage,
+    ContentArticleKeywordUsageCreateDTO,
+    ContentArticleKeywordUsagePatchDTO,
+](
+    model_cls=ContentArticleKeywordUsage,
+    patch_allowlist=CONTENT_ARTICLE_KEYWORD_USAGE_PATCH_ALLOWLIST,
+)
+
 _CONTENT_FEATURED_IMAGE_ADAPTER = BaseWriteAdapter[
     ContentFeaturedImage,
     ContentFeaturedImageCreateDTO,
@@ -247,5 +301,7 @@ def register() -> None:
     register_adapter(BriefDelta, _BRIEF_DELTA_ADAPTER)
     register_adapter(ContentArticle, _CONTENT_ARTICLE_ADAPTER)
     register_adapter(ContentArticleVersion, _CONTENT_ARTICLE_VERSION_ADAPTER)
+    register_adapter(ContentBriefKeyword, _CONTENT_BRIEF_KEYWORD_ADAPTER)
+    register_adapter(ContentArticleKeywordUsage, _CONTENT_ARTICLE_KEYWORD_USAGE_ADAPTER)
     register_adapter(ContentFeaturedImage, _CONTENT_FEATURED_IMAGE_ADAPTER)
     register_adapter(PublicationWebhookDelivery, _PUBLICATION_WEBHOOK_DELIVERY_ADAPTER)

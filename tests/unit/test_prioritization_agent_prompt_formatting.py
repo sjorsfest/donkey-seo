@@ -62,3 +62,39 @@ def test_prompt_compact_mode_uses_concise_instruction_block() -> None:
 
     assert "Keep responses concise." in prompt
     assert "recommended_primary_keyword" in prompt
+
+
+def test_prompt_includes_keyword_candidate_profiles_and_tiebreaker_guidance() -> None:
+    agent = PrioritizationAgent()
+    prompt = agent._build_prompt(  # type: ignore[attr-defined]
+        PrioritizationAgentInput(
+            topics=[
+                {
+                    "name": "Support Automation Guide",
+                    "primary_keyword": "support automation guide",
+                    "keyword_candidates": ["support automation guide", "helpdesk pricing"],
+                    "keyword_candidate_profiles": [
+                        {
+                            "keyword": "support automation guide",
+                            "blog_compatibility": 0.92,
+                            "brand_overlap": 0.88,
+                            "intent": "informational",
+                            "recommended_page_type": "guide",
+                            "adjusted_volume": 320,
+                        }
+                    ],
+                    "dominant_intent": "informational",
+                    "funnel_stage": "tofu",
+                    "total_volume": 1500,
+                    "avg_difficulty": 22,
+                    "keyword_count": 4,
+                    "priority_score": 74.3,
+                    "scoring_factors": {"fit_score": 0.84},
+                }
+            ]
+        )
+    )
+
+    assert "Keyword Candidate Profiles: support automation guide" in prompt
+    assert "blog_fit=0.92" in prompt
+    assert "volume only as a tie-breaker" in prompt

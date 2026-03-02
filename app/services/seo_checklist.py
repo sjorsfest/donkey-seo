@@ -35,6 +35,24 @@ MODULE_A_PAGE_TYPES = {"guide", "how-to", "glossary"}
 MODULE_B_PAGE_TYPES = {"comparison", "alternatives", "list"}
 MODULE_C_PAGE_TYPES = {"landing", "tool", "calculator", "template"}
 MODULE_D_PAGE_TYPES = {"opinion", "thought-leadership", "editorial"}
+_TOPIC_TOKEN_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "vs",
+    "with",
+}
 
 
 @dataclass(slots=True)
@@ -213,11 +231,33 @@ def _keyword_occurrences(text: str, primary_keyword: str) -> int:
     return len(re.findall(pattern, text.lower()))
 
 
+def _keyword_topic_overlap_ratio(primary_keyword: str, topic_anchor: str) -> float:
+    keyword_tokens = {
+        token
+        for token in _collect_words(primary_keyword)
+        if token and token not in _TOPIC_TOKEN_STOPWORDS
+    }
+    if not keyword_tokens:
+        return 1.0
+
+    topic_tokens = {
+        token
+        for token in _collect_words(topic_anchor)
+        if token and token not in _TOPIC_TOKEN_STOPWORDS
+    }
+    if not topic_tokens:
+        return 1.0
+
+    overlap = keyword_tokens.intersection(topic_tokens)
+    return len(overlap) / len(keyword_tokens)
+
+
 def run_deterministic_checklist(
     document: dict[str, Any],
     rendered_html: str,
     *,
     primary_keyword: str,
+    topic_anchor: str | None = None,
     page_type: str | None,
     search_intent: str | None,
     required_sections: list[str] | None,
@@ -284,23 +324,33 @@ def run_deterministic_checklist(
     })
 
     normalized_keyword = " ".join(_collect_words(primary_keyword))
+    keyword_checks_required = True
+    if isinstance(topic_anchor, str) and topic_anchor.strip():
+        keyword_checks_required = (
+            _keyword_topic_overlap_ratio(primary_keyword, topic_anchor.strip()) >= 0.34
+        )
+
     seo_meta = _as_dict(document.get("seo_meta"))
     h1_value = str(seo_meta.get("h1") or "")
     keyword_in_h1 = bool(normalized_keyword) and normalized_keyword in h1_value.lower()
     checks.append({
         "name": "primary_keyword_in_h1",
-        "required": True,
+        "required": keyword_checks_required,
         "passed": keyword_in_h1,
-        "details": {"keyword": primary_keyword, "h1": h1_value},
+        "details": {
+            "keyword": primary_keyword,
+            "h1": h1_value,
+            "required": keyword_checks_required,
+        },
     })
 
     first_150_words = " ".join(words[:150])
     keyword_in_first_150 = bool(normalized_keyword) and normalized_keyword in first_150_words
     checks.append({
         "name": "primary_keyword_first_150_words",
-        "required": True,
+        "required": keyword_checks_required,
         "passed": keyword_in_first_150,
-        "details": {"keyword": primary_keyword},
+        "details": {"keyword": primary_keyword, "required": keyword_checks_required},
     })
 
     keyword_in_h2 = any(
@@ -309,9 +359,9 @@ def run_deterministic_checklist(
     )
     checks.append({
         "name": "primary_keyword_in_h2",
-        "required": True,
+        "required": keyword_checks_required,
         "passed": keyword_in_h2,
-        "details": {"keyword": primary_keyword},
+        "details": {"keyword": primary_keyword, "required": keyword_checks_required},
     })
 
     violating_claims = [

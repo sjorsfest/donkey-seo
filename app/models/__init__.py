@@ -4,9 +4,11 @@ from app.models.base import Base
 from app.models.author import Author
 from app.models.brand import BrandProfile
 from app.models.content import (
+    ContentArticleKeywordUsage,
     ContentArticle,
     ContentArticleVersion,
     ContentBrief,
+    ContentBriefKeyword,
     ContentFeaturedImage,
     PublicationWebhookDelivery,
     WriterInstructions,
@@ -35,9 +37,11 @@ __all__ = [
     "SeedTopic",
     "Topic",
     "ContentBrief",
+    "ContentBriefKeyword",
     "WriterInstructions",
     "ContentFeaturedImage",
     "ContentArticle",
+    "ContentArticleKeywordUsage",
     "ContentArticleVersion",
     "PublicationWebhookDelivery",
     "ProjectStyleGuide",

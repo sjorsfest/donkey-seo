@@ -86,3 +86,62 @@ def test_renderer_inserts_fallback_hero_when_missing() -> None:
 
     assert "<h1>Fallback Heading</h1>" in html
     assert html.count("<h1") == 1
+
+
+def test_renderer_renders_section_items_when_body_missing() -> None:
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {
+            "h1": "Developer Tools",
+            "meta_title": "Developer Tools",
+            "meta_description": "Developer Tools",
+            "slug": "developer-tools",
+            "primary_keyword": "developer tools",
+        },
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "section",
+                "semantic_tag": "section",
+                "heading": "Detailed Feature Analysis",
+                "level": 2,
+                "items": ["Pricing structure", "Integration options"],
+                "body": None,
+            }
+        ],
+    }
+
+    html = render_modular_document(document)
+
+    assert "<h2>Detailed Feature Analysis</h2>" in html
+    assert "<li>Pricing structure</li>" in html
+    assert "<li>Integration options</li>" in html
+
+
+def test_renderer_renders_list_fallback_items_from_table_rows() -> None:
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {
+            "h1": "Comparison",
+            "meta_title": "Comparison",
+            "meta_description": "Comparison",
+            "slug": "comparison",
+            "primary_keyword": "comparison",
+        },
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "list",
+                "semantic_tag": "section",
+                "heading": "Arizer Solo 2",
+                "items": [],
+                "table_rows": [["Pros", "Long battery life"], ["Cons", "No app"]],
+            }
+        ],
+    }
+
+    html = render_modular_document(document)
+
+    assert "<h2>Arizer Solo 2</h2>" in html
+    assert "<li>Pros: Long battery life</li>" in html
+    assert "<li>Cons: No app</li>" in html

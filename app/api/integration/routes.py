@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integration.dependencies import require_integration_api_key
@@ -21,13 +21,13 @@ from app.api.integration.docs import (
     PUBLICATION_WEBHOOK_CONTRACT,
 )
 from app.api.integration.schemas import (
+    IntegrationArticleListResponse,
     IntegrationArticlePublicationPatchRequest,
     IntegrationArticlePublicationResponse,
+    IntegrationArticleSummaryResponse,
     IntegrationArticleVersionResponse,
     IntegrationGuideResponse,
     IntegrationIndexResponse,
-    IntegrationModularDocumentGuideResponse,
-    IntegrationWebhookGuideResponse,
 )
 from app.api.v1.content.constants import (
     CONTENT_ARTICLE_NOT_FOUND_DETAIL,
@@ -162,11 +162,7 @@ async def integration_index(request: Request) -> IntegrationIndexResponse:
         openapi_path=_resolve_integration_path(request, "/openapi.json"),
         guide_path=_resolve_integration_path(request, "/guide/donkey-client"),
         guide_markdown_path=_resolve_integration_path(request, "/guide/donkey-client.md"),
-        modular_document_guide_path=_resolve_integration_path(
-            request,
-            "/guide/modular-document",
-        ),
-        webhook_guide_path=_resolve_integration_path(request, "/guide/webhooks"),
+        article_list_path_template="/articles?project_id={project_id}&page={page}&page_size={page_size}",
         article_latest_path_template="/article/{article_id}?project_id={project_id}",
         article_version_path_template=(
             "/article/{article_id}/versions/{version_number}?project_id={project_id}"
@@ -210,51 +206,66 @@ async def integration_client_guide_markdown() -> str:
     return DONKEY_CLIENT_GUIDE_MARKDOWN.strip()
 
 
-@public_router.get(
-    "/guide/modular-document",
-    response_model=IntegrationModularDocumentGuideResponse,
-    summary="Modular document field and block guide",
+@protected_router.get(
+    "/articles",
+    response_model=IntegrationArticleListResponse,
+    summary="List project articles",
     description=(
-        "Return a complete field-level and block-level reference for the "
-        "modular_document contract."
+        "Return a paginated, lightweight article list for a project. "
+        "This endpoint excludes heavy content fields like modular_document and rendered_html."
     ),
 )
-async def integration_modular_document_guide() -> IntegrationModularDocumentGuideResponse:
-    """Return modular-document contract and handling guidance."""
-    return IntegrationModularDocumentGuideResponse(
-        title="Donkey SEO modular_document Guide",
-        schema_version="1.0",
-        overview=(
-            "Use this reference to implement deterministic parsing and rendering for every "
-            "known modular_document field and block type."
-        ),
-        modular_document_contract=MODULAR_DOCUMENT_CONTRACT,
-        modular_document_field_reference=MODULAR_DOCUMENT_FIELD_REFERENCE,
-        block_type_reference=MODULAR_BLOCK_TYPE_REFERENCE,
+async def list_project_articles(
+    project_id: str = Query(..., min_length=1),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+) -> IntegrationArticleListResponse:
+    """List articles with lightweight metadata for integration clients."""
+    page_size = int(page_size)
+    page = int(page)
+    offset = (page - 1) * page_size
+
+    total_result = await session.execute(
+        select(func.count())
+        .select_from(ContentArticle)
+        .where(ContentArticle.project_id == project_id)
     )
+    total = int(total_result.scalar_one() or 0)
 
+    result = await session.execute(
+        select(ContentArticle)
+        .where(ContentArticle.project_id == project_id)
+        .order_by(ContentArticle.updated_at.desc(), ContentArticle.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    articles = list(result.scalars().all())
 
-@public_router.get(
-    "/guide/webhooks",
-    response_model=IntegrationWebhookGuideResponse,
-    summary="Publication webhook event guide",
-    description=(
-        "Return outbound webhook event types, payload fields, headers, "
-        "signature verification, and retry policy."
-    ),
-)
-async def integration_webhook_guide() -> IntegrationWebhookGuideResponse:
-    """Return publication webhook contract reference."""
-    return IntegrationWebhookGuideResponse(
-        title="Donkey SEO Publication Webhook Guide",
-        schema_version="1.0",
-        overview=(
-            "Use this reference to build and harden your webhook receiver for all currently "
-            "emitted Donkey SEO publication events."
-        ),
-        webhook_contract=PUBLICATION_WEBHOOK_CONTRACT,
-        client_env_vars=INTEGRATION_CLIENT_ENV_VARS,
-        client_env_template=INTEGRATION_CLIENT_ENV_TEMPLATE.strip(),
+    items = [
+        IntegrationArticleSummaryResponse(
+            id=str(article.id),
+            project_id=str(article.project_id),
+            brief_id=str(article.brief_id),
+            title=article.title,
+            slug=article.slug,
+            primary_keyword=article.primary_keyword,
+            current_version=article.current_version,
+            status=article.status,
+            publish_status=article.publish_status,
+            published_at=article.published_at,
+            published_url=article.published_url,
+            created_at=article.created_at,
+            updated_at=article.updated_at,
+        )
+        for article in articles
+    ]
+
+    return IntegrationArticleListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
     )
 
 

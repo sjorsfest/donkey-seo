@@ -35,12 +35,20 @@ from app.models.generated_dtos import (
 
 try:
     from app.models.generated_dtos import (
+        ContentArticleKeywordUsageCreateDTO,
+        ContentArticleKeywordUsagePatchDTO,
+        ContentBriefKeywordCreateDTO,
+        ContentBriefKeywordPatchDTO,
         ContentFeaturedImageCreateDTO,
         ContentFeaturedImagePatchDTO,
         PublicationWebhookDeliveryCreateDTO,
         PublicationWebhookDeliveryPatchDTO,
     )
 except ImportError:  # pragma: no cover - bootstrap before DTO regeneration
+    ContentArticleKeywordUsageCreateDTO = Any  # type: ignore[assignment]
+    ContentArticleKeywordUsagePatchDTO = Any  # type: ignore[assignment]
+    ContentBriefKeywordCreateDTO = Any  # type: ignore[assignment]
+    ContentBriefKeywordPatchDTO = Any  # type: ignore[assignment]
     ContentFeaturedImageCreateDTO = Any  # type: ignore[assignment]
     ContentFeaturedImagePatchDTO = Any  # type: ignore[assignment]
     PublicationWebhookDeliveryCreateDTO = Any  # type: ignore[assignment]
@@ -144,9 +152,145 @@ class ContentBrief(
         uselist=False,
         cascade="all, delete-orphan",
     )
+    brief_keywords: Mapped[list[ContentBriefKeyword]] = relationship(
+        "ContentBriefKeyword",
+        back_populates="brief",
+        cascade="all, delete-orphan",
+        order_by="ContentBriefKeyword.position",
+    )
 
     def __repr__(self) -> str:
         return f"<ContentBrief {self.primary_keyword}>"
+
+
+class ContentBriefKeyword(
+    TypedModelMixin[ContentBriefKeywordCreateDTO, ContentBriefKeywordPatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
+    """Traceable keyword mapping attached to a content brief."""
+
+    __tablename__ = "content_brief_keywords"
+    __table_args__ = (
+        UniqueConstraint(
+            "brief_id",
+            "keyword_role",
+            "keyword_text_normalized",
+            name="uq_content_brief_keywords_brief_role_text",
+        ),
+        Index("ix_content_brief_keywords_brief_id", "brief_id"),
+        Index("ix_content_brief_keywords_keyword_id", "keyword_id"),
+        Index("ix_content_brief_keywords_keyword_role", "keyword_role"),
+    )
+
+    brief_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_briefs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    keyword_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("keywords.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    keyword_text: Mapped[str] = mapped_column(String(500), nullable=False)
+    keyword_text_normalized: Mapped[str] = mapped_column(String(500), nullable=False)
+    keyword_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    brief: Mapped[ContentBrief] = relationship("ContentBrief", back_populates="brief_keywords")
+    keyword: Mapped[Keyword | None] = relationship("Keyword", back_populates="content_brief_keywords")
+    article_usages: Mapped[list[ContentArticleKeywordUsage]] = relationship(
+        "ContentArticleKeywordUsage",
+        back_populates="brief_keyword",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ContentBriefKeyword brief={self.brief_id} role={self.keyword_role} "
+            f"text={self.keyword_text_normalized}>"
+        )
+
+
+class ContentArticleKeywordUsage(
+    TypedModelMixin[ContentArticleKeywordUsageCreateDTO, ContentArticleKeywordUsagePatchDTO],
+    Base,
+    UUIDMixin,
+    TimestampMixin,
+):
+    """Per-version keyword usage and incorporation signals for generated articles."""
+
+    __tablename__ = "content_article_keyword_usages"
+    __table_args__ = (
+        UniqueConstraint(
+            "article_id",
+            "article_version_number",
+            "brief_keyword_id",
+            name="uq_content_article_keyword_usages_article_version_brief_keyword",
+        ),
+        Index("ix_content_article_keyword_usages_article_id", "article_id"),
+        Index(
+            "ix_content_article_keyword_usages_article_version",
+            "article_id",
+            "article_version_number",
+        ),
+        Index("ix_content_article_keyword_usages_brief_id", "brief_id"),
+        Index("ix_content_article_keyword_usages_used", "used"),
+    )
+
+    article_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_articles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    article_version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    brief_id: Mapped[str] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_briefs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    brief_keyword_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("content_brief_keywords.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    keyword_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("keywords.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    keyword_text: Mapped[str] = mapped_column(String(500), nullable=False)
+    keyword_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    keyword_intent: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    search_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    adjusted_volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    usage_density_pct: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    in_h1: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    in_first_150_words: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    in_h2_h3: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    section_hits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    seo_incorporation_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    article: Mapped[ContentArticle] = relationship("ContentArticle", back_populates="keyword_usages")
+    brief: Mapped[ContentBrief] = relationship("ContentBrief")
+    brief_keyword: Mapped[ContentBriefKeyword | None] = relationship(
+        "ContentBriefKeyword",
+        back_populates="article_usages",
+    )
+    keyword: Mapped[Keyword | None] = relationship(
+        "Keyword",
+        back_populates="content_article_keyword_usages",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ContentArticleKeywordUsage article={self.article_id} "
+            f"version={self.article_version_number} keyword={self.keyword_text}>"
+        )
 
 
 class WriterInstructions(
@@ -316,6 +460,11 @@ class ContentArticle(
     )
     publication_webhook_deliveries: Mapped[list[PublicationWebhookDelivery]] = relationship(
         "PublicationWebhookDelivery",
+        back_populates="article",
+        cascade="all, delete-orphan",
+    )
+    keyword_usages: Mapped[list[ContentArticleKeywordUsage]] = relationship(
+        "ContentArticleKeywordUsage",
         back_populates="article",
         cascade="all, delete-orphan",
     )

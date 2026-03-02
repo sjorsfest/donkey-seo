@@ -201,6 +201,47 @@ def test_rank_keywords_for_topic_prioritization_prefers_topic_relevant_keyword()
     assert [kw.id for kw in ranked][:2] == ["kw-1", "kw-2"]
 
 
+def test_rank_keywords_for_topic_prioritization_prefers_blog_fit_over_raw_volume() -> None:
+    service = Step07PrioritizationService.__new__(Step07PrioritizationService)
+    topic = SimpleNamespace(
+        name="Support Ticket Routing Automation",
+        description="Automate support workflows with integrations",
+        cluster_notes="Practical implementation guides",
+        dominant_page_type="blog",
+        dominant_intent="informational",
+    )
+    high_volume_landing = SimpleNamespace(
+        id="kw-1",
+        keyword="help desk software pricing",
+        adjusted_volume=5200,
+        search_volume=5200,
+        intent_score=0.75,
+        difficulty=28.0,
+        intent="transactional",
+        recommended_page_type="landing",
+        discovery_signals={},
+    )
+    lower_volume_blog = SimpleNamespace(
+        id="kw-2",
+        keyword="how to automate support ticket routing",
+        adjusted_volume=260,
+        search_volume=260,
+        intent_score=0.86,
+        difficulty=24.0,
+        intent="informational",
+        recommended_page_type="guide",
+        discovery_signals={"has_integration_term": True},
+    )
+
+    ranked = service._rank_keywords_for_topic_prioritization(  # type: ignore[attr-defined]
+        topic=topic,
+        keywords=[high_volume_landing, lower_volume_blog],  # type: ignore[arg-type]
+        offer_terms={"support", "ticket", "automation", "routing"},
+    )
+
+    assert [kw.id for kw in ranked][:2] == ["kw-2", "kw-1"]
+
+
 def test_resolve_post_prioritization_primary_keyword_uses_llm_recommendation() -> None:
     service = Step07PrioritizationService.__new__(Step07PrioritizationService)
     topic = SimpleNamespace(

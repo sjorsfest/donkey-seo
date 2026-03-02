@@ -1,6 +1,7 @@
 """Prioritization agent for Step 7: Topic Prioritization."""
 
 import logging
+from typing import cast
 
 from pydantic import BaseModel, Field
 
@@ -171,7 +172,14 @@ class PrioritizationAgent(BaseAgent[PrioritizationAgentInput, PrioritizationAgen
 9. **Final-Cut Rationale**:
    - Explain final-cut decision in one concise sentence
 
-10. **Validation Notes**: Flag any concerns about the prioritization
+10. **Recommended Primary Keyword**:
+   - Choose from keyword_candidates
+   - Prioritize brand compatibility and blog-post suitability first
+   - Prefer informational/commercial intent and blog/guide/comparison style targets
+   - Use keyword_candidate_profiles as supporting signals
+   - Treat search volume as a tie-breaker only, never the main reason
+
+11. **Validation Notes**: Flag any concerns about the prioritization
 
 Be practical and actionable. Focus on business impact, not just SEO metrics."""
 
@@ -195,9 +203,11 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
             topic_id = topic.get("topic_id", "")
             primary_kw = topic.get("primary_keyword", "")
             keyword_candidates = topic.get("keyword_candidates", [])
+            keyword_candidate_profiles = topic.get("keyword_candidate_profiles", [])
             keyword_candidates_text = ", ".join(
                 str(item).strip() for item in keyword_candidates if str(item).strip()
             ) or "N/A"
+            keyword_profiles_text = self._format_keyword_profiles_for_prompt(keyword_candidate_profiles)
             intent = topic.get("dominant_intent", "unknown")
             funnel = topic.get("funnel_stage", "unknown")
             volume = topic.get("total_volume", 0)
@@ -212,6 +222,7 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
                 f"  Topic ID: {topic_id}\n"
                 f"  Primary Keyword: {primary_kw}\n"
                 f"  Keyword Candidates: {keyword_candidates_text}\n"
+                f"  Keyword Candidate Profiles: {keyword_profiles_text}\n"
                 f"  Intent: {intent} | Funnel: {funnel}\n"
                 f"  Volume: {volume} | Difficulty: {difficulty:.1f} | Keywords: {keyword_count}\n"
                 f"  Priority Score: {priority_score:.2f}\n"
@@ -250,6 +261,9 @@ Keep responses concise. For EACH topic, provide:
 11. target_money_pages
 12. validation_notes
 
+When selecting recommended_primary_keyword, prioritize brand/blog compatibility and use
+volume only as a tie-breaker.
+
 Also provide overall_strategy_notes for the backlog."""
 
         return f"""Prioritize and assign roles to these topics:
@@ -272,6 +286,9 @@ For EACH topic, provide:
 10. Recommended publish order (1, 2, 3, ... for authority building sequence)
 11. Target money pages to link to
 12. Validation notes if the prioritization seems off
+
+When selecting recommended_primary_keyword, prioritize brand/blog compatibility and use
+volume only as a tie-breaker.
 
 Also provide overall_strategy_notes for the content backlog."""
 
@@ -296,3 +313,28 @@ Also provide overall_strategy_notes for the content backlog."""
         if value is None:
             return "null"
         return str(value)
+
+    def _format_keyword_profiles_for_prompt(self, profiles: object) -> str:
+        """Render keyword candidate profiles in a compact stable format."""
+        if not isinstance(profiles, list) or not profiles:
+            return "N/A"
+
+        chunks: list[str] = []
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            profile_data = cast(dict[str, object], profile)
+            keyword = str(profile_data.get("keyword", "")).strip()
+            if not keyword:
+                continue
+            blog_fit = self._format_factor_value(profile_data.get("blog_compatibility"))
+            brand_overlap = self._format_factor_value(profile_data.get("brand_overlap"))
+            intent = self._format_factor_value(profile_data.get("intent"))
+            page_type = self._format_factor_value(profile_data.get("recommended_page_type"))
+            volume = self._format_factor_value(profile_data.get("adjusted_volume"))
+            chunks.append(
+                f"{keyword} (blog_fit={blog_fit}, brand_overlap={brand_overlap}, "
+                f"intent={intent}, page_type={page_type}, volume={volume})"
+            )
+
+        return "; ".join(chunks) if chunks else "N/A"

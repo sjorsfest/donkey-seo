@@ -18,6 +18,7 @@ from app.models.generated_dtos import (
 )
 
 if TYPE_CHECKING:
+    from app.models.content import ContentArticleKeywordUsage, ContentBriefKeyword
     from app.models.project import Project
     from app.models.topic import Topic
 
@@ -170,6 +171,14 @@ class Keyword(TypedModelMixin[KeywordCreateDTO, KeywordPatchDTO], Base, UUIDMixi
         "Keyword",
         remote_side="Keyword.id",
         foreign_keys=[parent_keyword_id],
+    )
+    content_brief_keywords: Mapped[list[ContentBriefKeyword]] = relationship(
+        "ContentBriefKeyword",
+        back_populates="keyword",
+    )
+    content_article_keyword_usages: Mapped[list[ContentArticleKeywordUsage]] = relationship(
+        "ContentArticleKeywordUsage",
+        back_populates="keyword",
     )
 
     def __repr__(self) -> str:

@@ -127,7 +127,7 @@ Hard requirements:
 2. Use semantic_tag values that match the block intent.
 3. Include exactly one hero block and one H1.
 4. Respect forbidden claims and compliance notes.
-5. Follow must-include sections from brief and delta.
+5. Follow must-include sections from brief and delta, and cover the outline headings with substantive content.
 6. Keep the output conversion-oriented for funnel stage and conversion intents.
 7. Add meaningful internal/external links inside block.links where appropriate.
 8. Never output raw HTML in body text.
@@ -135,12 +135,15 @@ Hard requirements:
 10. If an existing document is provided, apply minimal targeted edits
     instead of rewriting from scratch.
 11. Preserve topic, search intent, primary keyword strategy, and ICP hook.
+12. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
+13. Never use em dashes (—); use commas, periods, or parentheses instead.
 
 Writing quality:
 - Clear, practical, and audience-aligned.
 - Covers outline and key points from the brief.
 - Uses concise paragraphs and scannable sections.
 - Keeps claims honest and grounded in provided brand context.
+- Avoid heading-only placeholder sections; each section should include useful body content, list items, table rows, or FAQ entries.
 """
 
     @property
@@ -173,6 +176,8 @@ Writing quality:
             f"{conversion_intents_text}\n\n"
             "## Target Domain\n"
             f"{input_data.target_domain or 'Not specified'}\n\n"
+            "## Non-Negotiable Style Rule\n"
+            "Never use em dashes (—). Use commas, periods, or parentheses instead.\n\n"
             "## QA Feedback To Fix\n"
             f"{json.dumps(input_data.qa_feedback, ensure_ascii=True)}\n\n"
             "## Existing Document (for targeted revision)\n"

@@ -57,6 +57,66 @@ def test_required_sections_dedupes_sources() -> None:
     assert required == ["Introduction", "FAQ", "Conclusion"]
 
 
+def test_required_sections_include_outline_h2_headings() -> None:
+    service = ArticleGenerationService("donkey.support")
+
+    required = service._required_sections(
+        {
+            "must_include_sections": ["Introduction"],
+            "outline": [
+                {"level": 2, "heading": "Overview"},
+                {"level": 3, "heading": "Deep dive"},
+                {"level": 2, "heading": "Conclusion"},
+            ],
+        },
+        {"must_include_sections": ["FAQ"]},
+    )
+
+    assert required == ["Introduction", "FAQ", "Overview", "Conclusion"]
+
+
+def test_normalize_document_converts_list_table_rows_to_items() -> None:
+    service = ArticleGenerationService("donkey.support")
+
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {
+            "h1": "Pros and Cons",
+            "meta_title": "Pros and Cons",
+            "meta_description": "Pros and cons",
+            "slug": "pros-and-cons",
+            "primary_keyword": "pros and cons",
+        },
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "list",
+                "semantic_tag": "section",
+                "heading": "Arizer Solo 2",
+                "items": [],
+                "table_rows": [
+                    ["Pros", "Long battery life"],
+                    ["Cons", "Glass stem can break"],
+                ],
+            }
+        ],
+    }
+    brief = {
+        "primary_keyword": "pros and cons",
+        "funnel_stage": "tofu",
+        "money_page_links": [],
+    }
+
+    normalized = service._normalize_document(document, brief, {}, [])
+    list_block = normalized["blocks"][1]
+
+    assert list_block["block_type"] == "list"
+    assert list_block["items"] == [
+        "Pros: Long battery life",
+        "Cons: Glass stem can break",
+    ]
+
+
 class _FakeWriterAgent:
     documents: list[dict] = []
     instances: list["_FakeWriterAgent"] = []

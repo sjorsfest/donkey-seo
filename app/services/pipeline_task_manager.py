@@ -194,6 +194,7 @@ class PipelineTaskWorker:
         # Enforce one in-flight job per project/module to avoid run-start races.
         self._project_locks: dict[str, asyncio.Lock] = {}
         self._module_busy_retry_counts: dict[str, int] = {}
+        self._project_busy_retry_counts: dict[str, int] = {}
 
     async def start(self) -> None:
         """Start worker tasks if not already running."""
@@ -265,6 +266,8 @@ class PipelineTaskWorker:
                 )
                 run_lock = self._run_locks.setdefault(job.run_id, asyncio.Lock())
                 if run_lock.locked():
+                    self._module_busy_retry_counts.pop(job.run_id, None)
+                    self._project_busy_retry_counts.pop(job.run_id, None)
                     logger.info(
                         "Run already in progress; dropping duplicate job",
                         extra={
@@ -284,6 +287,9 @@ class PipelineTaskWorker:
                 try:
                     if project_lock.locked():
                         self._module_busy_retry_counts.pop(job.run_id, None)
+                        retries = self._project_busy_retry_counts.get(job.run_id, 0) + 1
+                        self._project_busy_retry_counts[job.run_id] = retries
+                        delay = self._compute_busy_requeue_delay(retries)
                         logger.info(
                             "Project already in progress for module, requeueing job",
                             extra={
@@ -291,13 +297,16 @@ class PipelineTaskWorker:
                                 "project_id": job.project_id,
                                 "run_id": job.run_id,
                                 "worker_index": worker_index,
+                                "project_busy_retry_count": retries,
+                                "requeue_delay_seconds": delay,
                             },
                         )
                         should_requeue = True
-                        requeue_delay = self.requeue_delay_seconds
+                        requeue_delay = delay
                     else:
                         await project_lock.acquire()
                         project_lock_acquired = True
+                        self._project_busy_retry_counts.pop(job.run_id, None)
                         try:
                             should_requeue = await self._execute(job)
                             self._module_busy_retry_counts.pop(job.run_id, None)
@@ -408,6 +417,8 @@ class PipelineTaskWorker:
                                 "run_id": job.run_id,
                             },
                         )
+                else:
+                    self._project_busy_retry_counts.pop(job.run_id, None)
         except asyncio.CancelledError:
             pass
         finally:

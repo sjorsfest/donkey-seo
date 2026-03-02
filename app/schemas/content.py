@@ -39,6 +39,7 @@ class ContentBriefCreate(BaseModel):
 class ContentBriefUpdate(BaseModel):
     """Schema for updating a content brief."""
 
+    primary_keyword: str | None = None
     working_titles: list[str] | None = None
     outline: list[OutlineSection] | None = None
     supporting_keywords: list[str] | None = None

@@ -22,8 +22,26 @@ class _FakeExecuteResult:
     def __init__(self, value: Any) -> None:
         self._value = value
 
+    def scalar_one(self) -> Any:
+        return self._value
+
     def scalar_one_or_none(self) -> Any:
         return self._value
+
+    def scalars(self) -> "_FakeScalarCollection":
+        if isinstance(self._value, list):
+            return _FakeScalarCollection(self._value)
+        if self._value is None:
+            return _FakeScalarCollection([])
+        return _FakeScalarCollection([self._value])
+
+
+class _FakeScalarCollection:
+    def __init__(self, values: list[Any]) -> None:
+        self._values = values
+
+    def all(self) -> list[Any]:
+        return list(self._values)
 
 
 class _FakeSession:
@@ -82,22 +100,30 @@ class _FakePublicationSession:
         self.refresh_called = True
 
 
+class _FakeArticleListSession:
+    def __init__(self, *, total: int, articles: list[Any]) -> None:
+        self._total = total
+        self._articles = articles
+        self._calls = 0
+
+    async def execute(self, _query: Any) -> _FakeExecuteResult:
+        self._calls += 1
+        if self._calls == 1:
+            return _FakeExecuteResult(self._total)
+        return _FakeExecuteResult(self._articles)
+
+
 def test_integration_docs_and_guide_are_public() -> None:
     with TestClient(create_app()) as client:
         docs_response = client.get(f"{INTEGRATION_API_BASE_PATH}/docs")
         openapi_response = client.get(f"{INTEGRATION_API_BASE_PATH}/openapi.json")
         guide_response = client.get(f"{INTEGRATION_API_BASE_PATH}/guide/donkey-client")
-        modular_doc_guide_response = client.get(
-            f"{INTEGRATION_API_BASE_PATH}/guide/modular-document"
-        )
-        webhook_guide_response = client.get(f"{INTEGRATION_API_BASE_PATH}/guide/webhooks")
 
     assert docs_response.status_code == 200
     assert openapi_response.status_code == 200
+    assert "/articles" in openapi_response.json()["paths"]
     assert "/article/{article_id}" in openapi_response.json()["paths"]
     assert "/article/{article_id}/publication" in openapi_response.json()["paths"]
-    assert "/guide/modular-document" in openapi_response.json()["paths"]
-    assert "/guide/webhooks" in openapi_response.json()["paths"]
     assert guide_response.status_code == 200
     guide_payload = guide_response.json()
     assert "modular_document" in guide_payload["markdown"]
@@ -105,10 +131,7 @@ def test_integration_docs_and_guide_are_public() -> None:
     assert guide_payload["modular_document_contract"]["schema_version"] == "1.0"
     assert "author" in guide_payload["modular_document_contract"]
     assert "DONKEY_SEO_API_KEY" in guide_payload["client_env_vars"]
-    assert modular_doc_guide_response.status_code == 200
-    assert webhook_guide_response.status_code == 200
-    webhook_payload = webhook_guide_response.json()
-    assert webhook_payload["webhook_contract"]["events"][0]["event_type"] == (
+    assert guide_payload["webhook_contract"]["events"][0]["event_type"] == (
         "content.article.publish_requested"
     )
 
@@ -133,12 +156,106 @@ def test_integration_index_exposes_publication_callback_template() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["modular_document_guide_path"].endswith("/guide/modular-document")
-    assert payload["webhook_guide_path"].endswith("/guide/webhooks")
+    assert (
+        payload["article_list_path_template"]
+        == "/articles?project_id={project_id}&page={page}&page_size={page_size}"
+    )
     assert (
         payload["article_publication_patch_path_template"]
         == "/article/{article_id}/publication?project_id={project_id}"
     )
+
+
+def test_integration_article_list_requires_api_key() -> None:
+    original_keys = settings.integration_api_keys
+    settings.integration_api_keys = "valid-key"
+    fake_session = _FakeArticleListSession(total=0, articles=[])
+
+    async def _fake_get_session() -> AsyncGenerator[_FakeArticleListSession, None]:
+        yield fake_session
+
+    integration_app.dependency_overrides[get_session] = _fake_get_session
+    try:
+        with TestClient(create_app()) as client:
+            response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/articles",
+                params={"project_id": "project_1"},
+            )
+    finally:
+        integration_app.dependency_overrides.clear()
+        settings.integration_api_keys = original_keys
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or missing API key"
+
+
+def test_integration_article_list_returns_lightweight_payload() -> None:
+    original_keys = settings.integration_api_keys
+    settings.integration_api_keys = "valid-key"
+    now = datetime.now(timezone.utc)
+    articles = [
+        SimpleNamespace(
+            id="article_1",
+            project_id="project_1",
+            brief_id="brief_1",
+            title="Article One",
+            slug="article-one",
+            primary_keyword="keyword one",
+            current_version=2,
+            status="draft",
+            publish_status="scheduled",
+            published_at=None,
+            published_url=None,
+            created_at=now,
+            updated_at=now,
+        ),
+        SimpleNamespace(
+            id="article_2",
+            project_id="project_1",
+            brief_id="brief_2",
+            title="Article Two",
+            slug="article-two",
+            primary_keyword="keyword two",
+            current_version=1,
+            status="needs_review",
+            publish_status="published",
+            published_at=now,
+            published_url="https://example.com/blog/article-two",
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    fake_session = _FakeArticleListSession(total=2, articles=articles)
+
+    async def _fake_get_session() -> AsyncGenerator[_FakeArticleListSession, None]:
+        yield fake_session
+
+    integration_app.dependency_overrides[get_session] = _fake_get_session
+    try:
+        with TestClient(create_app()) as client:
+            response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/articles",
+                params={"project_id": "project_1", "page": 1, "page_size": 20},
+                headers={"X-API-Key": "valid-key"},
+            )
+    finally:
+        integration_app.dependency_overrides.clear()
+        settings.integration_api_keys = original_keys
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert payload["page"] == 1
+    assert payload["page_size"] == 20
+    assert len(payload["items"]) == 2
+
+    first = payload["items"][0]
+    assert first["id"] == "article_1"
+    assert first["title"] == "Article One"
+    assert first["status"] == "draft"
+    assert first["publish_status"] == "scheduled"
+    assert "modular_document" not in first
+    assert "rendered_html" not in first
 
 
 def test_integration_article_requires_api_key() -> None:

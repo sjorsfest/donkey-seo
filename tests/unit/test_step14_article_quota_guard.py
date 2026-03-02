@@ -176,11 +176,39 @@ async def test_step14_persists_only_up_to_quota_capacity(
         "app.services.steps.content.step_14_article_writer.schedule_publication_webhook_for_article",
         AsyncMock(),
     )
+    monkeypatch.setattr(
+        "app.services.steps.content.step_14_article_writer.analyze_keyword_usage",
+        AsyncMock(
+            return_value=(
+                {
+                    "framework_version": "keyword-coverage-v1",
+                    "article_version": 1,
+                    "summary": {"used_keywords_total": 1},
+                    "keywords": [],
+                },
+                [],
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.steps.content.step_14_article_writer.with_keyword_coverage_report",
+        lambda qa_report, keyword_report: {
+            **(qa_report or {}),
+            "keyword_coverage": keyword_report,
+        },
+    )
+    persist_usage_mock = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.steps.content.step_14_article_writer.persist_article_keyword_usages",
+        persist_usage_mock,
+    )
 
     created_articles: list[str] = []
+    created_qa_reports: list[dict[str, object]] = []
 
     def _create_article(_session: object, dto: object) -> SimpleNamespace:
         created_articles.append(str(dto.brief_id))  # type: ignore[attr-defined]
+        created_qa_reports.append(dict(dto.qa_report))  # type: ignore[attr-defined]
         return SimpleNamespace(id=f"article-{len(created_articles)}")
 
     monkeypatch.setattr(
@@ -196,6 +224,8 @@ async def test_step14_persists_only_up_to_quota_capacity(
 
     assert usage_calls >= 2
     assert created_articles == ["brief-1"]
+    assert "keyword_coverage" in created_qa_reports[0]
     assert output.articles_generated == 1
     assert output.articles_failed == 1
     assert any(item["reason"] == "article_quota_reached" for item in output.failures)
+    assert persist_usage_mock.await_count == 1

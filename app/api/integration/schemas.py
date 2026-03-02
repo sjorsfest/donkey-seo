@@ -17,8 +17,7 @@ class IntegrationIndexResponse(BaseModel):
     openapi_path: str
     guide_path: str
     guide_markdown_path: str
-    modular_document_guide_path: str | None = None
-    webhook_guide_path: str | None = None
+    article_list_path_template: str
     article_latest_path_template: str
     article_version_path_template: str
     article_publication_patch_path_template: str
@@ -34,28 +33,6 @@ class IntegrationGuideResponse(BaseModel):
     modular_document_contract: dict[str, Any]
     modular_document_field_reference: dict[str, Any]
     block_type_reference: dict[str, Any]
-    webhook_contract: dict[str, Any]
-    client_env_vars: dict[str, str]
-    client_env_template: str
-
-
-class IntegrationModularDocumentGuideResponse(BaseModel):
-    """Detailed field and block reference for modular documents."""
-
-    title: str
-    schema_version: str
-    overview: str
-    modular_document_contract: dict[str, Any]
-    modular_document_field_reference: dict[str, Any]
-    block_type_reference: dict[str, Any]
-
-
-class IntegrationWebhookGuideResponse(BaseModel):
-    """Publication webhook event and signature contract reference."""
-
-    title: str
-    schema_version: str
-    overview: str
     webhook_contract: dict[str, Any]
     client_env_vars: dict[str, str]
     client_env_template: str
@@ -81,6 +58,33 @@ class IntegrationArticleVersionResponse(BaseModel):
     created_by_regeneration: bool
     created_at: datetime
     updated_at: datetime
+
+
+class IntegrationArticleSummaryResponse(BaseModel):
+    """Lightweight article summary for listing integrations."""
+
+    id: str
+    project_id: str
+    brief_id: str
+    title: str
+    slug: str
+    primary_keyword: str
+    current_version: int
+    status: str
+    publish_status: str | None
+    published_at: datetime | None
+    published_url: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IntegrationArticleListResponse(BaseModel):
+    """Paginated lightweight article list for integrations."""
+
+    items: list[IntegrationArticleSummaryResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class IntegrationArticlePublicationPatchRequest(BaseModel):

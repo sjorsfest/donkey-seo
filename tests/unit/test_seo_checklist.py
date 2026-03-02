@@ -135,3 +135,34 @@ def test_keyword_density_out_of_band_is_soft_warning_only() -> None:
 
     assert "keyword_density_soft_band" in report.soft_warnings
     assert "keyword_density_soft_band" not in report.hard_failures
+
+
+def test_keyword_requirements_relaxed_when_topic_anchor_mismatches_keyword() -> None:
+    document = _base_document()
+    rendered_html = render_modular_document(document)
+
+    report = run_deterministic_checklist(
+        document,
+        rendered_html,
+        primary_keyword="arizer solo 2",
+        topic_anchor="Best Developer Tools for Solo Builders & Startups in 2026",
+        page_type="guide",
+        search_intent="informational",
+        required_sections=["Overview"],
+        forbidden_claims=[],
+        target_word_count_min=10,
+        target_word_count_max=1000,
+        min_internal_links=0,
+        min_external_links=0,
+        require_cta=False,
+        first_party_domain="donkey.support",
+        compliance_notes=[],
+        brief_text_fields=[],
+    )
+
+    assert "primary_keyword_in_h1" not in report.hard_failures
+    assert "primary_keyword_first_150_words" not in report.hard_failures
+    assert "primary_keyword_in_h2" not in report.hard_failures
+    assert "primary_keyword_in_h1" in report.soft_warnings
+    assert "primary_keyword_first_150_words" in report.soft_warnings
+    assert "primary_keyword_in_h2" in report.soft_warnings

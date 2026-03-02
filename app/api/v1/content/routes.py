@@ -53,6 +53,12 @@ from app.services.author_profiles import (
     author_modular_document_payload,
     choose_random_author,
 )
+from app.services.content_keyword_tracking import (
+    analyze_keyword_usage,
+    persist_article_keyword_usages,
+    sync_brief_keywords,
+    with_keyword_coverage_report,
+)
 from app.services.content_renderer import render_modular_document
 from app.services.featured_image_generation import (
     FeaturedImageGenerationService,
@@ -415,6 +421,12 @@ async def create_brief(
             proposed_publication_date=brief_data.proposed_publication_date,
         ),
     )
+    await sync_brief_keywords(
+        session,
+        brief=brief,
+        primary_keyword=brief_data.primary_keyword,
+        supporting_keywords=[],
+    )
     await session.flush()
     await session.refresh(brief)
 
@@ -461,10 +473,25 @@ async def update_brief(
         )
 
     update_data = brief_data.model_dump(exclude_unset=True)
+    if "primary_keyword" in update_data and not str(update_data.get("primary_keyword") or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="primary_keyword cannot be empty",
+        )
     publication_date_updated = "proposed_publication_date" in update_data
     brief.patch(
         session,
         ContentBriefPatchDTO.from_partial(update_data),
+    )
+    await sync_brief_keywords(
+        session,
+        brief=brief,
+        primary_keyword=str(update_data.get("primary_keyword") or brief.primary_keyword or ""),
+        supporting_keywords=(
+            update_data.get("supporting_keywords")
+            if isinstance(update_data.get("supporting_keywords"), list)
+            else ([] if "supporting_keywords" in update_data else (brief.supporting_keywords or []))
+        ),
     )
 
     if publication_date_updated:
@@ -725,6 +752,24 @@ async def regenerate_article(
     artifact.rendered_html = render_modular_document(artifact.modular_document)
 
     next_version = article.current_version + 1
+    keyword_usages = []
+    try:
+        keyword_coverage_report, keyword_usages = await analyze_keyword_usage(
+            session=session,
+            brief=brief,
+            document=artifact.modular_document,
+            article_version_number=next_version,
+        )
+        artifact.qa_report = with_keyword_coverage_report(
+            artifact.qa_report,
+            keyword_coverage_report,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Keyword coverage analysis failed during regeneration",
+            extra={"brief_id": brief_id, "article_id": str(article.id), "error": str(exc)},
+        )
+
     article.patch(
         session,
         ContentArticlePatchDTO.from_partial(
@@ -761,6 +806,13 @@ async def regenerate_article(
             generation_temperature=artifact.generation_temperature,
             created_by_regeneration=True,
         ),
+    )
+    await persist_article_keyword_usages(
+        session=session,
+        article_id=str(article.id),
+        article_version_number=next_version,
+        brief_id=str(brief.id),
+        keyword_usages=keyword_usages,
     )
 
     await session.flush()

@@ -64,6 +64,21 @@ def _heading_tag(level: int) -> str:
     return f"h{level}"
 
 
+def _fallback_items_from_table_rows(value: Any) -> list[str]:
+    items: list[str] = []
+    for row in _as_list(value):
+        if not isinstance(row, list):
+            continue
+        cells = [str(cell).strip() for cell in row if str(cell).strip()]
+        if not cells:
+            continue
+        if len(cells) >= 2:
+            items.append(f"{cells[0]}: {'; '.join(cells[1:])}")
+        else:
+            items.append(cells[0])
+    return items
+
+
 def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tuple[str, bool]:
     block_type = str(block.get("block_type") or "section")
     if block_type not in BLOCK_TYPES:
@@ -88,13 +103,24 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
         heading_tag = _heading_tag(heading_level)
         heading_html = f"<{heading_tag}>{heading}</{heading_tag}>" if heading else ""
         body_html = f"<p>{body}</p>" if body else ""
+        items = _as_list(block.get("items"))
+        list_html = ""
+        if items:
+            list_tag = "ol" if block.get("ordered") else "ul"
+            item_html = "".join(f"<li>{_safe_text(item)}</li>" for item in items)
+            list_html = f"<{list_tag}>{item_html}</{list_tag}>"
         return (
-            f"<{tag} data-block-type=\"{block_type}\">{heading_html}{body_html}{_render_links(links)}</{tag}>",
+            (
+                f"<{tag} data-block-type=\"{block_type}\">"
+                f"{heading_html}{body_html}{list_html}{_render_links(links)}</{tag}>"
+            ),
             h1_used,
         )
 
     if block_type in {"list", "steps"}:
         items = _as_list(block.get("items"))
+        if not items:
+            items = _fallback_items_from_table_rows(block.get("table_rows"))
         list_tag = "ol" if block_type == "steps" or block.get("ordered") else "ul"
         heading_html = f"<h2>{heading}</h2>" if heading else ""
         item_html = "".join(f"<li>{_safe_text(item)}</li>" for item in items)
