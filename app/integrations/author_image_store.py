@@ -84,6 +84,30 @@ class AuthorImageStore:
             ExpiresIn=expires_in,
         )
 
+    def create_signed_upload_url(
+        self,
+        *,
+        object_key: str,
+        ttl_seconds: int | None = None,
+        content_type: str | None = None,
+    ) -> str:
+        """Mint signed PUT URL for direct profile image uploads from clients."""
+        self._validate_config()
+        expires_in = int(ttl_seconds or self.settings.signed_url_ttl_seconds)
+        params: dict[str, Any] = {
+            "Bucket": self.settings.cloudflare_r2_bucket,
+            "Key": object_key,
+        }
+        if content_type:
+            params["ContentType"] = content_type
+
+        client = self._get_client()
+        return client.generate_presigned_url(
+            "put_object",
+            Params=params,
+            ExpiresIn=expires_in,
+        )
+
     async def _download_image_bytes(self, source_url: str) -> tuple[bytes, str]:
         timeout = httpx.Timeout(30.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -133,9 +157,16 @@ class AuthorImageStore:
         )
 
     @classmethod
+    def extension_for_mime_type(cls, mime_type: str) -> str:
+        """Return a best-effort file extension for a MIME type."""
+        normalized = str(mime_type or "").split(";")[0].strip().lower()
+        return cls._MIME_TO_EXTENSION.get(normalized, ".bin")
+
+    @classmethod
     def _resolve_extension(cls, mime_type: str, source_url: str) -> str:
-        if mime_type in cls._MIME_TO_EXTENSION:
-            return cls._MIME_TO_EXTENSION[mime_type]
+        extension = cls.extension_for_mime_type(mime_type)
+        if extension != ".bin":
+            return extension
 
         source_url_lower = source_url.lower()
         for extension in (".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif", ".ico", ".avif"):

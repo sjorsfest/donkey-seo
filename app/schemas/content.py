@@ -177,6 +177,40 @@ class RegenerateArticleRequest(BaseModel):
     reason: str | None = None
 
 
+class ContentPillarReference(BaseModel):
+    """Pillar reference for article responses."""
+
+    id: str
+    name: str
+    slug: str
+
+
+class ContentPillarResponse(BaseModel):
+    """Pillar detail payload for frontend navigation."""
+
+    id: str
+    name: str
+    slug: str
+    description: str | None
+    status: str
+    source: str
+    locked: bool
+    primary_brief_count: int = 0
+    secondary_brief_count: int = 0
+    total_brief_count: int = 0
+    primary_article_count: int = 0
+    published_primary_article_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContentPillarListResponse(BaseModel):
+    """List payload for project pillars."""
+
+    items: list[ContentPillarResponse]
+    total: int
+
+
 class ContentArticleResponse(BaseModel):
     """Canonical content article summary."""
 
@@ -194,6 +228,9 @@ class ContentArticleResponse(BaseModel):
     current_version: int
     generation_model: str | None
     generated_at: datetime
+    primary_pillar: ContentPillarReference | None = None
+    secondary_pillars: list[ContentPillarReference] = Field(default_factory=list)
+    pillar_assignment_confidence: float | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -4,7 +4,7 @@ import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 
 from app.api.v1.content.constants import (
     CONTENT_ARTICLE_NOT_FOUND_DETAIL,
@@ -25,6 +25,7 @@ from app.models.content import (
     ContentFeaturedImage,
     WriterInstructions,
 )
+from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
 from app.models.generated_dtos import (
     ContentArticlePatchDTO,
     ContentArticleVersionCreateDTO,
@@ -45,6 +46,9 @@ from app.schemas.content import (
     ContentCalendarItemResponse,
     ContentCalendarItemState,
     ContentCalendarResponse,
+    ContentPillarListResponse,
+    ContentPillarReference,
+    ContentPillarResponse,
     RegenerateArticleRequest,
     WriterInstructionsResponse,
 )
@@ -235,6 +239,111 @@ def _resolve_calendar_state(
     if has_writer_instructions:
         return "writer_instructions_ready"
     return "brief_ready"
+
+
+async def _load_pillar_payloads_for_briefs(
+    *,
+    session: DbSession,
+    project_id: str,
+    brief_ids: list[str],
+) -> dict[str, dict]:
+    if not brief_ids:
+        return {}
+
+    result = await session.execute(
+        select(ContentBriefPillarAssignment, ContentPillar)
+        .join(ContentPillar, ContentPillar.id == ContentBriefPillarAssignment.pillar_id)
+        .where(
+            ContentBriefPillarAssignment.project_id == project_id,
+            ContentBriefPillarAssignment.brief_id.in_(brief_ids),
+            ContentPillar.status == "active",
+        )
+        .order_by(
+            ContentBriefPillarAssignment.brief_id.asc(),
+            ContentBriefPillarAssignment.relationship_type.asc(),
+            ContentBriefPillarAssignment.created_at.asc(),
+        )
+    )
+
+    payload: dict[str, dict] = {}
+    for assignment, pillar in result.all():
+        brief_id = str(assignment.brief_id)
+        entry = payload.setdefault(
+            brief_id,
+            {"primary": None, "secondary": [], "confidence": None, "secondary_ids": set()},
+        )
+        ref = ContentPillarReference(
+            id=str(pillar.id),
+            name=pillar.name,
+            slug=pillar.slug,
+        )
+        relationship_type = str(assignment.relationship_type or "").strip().lower()
+        if relationship_type == "primary" and entry["primary"] is None:
+            entry["primary"] = ref
+            entry["confidence"] = assignment.confidence_score
+            continue
+        if str(pillar.id) in entry["secondary_ids"]:
+            continue
+        entry["secondary"].append(ref)
+        entry["secondary_ids"].add(str(pillar.id))
+
+    for entry in payload.values():
+        entry.pop("secondary_ids", None)
+
+    return payload
+
+
+def _article_response(
+    article: ContentArticle,
+    *,
+    pillar_payload: dict | None,
+) -> ContentArticleResponse:
+    payload = {
+        "id": str(article.id),
+        "project_id": str(article.project_id),
+        "brief_id": str(article.brief_id),
+        "author_id": str(article.author_id) if article.author_id is not None else None,
+        "title": article.title,
+        "slug": article.slug,
+        "primary_keyword": article.primary_keyword,
+        "status": article.status,
+        "publish_status": article.publish_status,
+        "published_at": article.published_at,
+        "published_url": article.published_url,
+        "current_version": article.current_version,
+        "generation_model": article.generation_model,
+        "generated_at": article.generated_at,
+        "created_at": article.created_at,
+        "updated_at": article.updated_at,
+        "primary_pillar": pillar_payload.get("primary") if isinstance(pillar_payload, dict) else None,
+        "secondary_pillars": (
+            pillar_payload.get("secondary")
+            if isinstance(pillar_payload, dict)
+            else []
+        ),
+        "pillar_assignment_confidence": (
+            pillar_payload.get("confidence")
+            if isinstance(pillar_payload, dict)
+            else None
+        ),
+    }
+    return ContentArticleResponse.model_validate(payload)
+
+
+def _article_detail_response(
+    article: ContentArticle,
+    *,
+    pillar_payload: dict | None,
+) -> ContentArticleDetailResponse:
+    base = _article_response(article, pillar_payload=pillar_payload).model_dump()
+    base.update(
+        {
+            "modular_document": article.modular_document,
+            "rendered_html": article.rendered_html,
+            "qa_report": article.qa_report,
+        }
+    )
+    return ContentArticleDetailResponse.model_validate(base)
 
 
 @router.get(
@@ -591,6 +700,7 @@ async def list_articles(
     page: int = Query(DEFAULT_PAGE, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     status_filter: str | None = Query(None, alias="status"),
+    pillar_slug: str | None = Query(None),
 ) -> ContentArticleListResponse:
     """List generated content articles for a project."""
     await get_user_project(project_id, current_user, session)
@@ -598,6 +708,20 @@ async def list_articles(
     query = select(ContentArticle).where(ContentArticle.project_id == project_id)
     if status_filter:
         query = query.where(ContentArticle.status == status_filter)
+    if pillar_slug:
+        query = (
+            query.join(
+                ContentBriefPillarAssignment,
+                ContentBriefPillarAssignment.brief_id == ContentArticle.brief_id,
+            )
+            .join(ContentPillar, ContentPillar.id == ContentBriefPillarAssignment.pillar_id)
+            .where(
+                ContentBriefPillarAssignment.project_id == project_id,
+                ContentPillar.slug == pillar_slug,
+                ContentPillar.status == "active",
+            )
+            .distinct()
+        )
 
     total = await session.scalar(select(func.count()).select_from(query.subquery())) or 0
     offset = (page - 1) * page_size
@@ -605,9 +729,17 @@ async def list_articles(
         query.order_by(ContentArticle.created_at.desc()).offset(offset).limit(page_size)
     )
     items = result.scalars().all()
+    pillar_payloads = await _load_pillar_payloads_for_briefs(
+        session=session,
+        project_id=project_id,
+        brief_ids=[str(item.brief_id) for item in items],
+    )
 
     return ContentArticleListResponse(
-        items=[ContentArticleResponse.model_validate(item) for item in items],
+        items=[
+            _article_response(item, pillar_payload=pillar_payloads.get(str(item.brief_id)))
+            for item in items
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -625,7 +757,7 @@ async def get_article_for_brief(
     brief_id: str,
     current_user: CurrentUser,
     session: DbSession,
-) -> ContentArticle:
+) -> ContentArticleDetailResponse:
     """Get canonical generated article for a brief."""
     await get_user_project(project_id, current_user, session)
 
@@ -642,7 +774,15 @@ async def get_article_for_brief(
             detail=CONTENT_ARTICLE_NOT_FOUND_DETAIL,
         )
 
-    return article
+    pillar_payloads = await _load_pillar_payloads_for_briefs(
+        session=session,
+        project_id=project_id,
+        brief_ids=[str(article.brief_id)],
+    )
+    return _article_detail_response(
+        article,
+        pillar_payload=pillar_payloads.get(str(article.brief_id)),
+    )
 
 
 @router.post(
@@ -657,7 +797,7 @@ async def regenerate_article(
     payload: RegenerateArticleRequest,
     current_user: CurrentUser,
     session: DbSession,
-) -> ContentArticle:
+) -> ContentArticleDetailResponse:
     """Regenerate canonical article and store an immutable version snapshot."""
     project = await get_user_project(project_id, current_user, session)
 
@@ -817,7 +957,15 @@ async def regenerate_article(
 
     await session.flush()
     await session.refresh(article)
-    return article
+    pillar_payloads = await _load_pillar_payloads_for_briefs(
+        session=session,
+        project_id=project_id,
+        brief_ids=[str(article.brief_id)],
+    )
+    return _article_detail_response(
+        article,
+        pillar_payload=pillar_payloads.get(str(article.brief_id)),
+    )
 
 
 @router.get(

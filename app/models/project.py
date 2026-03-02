@@ -22,6 +22,7 @@ from app.models.generated_dtos import ProjectCreateDTO, ProjectPatchDTO
 if TYPE_CHECKING:
     from app.models.author import Author
     from app.models.brand import BrandProfile
+    from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
     from app.models.discovery_learning import DiscoveryIterationLearning
     from app.models.content import ContentArticle, ContentBrief, ContentFeaturedImage
     from app.models.discovery_snapshot import DiscoveryTopicSnapshot
@@ -137,6 +138,16 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
     )
     content_articles: Mapped[list[ContentArticle]] = relationship(
         "ContentArticle",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    content_pillars: Mapped[list[ContentPillar]] = relationship(
+        "ContentPillar",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    content_pillar_assignments: Mapped[list[ContentBriefPillarAssignment]] = relationship(
+        "ContentBriefPillarAssignment",
         back_populates="project",
         cascade="all, delete-orphan",
     )

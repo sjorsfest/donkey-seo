@@ -105,3 +105,28 @@ class AuthorListResponse(BaseModel):
 
     items: list[AuthorResponse]
     total: int
+
+
+class AuthorProfileImageSignedUploadRequest(BaseModel):
+    """Request payload to mint a signed author profile-image upload URL."""
+
+    content_type: str = Field(min_length=1, max_length=100)
+
+    @field_validator("content_type")
+    @classmethod
+    def validate_content_type(cls, value: str) -> str:
+        normalized = str(value).split(";")[0].strip().lower()
+        if not normalized.startswith("image/"):
+            raise ValueError("content_type must be an image MIME type")
+        return normalized
+
+
+class AuthorProfileImageSignedUploadResponse(BaseModel):
+    """Signed upload URL details for direct client upload."""
+
+    author_id: str
+    object_key: str
+    upload_method: str = "PUT"
+    upload_url: str
+    expires_in_seconds: int
+    required_headers: dict[str, str] = Field(default_factory=dict)

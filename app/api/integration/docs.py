@@ -362,13 +362,27 @@ Donkey SEO integration API for external programs.
 
 This API is split into:
 - public docs/guide routes (no authentication)
-- API-key protected content routes for machine-to-machine article retrieval
-  and publication callbacks
+- API-key protected content routes for machine-to-machine article retrieval,
+  pillar navigation retrieval, and publication callbacks
 
 Core client contract:
 - Donkey SEO is the source of truth for immutable article versions.
 - Your integration fetches versions, preserves `modular_document` structure,
   publishes to your CMS/viewer, and reports publication state back.
+
+Agent execution recommendation:
+- If your agent supports planning mode, start in planning mode before changing code.
+- Use planning mode to define storage schema, parser behavior, webhook handling,
+  pillar/disambiguation routing, and publication callback updates before implementation.
+- After planning, execute the approved implementation plan.
+
+How pillar taxonomy works:
+- Fetch project pillars from `GET __INTEGRATION_BASE_PATH__/pillars`.
+- Use pillars as category/navigation primitives in your frontend.
+- Main-page requirement: render active pillars in the footer as links to
+  disambiguation pages (for example `/pillars/{pillar.slug}` or your CMS equivalent).
+- Article list responses include `primary_pillar`, `secondary_pillars`, and
+  `pillar_assignment_confidence` to support navigation and grouping.
 
 How `modular_document` works:
 - It is the canonical structured article payload, not just plain text.
@@ -427,6 +441,18 @@ Use this guide if you are building a Donkey SEO client with or without LLM codin
 Goal: ingest immutable article versions, preserve structured content exactly, publish via
 CMS/viewer, and report publication state back to Donkey SEO.
 
+## 0) Agent Workflow (Planning Mode First)
+
+If your coding agent supports planning mode, start in planning mode before implementation.
+Plan at least:
+- immutable storage model and version keying,
+- parser mapping for `modular_document` block types,
+- webhook validation + retry/idempotency handling,
+- pillar/disambiguation page wiring and footer link rendering,
+- publication status PATCH flow.
+
+Then implement the approved plan.
+
 ## 1) Credentials and Environment Variables
 
 Use these environment variables in your client config or `.env.example`:
@@ -444,8 +470,18 @@ How to obtain values:
 
 ## 2) Endpoints To Implement
 
+Production API base URL:
+- `https://api.donkeyseo.io`
+
+How to compose endpoint URLs:
+- All route templates below are relative paths.
+- Production calls should use `https://api.donkeyseo.io` + route path.
+- Example: `https://api.donkeyseo.io/api/v1/integration/articles?project_id=...`
+
 - `GET __INTEGRATION_BASE_PATH__/articles?project_id={project_id}&page={page}&page_size={page_size}`
   - Returns a lightweight paginated list for article selection/sync.
+- `GET __INTEGRATION_BASE_PATH__/pillars?project_id={project_id}&include_archived={bool_optional}`
+  - Returns pillar categories plus assignment/article counts for navigation UIs.
 - `GET __INTEGRATION_BASE_PATH__/article/{article_id}?project_id={project_id}`
   - Returns latest immutable article version.
 - `GET __INTEGRATION_BASE_PATH__/article/{article_id}/versions/{version_number}`
@@ -458,6 +494,136 @@ Publication callback payload fields:
 - `publish_status` (`scheduled|published|failed`)
 - `published_at` (ISO datetime, required when `publish_status=published`)
 - `published_url` (URL, required when `publish_status=published`)
+
+Pillar navigation requirement:
+- You MUST render active pillars in the footer of the main page.
+- Each footer pillar link should point to a disambiguation page for that category.
+- Recommended URL shape: `/pillars/{pillar.slug}` (or your CMS equivalent).
+
+Example endpoint response payloads:
+
+`GET __INTEGRATION_BASE_PATH__/articles?project_id=proj_123&page=1&page_size=2`
+```json
+{
+  "items": [
+    {
+      "id": "c38f848d-66d6-4c47-b89a-30aa5a6dc881",
+      "project_id": "proj_123",
+      "brief_id": "ddf6c8d8-7a7c-4cf8-b7d8-8f84a80af872",
+      "title": "How to Scale Programmatic SEO Content",
+      "slug": "how-to-scale-programmatic-seo-content",
+      "primary_keyword": "programmatic seo",
+      "current_version": 3,
+      "status": "approved",
+      "publish_status": "published",
+      "published_at": "2026-03-02T09:32:14Z",
+      "published_url": "https://example.com/blog/programmatic-seo",
+      "primary_pillar": {
+        "id": "pillar_support",
+        "name": "Support Automation",
+        "slug": "support-automation"
+      },
+      "secondary_pillars": [
+        {
+          "id": "pillar_workflows",
+          "name": "Workflow Integrations",
+          "slug": "workflow-integrations"
+        }
+      ],
+      "pillar_assignment_confidence": 0.82,
+      "created_at": "2026-02-28T16:04:01Z",
+      "updated_at": "2026-03-02T09:32:14Z"
+    }
+  ],
+  "total": 47,
+  "page": 1,
+  "page_size": 2
+}
+```
+
+`GET __INTEGRATION_BASE_PATH__/pillars?project_id=proj_123`
+```json
+{
+  "items": [
+    {
+      "id": "pillar_support",
+      "project_id": "proj_123",
+      "name": "Support Automation",
+      "slug": "support-automation",
+      "description": "Customer support process and automation topics.",
+      "status": "active",
+      "source": "auto",
+      "locked": false,
+      "primary_brief_count": 11,
+      "secondary_brief_count": 4,
+      "total_brief_count": 15,
+      "primary_article_count": 9,
+      "published_primary_article_count": 6,
+      "created_at": "2026-03-01T12:04:01Z",
+      "updated_at": "2026-03-02T09:32:14Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+`GET __INTEGRATION_BASE_PATH__/article/{article_id}?project_id={project_id}`
+```json
+{
+  "id": "e3f99b38-f1e1-4e6b-8f43-f6eec13c1406",
+  "article_id": "c38f848d-66d6-4c47-b89a-30aa5a6dc881",
+  "project_id": "proj_123",
+  "version_number": 3,
+  "title": "How to Scale Programmatic SEO Content",
+  "slug": "how-to-scale-programmatic-seo-content",
+  "primary_keyword": "programmatic seo",
+  "modular_document": {
+    "schema_version": "1.0",
+    "seo_meta": {
+      "h1": "How to Scale Programmatic SEO Content",
+      "meta_title": "Scale Programmatic SEO: A Practical Guide",
+      "meta_description": "Operational workflow and architecture for scaling programmatic SEO.",
+      "slug": "how-to-scale-programmatic-seo-content",
+      "primary_keyword": "programmatic seo"
+    },
+    "conversion_plan": {
+      "primary_intent": "informational",
+      "cta_strategy": ["Offer implementation checklist at conclusion"]
+    },
+    "blocks": [
+      {
+        "block_type": "hero",
+        "semantic_tag": "header",
+        "heading": "How to Scale Programmatic SEO Content",
+        "level": 1,
+        "body": "A production-ready workflow for planning, generating, and publishing at scale."
+      }
+    ]
+  },
+  "rendered_html": "<h1>How to Scale Programmatic SEO Content</h1><p>...</p>",
+  "qa_report": null,
+  "status": "approved",
+  "change_reason": "Expanded examples and tightened structure.",
+  "generation_model": "gpt-5",
+  "generation_temperature": 0.2,
+  "created_by_regeneration": false,
+  "created_at": "2026-03-02T08:54:07Z",
+  "updated_at": "2026-03-02T09:14:55Z"
+}
+```
+
+`PATCH __INTEGRATION_BASE_PATH__/article/{article_id}/publication?project_id={project_id}`
+response:
+```json
+{
+  "article_id": "c38f848d-66d6-4c47-b89a-30aa5a6dc881",
+  "project_id": "proj_123",
+  "publish_status": "published",
+  "published_at": "2026-03-02T09:32:14Z",
+  "published_url": "https://example.com/blog/programmatic-seo",
+  "updated_at": "2026-03-02T09:32:15Z"
+}
+```
 
 ## 3) Immutable Storage Rules
 
@@ -608,15 +774,75 @@ Idempotency:
 - Use `event_id` as idempotency key.
 - Duplicate `event_id` deliveries must be treated as retries.
 
+Example webhook delivery (potential shape):
+
+Headers:
+```text
+Content-Type: application/json
+X-Donkey-Event: content.article.publish_requested
+X-Donkey-Delivery-Id: pubwh_01JMR5V6QTYJ4S0P64F62Y43PM
+X-Donkey-Timestamp: 1772446320
+X-Donkey-Signature: sha256=33f1f2e40209f2f4b31bbf7dad0d13cc6fd41fb27690f58a1806dc4d2f0ab1f8
+```
+
+Body:
+```json
+{
+  "event_id": "evt_01JMR5V6QAJ46R12VYAAW4M5A7",
+  "event_type": "content.article.publish_requested",
+  "occurred_at": "2026-03-02T09:32:00Z",
+  "project": {
+    "id": "proj_123",
+    "domain": "example.com",
+    "locale": "en-US"
+  },
+  "article": {
+    "article_id": "c38f848d-66d6-4c47-b89a-30aa5a6dc881",
+    "brief_id": "ddf6c8d8-7a7c-4cf8-b7d8-8f84a80af872",
+    "version_number": 3,
+    "title": "How to Scale Programmatic SEO Content",
+    "slug": "how-to-scale-programmatic-seo-content",
+    "primary_keyword": "programmatic seo",
+    "proposed_publication_date": "2026-03-03"
+  },
+  "modular_document": {
+    "schema_version": "1.0",
+    "seo_meta": {
+      "h1": "How to Scale Programmatic SEO Content",
+      "meta_title": "Scale Programmatic SEO: A Practical Guide",
+      "meta_description": "Operational workflow and architecture for scaling programmatic SEO.",
+      "slug": "how-to-scale-programmatic-seo-content",
+      "primary_keyword": "programmatic seo"
+    },
+    "conversion_plan": {
+      "primary_intent": "informational",
+      "cta_strategy": ["Offer implementation checklist at conclusion"]
+    },
+    "blocks": [
+      {
+        "block_type": "hero",
+        "semantic_tag": "header",
+        "heading": "How to Scale Programmatic SEO Content",
+        "level": 1,
+        "body": "A production-ready workflow for planning, generating, and publishing at scale."
+      }
+    ]
+  },
+  "rendered_html": "<h1>How to Scale Programmatic SEO Content</h1><p>...</p>"
+}
+```
+
 ## 8) End-to-End Client Flow
 
 1. Receive webhook `content.article.publish_requested`.
 2. Verify signature using `DONKEY_SEO_WEBHOOK_SECRET`.
 3. Fetch latest/target article version with `DONKEY_SEO_API_KEY`.
-4. Persist raw immutable payload.
-5. Normalize `modular_document` and map blocks to CMS/viewer components.
-6. Publish/stage content.
-7. PATCH publication status back to Donkey SEO.
+4. Fetch project pillars from `GET __INTEGRATION_BASE_PATH__/pillars?project_id=...`.
+5. Persist raw immutable payload.
+6. Normalize `modular_document` and map blocks to CMS/viewer components.
+7. Render main-page footer pillar links pointing to pillar disambiguation pages.
+8. Publish/stage content.
+9. PATCH publication status back to Donkey SEO.
 
 ## 9) Best-Practice Architecture (Recommended, Not Required)
 
@@ -624,6 +850,8 @@ Recommended publishing target:
 1. If you have a CMS/blog platform, integrate Donkey SEO output into that CMS.
 2. If you do not have a CMS, build an in-product article viewer component that matches
    your product design system and renders Donkey SEO blocks semantically.
+3. Build pillar disambiguation pages and expose them via a footer section on the main page.
+4. Keep footer links aligned with active pillars from `/integration/pillars`.
 
 Recommended storage model:
 1. Create an `article`/`blogpost` model in your database as the canonical local entity.

@@ -50,3 +50,6 @@ def test_content_article_response_accepts_optional_author_id() -> None:
     )
 
     assert article.author_id == "author_1"
+    assert article.primary_pillar is None
+    assert article.secondary_pillars == []
+    assert article.pillar_assignment_confidence is None

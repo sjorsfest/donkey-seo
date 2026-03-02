@@ -282,12 +282,16 @@ Start content-only module:
 - `GET /api/v1/content/{project_id}/articles/{article_id}/versions/{version_number}` - Get article version
 
 ### Integration API (Public docs + API-key protected data routes)
+Production API base URL: `https://api.donkeyseo.io`
+
 - `GET /api/v1/integration/docs` - Integration Swagger docs (unprotected)
 - `GET /api/v1/integration/openapi.json` - Integration OpenAPI schema (unprotected)
 - `GET /api/v1/integration/guide/donkey-client` - Client implementation guide (unprotected)
 - `GET /api/v1/integration/guide/donkey-client.md` - Same guide as markdown (unprotected)
 - `GET /api/v1/integration/articles?project_id={project_id}&page={page}&page_size={page_size}`
   - Lightweight article list (id/title/status/publication metadata)
+- `GET /api/v1/integration/pillars?project_id={project_id}&include_archived={bool_optional}`
+  - Pillar/category list with brief and article counts for frontend navigation
 - `GET /api/v1/integration/article/{article_id}?project_id={project_id}` - Latest article version
 - `GET /api/v1/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
   - Specific immutable article version

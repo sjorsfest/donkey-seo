@@ -28,6 +28,13 @@ class _FakeExecuteResult:
     def scalar_one_or_none(self) -> Any:
         return self._value
 
+    def all(self) -> list[Any]:
+        if isinstance(self._value, list):
+            return list(self._value)
+        if self._value is None:
+            return []
+        return [self._value]
+
     def scalars(self) -> "_FakeScalarCollection":
         if isinstance(self._value, list):
             return _FakeScalarCollection(self._value)
@@ -110,7 +117,33 @@ class _FakeArticleListSession:
         self._calls += 1
         if self._calls == 1:
             return _FakeExecuteResult(self._total)
-        return _FakeExecuteResult(self._articles)
+        if self._calls == 2:
+            return _FakeExecuteResult(self._articles)
+        return _FakeExecuteResult([])
+
+
+class _FakePillarListSession:
+    def __init__(
+        self,
+        *,
+        pillars: list[Any],
+        assignment_rows: list[tuple[Any, Any, Any]],
+        article_rows: list[tuple[Any, Any, Any]],
+    ) -> None:
+        self._pillars = pillars
+        self._assignment_rows = assignment_rows
+        self._article_rows = article_rows
+        self._calls = 0
+
+    async def execute(self, _query: Any) -> _FakeExecuteResult:
+        self._calls += 1
+        if self._calls == 1:
+            return _FakeExecuteResult(self._pillars)
+        if self._calls == 2:
+            return _FakeExecuteResult(self._assignment_rows)
+        if self._calls == 3:
+            return _FakeExecuteResult(self._article_rows)
+        return _FakeExecuteResult([])
 
 
 def test_integration_docs_and_guide_are_public() -> None:
@@ -122,11 +155,15 @@ def test_integration_docs_and_guide_are_public() -> None:
     assert docs_response.status_code == 200
     assert openapi_response.status_code == 200
     assert "/articles" in openapi_response.json()["paths"]
+    assert "/pillars" in openapi_response.json()["paths"]
     assert "/article/{article_id}" in openapi_response.json()["paths"]
     assert "/article/{article_id}/publication" in openapi_response.json()["paths"]
     assert guide_response.status_code == 200
     guide_payload = guide_response.json()
     assert "modular_document" in guide_payload["markdown"]
+    assert "/pillars" in guide_payload["markdown"]
+    assert "footer" in guide_payload["markdown"].lower()
+    assert "planning mode" in guide_payload["markdown"].lower()
     assert "content.article.publish_requested" in guide_payload["markdown"]
     assert guide_payload["modular_document_contract"]["schema_version"] == "1.0"
     assert "author" in guide_payload["modular_document_contract"]
@@ -158,7 +195,14 @@ def test_integration_index_exposes_publication_callback_template() -> None:
     payload = response.json()
     assert (
         payload["article_list_path_template"]
-        == "/articles?project_id={project_id}&page={page}&page_size={page_size}"
+        == (
+            "/articles?project_id={project_id}&page={page}&page_size={page_size}"
+            "&pillar_slug={pillar_slug_optional}"
+        )
+    )
+    assert (
+        payload["pillar_list_path_template"]
+        == "/pillars?project_id={project_id}&include_archived={include_archived_optional}"
     )
     assert (
         payload["article_publication_patch_path_template"]
@@ -179,6 +223,47 @@ def test_integration_article_list_requires_api_key() -> None:
         with TestClient(create_app()) as client:
             response = client.get(
                 f"{INTEGRATION_API_BASE_PATH}/articles",
+                params={"project_id": "project_1"},
+            )
+    finally:
+        integration_app.dependency_overrides.clear()
+        settings.integration_api_keys = original_keys
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid or missing API key"
+
+
+def test_integration_pillar_list_requires_api_key() -> None:
+    original_keys = settings.integration_api_keys
+    settings.integration_api_keys = "valid-key"
+    now = datetime.now(timezone.utc)
+    fake_session = _FakePillarListSession(
+        pillars=[
+            SimpleNamespace(
+                id="pillar-1",
+                project_id="project_1",
+                name="Support",
+                slug="support",
+                description=None,
+                status="active",
+                source="auto",
+                locked=False,
+                created_at=now,
+                updated_at=now,
+            )
+        ],
+        assignment_rows=[],
+        article_rows=[],
+    )
+
+    async def _fake_get_session() -> AsyncGenerator[_FakePillarListSession, None]:
+        yield fake_session
+
+    integration_app.dependency_overrides[get_session] = _fake_get_session
+    try:
+        with TestClient(create_app()) as client:
+            response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/pillars",
                 params={"project_id": "project_1"},
             )
     finally:
@@ -254,9 +339,82 @@ def test_integration_article_list_returns_lightweight_payload() -> None:
     assert first["title"] == "Article One"
     assert first["status"] == "draft"
     assert first["publish_status"] == "scheduled"
+    assert first["primary_pillar"] is None
+    assert first["secondary_pillars"] == []
+    assert first["pillar_assignment_confidence"] is None
     assert "modular_document" not in first
     assert "rendered_html" not in first
 
+
+def test_integration_pillar_list_returns_counts() -> None:
+    original_keys = settings.integration_api_keys
+    settings.integration_api_keys = "valid-key"
+    now = datetime.now(timezone.utc)
+    fake_session = _FakePillarListSession(
+        pillars=[
+            SimpleNamespace(
+                id="pillar-1",
+                project_id="project_1",
+                name="Support",
+                slug="support",
+                description="Support content",
+                status="active",
+                source="auto",
+                locked=False,
+                created_at=now,
+                updated_at=now,
+            ),
+            SimpleNamespace(
+                id="pillar-2",
+                project_id="project_1",
+                name="Pricing",
+                slug="pricing",
+                description=None,
+                status="active",
+                source="manual",
+                locked=True,
+                created_at=now,
+                updated_at=now,
+            ),
+        ],
+        assignment_rows=[
+            ("pillar-1", "primary", 3),
+            ("pillar-1", "secondary", 1),
+            ("pillar-2", "primary", 2),
+        ],
+        article_rows=[
+            ("pillar-1", 2, 1),
+            ("pillar-2", 1, 1),
+        ],
+    )
+
+    async def _fake_get_session() -> AsyncGenerator[_FakePillarListSession, None]:
+        yield fake_session
+
+    integration_app.dependency_overrides[get_session] = _fake_get_session
+    try:
+        with TestClient(create_app()) as client:
+            response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/pillars",
+                params={"project_id": "project_1"},
+                headers={"X-API-Key": "valid-key"},
+            )
+    finally:
+        integration_app.dependency_overrides.clear()
+        settings.integration_api_keys = original_keys
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert len(payload["items"]) == 2
+
+    first = payload["items"][0]
+    assert first["slug"] == "support"
+    assert first["primary_brief_count"] == 3
+    assert first["secondary_brief_count"] == 1
+    assert first["total_brief_count"] == 4
+    assert first["primary_article_count"] == 2
+    assert first["published_primary_article_count"] == 1
 
 def test_integration_article_requires_api_key() -> None:
     original_keys = settings.integration_api_keys

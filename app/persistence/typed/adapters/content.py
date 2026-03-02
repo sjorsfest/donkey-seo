@@ -12,9 +12,12 @@ from app.models.content import (
     PublicationWebhookDelivery,
     WriterInstructions,
 )
+from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
 from app.models.generated_dtos import (
     BriefDeltaCreateDTO,
     BriefDeltaPatchDTO,
+    ContentBriefPillarAssignmentCreateDTO,
+    ContentBriefPillarAssignmentPatchDTO,
     ContentArticleKeywordUsageCreateDTO,
     ContentArticleKeywordUsagePatchDTO,
     ContentArticleCreateDTO,
@@ -27,6 +30,8 @@ from app.models.generated_dtos import (
     ContentBriefPatchDTO,
     ContentFeaturedImageCreateDTO,
     ContentFeaturedImagePatchDTO,
+    ContentPillarCreateDTO,
+    ContentPillarPatchDTO,
     ProjectStyleGuideCreateDTO,
     ProjectStyleGuidePatchDTO,
     PublicationWebhookDeliveryCreateDTO,
@@ -200,6 +205,24 @@ PUBLICATION_WEBHOOK_DELIVERY_PATCH_ALLOWLIST = {
     "last_error",
 }
 
+CONTENT_PILLAR_PATCH_ALLOWLIST = {
+    "name",
+    "slug",
+    "description",
+    "status",
+    "source",
+    "locked",
+}
+
+CONTENT_BRIEF_PILLAR_ASSIGNMENT_PATCH_ALLOWLIST = {
+    "project_id",
+    "brief_id",
+    "pillar_id",
+    "relationship_type",
+    "confidence_score",
+    "assignment_method",
+}
+
 _CONTENT_BRIEF_ADAPTER = BaseWriteAdapter[
     ContentBrief,
     ContentBriefCreateDTO,
@@ -290,6 +313,24 @@ _PUBLICATION_WEBHOOK_DELIVERY_ADAPTER = BaseWriteAdapter[
     patch_allowlist=PUBLICATION_WEBHOOK_DELIVERY_PATCH_ALLOWLIST,
 )
 
+_CONTENT_PILLAR_ADAPTER = BaseWriteAdapter[
+    ContentPillar,
+    ContentPillarCreateDTO,
+    ContentPillarPatchDTO,
+](
+    model_cls=ContentPillar,
+    patch_allowlist=CONTENT_PILLAR_PATCH_ALLOWLIST,
+)
+
+_CONTENT_BRIEF_PILLAR_ASSIGNMENT_ADAPTER = BaseWriteAdapter[
+    ContentBriefPillarAssignment,
+    ContentBriefPillarAssignmentCreateDTO,
+    ContentBriefPillarAssignmentPatchDTO,
+](
+    model_cls=ContentBriefPillarAssignment,
+    patch_allowlist=CONTENT_BRIEF_PILLAR_ASSIGNMENT_PATCH_ALLOWLIST,
+)
+
 
 def register() -> None:
     """Register content adapters."""
@@ -305,3 +346,8 @@ def register() -> None:
     register_adapter(ContentArticleKeywordUsage, _CONTENT_ARTICLE_KEYWORD_USAGE_ADAPTER)
     register_adapter(ContentFeaturedImage, _CONTENT_FEATURED_IMAGE_ADAPTER)
     register_adapter(PublicationWebhookDelivery, _PUBLICATION_WEBHOOK_DELIVERY_ADAPTER)
+    register_adapter(ContentPillar, _CONTENT_PILLAR_ADAPTER)
+    register_adapter(
+        ContentBriefPillarAssignment,
+        _CONTENT_BRIEF_PILLAR_ASSIGNMENT_ADAPTER,
+    )

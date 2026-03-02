@@ -999,6 +999,87 @@ class ContentBriefKeywordPatchDTO:
         }
 
 @dataclass(slots=True)
+class ContentBriefPillarAssignmentRow:
+    """Read DTO for `ContentBriefPillarAssignment`."""
+
+    project_id: str
+    brief_id: str
+    pillar_id: str
+    relationship_type: str
+    confidence_score: float | None
+    assignment_method: str
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "ContentBriefPillarAssignmentRow":
+        return cls(
+            project_id=model.project_id,
+            brief_id=model.brief_id,
+            pillar_id=model.pillar_id,
+            relationship_type=model.relationship_type,
+            confidence_score=model.confidence_score,
+            assignment_method=model.assignment_method,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class ContentBriefPillarAssignmentCreateDTO:
+    """Create DTO for `ContentBriefPillarAssignment`."""
+
+    project_id: str
+    brief_id: str
+    pillar_id: str
+    relationship_type: str
+    confidence_score: float | None = None
+    assignment_method: str | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "assignment_method",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class ContentBriefPillarAssignmentPatchDTO:
+    """Sparse patch DTO for `ContentBriefPillarAssignment`."""
+
+    project_id: str | None = None
+    brief_id: str | None = None
+    pillar_id: str | None = None
+    relationship_type: str | None = None
+    confidence_score: float | None = None
+    assignment_method: str | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "ContentBriefPillarAssignmentPatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
 class ContentFeaturedImageRow:
     """Read DTO for `ContentFeaturedImage`."""
 
@@ -1106,6 +1187,93 @@ class ContentFeaturedImagePatchDTO:
 
     @classmethod
     def from_partial(cls, payload: dict[str, Any]) -> "ContentFeaturedImagePatchDTO":
+        obj = cls(**payload)
+        obj._provided_fields = set(payload.keys())
+        return obj
+
+    def to_patch_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("_provided_fields", None)
+        return {
+            key: value
+            for key, value in payload.items()
+            if key in self._provided_fields
+        }
+
+@dataclass(slots=True)
+class ContentPillarRow:
+    """Read DTO for `ContentPillar`."""
+
+    project_id: str
+    name: str
+    slug: str
+    description: str | None
+    status: str
+    source: str
+    locked: bool
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_model(cls, model: Any) -> "ContentPillarRow":
+        return cls(
+            project_id=model.project_id,
+            name=model.name,
+            slug=model.slug,
+            description=model.description,
+            status=model.status,
+            source=model.source,
+            locked=model.locked,
+            id=model.id,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+@dataclass(slots=True)
+class ContentPillarCreateDTO:
+    """Create DTO for `ContentPillar`."""
+
+    project_id: str
+    name: str
+    slug: str
+    description: str | None = None
+    status: str | None = None
+    source: str | None = None
+    locked: bool | None = None
+
+    _DROP_NONE_FIELDS: ClassVar[set[str]] = {
+        "status",
+        "source",
+        "locked",
+    }
+
+    def to_orm_kwargs(self) -> dict[str, Any]:
+        payload = asdict(self)
+        for key in self._DROP_NONE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+@dataclass(slots=True)
+class ContentPillarPatchDTO:
+    """Sparse patch DTO for `ContentPillar`."""
+
+    project_id: str | None = None
+    name: str | None = None
+    slug: str | None = None
+    description: str | None = None
+    status: str | None = None
+    source: str | None = None
+    locked: bool | None = None
+    _provided_fields: set[str] = field(
+        default_factory=set,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def from_partial(cls, payload: dict[str, Any]) -> "ContentPillarPatchDTO":
         obj = cls(**payload)
         obj._provided_fields = set(payload.keys())
         return obj
@@ -2851,9 +3019,15 @@ __all__ = [
     "ContentBriefKeywordRow",
     "ContentBriefKeywordCreateDTO",
     "ContentBriefKeywordPatchDTO",
+    "ContentBriefPillarAssignmentRow",
+    "ContentBriefPillarAssignmentCreateDTO",
+    "ContentBriefPillarAssignmentPatchDTO",
     "ContentFeaturedImageRow",
     "ContentFeaturedImageCreateDTO",
     "ContentFeaturedImagePatchDTO",
+    "ContentPillarRow",
+    "ContentPillarCreateDTO",
+    "ContentPillarPatchDTO",
     "DiscoveryIterationLearningRow",
     "DiscoveryIterationLearningCreateDTO",
     "DiscoveryIterationLearningPatchDTO",

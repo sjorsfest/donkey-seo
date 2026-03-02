@@ -12,7 +12,7 @@ from pathlib import Path
 
 MODEL_CONSTRUCTOR_PATTERN = re.compile(
     r"\b(BrandProfile|BriefDelta|ContentArticle|ContentArticleKeywordUsage|ContentArticleVersion|"
-    r"ContentBrief|ContentBriefKeyword|Keyword|"
+    r"ContentBrief|ContentBriefKeyword|ContentBriefPillarAssignment|ContentPillar|Keyword|"
     r"OAuthAccount|PipelineRun|Project|ProjectStyleGuide|SeedTopic|StepExecution|Topic|"
     r"User|WriterInstructions)\("
 )

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.integration.dependencies import require_integration_api_key
@@ -24,6 +24,9 @@ from app.api.integration.schemas import (
     IntegrationArticleListResponse,
     IntegrationArticlePublicationPatchRequest,
     IntegrationArticlePublicationResponse,
+    IntegrationPillarListResponse,
+    IntegrationPillarResponse,
+    IntegrationPillarReference,
     IntegrationArticleSummaryResponse,
     IntegrationArticleVersionResponse,
     IntegrationGuideResponse,
@@ -36,6 +39,7 @@ from app.api.v1.content.constants import (
 from app.core.database import get_session
 from app.integrations.content_image_store import ContentImageStore
 from app.models.content import ContentArticle, ContentArticleVersion
+from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
 from app.models.generated_dtos import ContentArticlePatchDTO
 from app.services.author_profiles import (
     enrich_modular_document_with_signed_author_image,
@@ -55,6 +59,57 @@ logger = logging.getLogger(__name__)
 def _resolve_integration_path(request: Request, suffix: str) -> str:
     root_path = str(request.scope.get("root_path") or "")
     return f"{root_path}{suffix}"
+
+
+async def _load_integration_pillar_payloads(
+    *,
+    session: AsyncSession,
+    project_id: str,
+    brief_ids: list[str],
+) -> dict[str, dict]:
+    if not brief_ids:
+        return {}
+
+    result = await session.execute(
+        select(ContentBriefPillarAssignment, ContentPillar)
+        .join(ContentPillar, ContentPillar.id == ContentBriefPillarAssignment.pillar_id)
+        .where(
+            ContentBriefPillarAssignment.project_id == project_id,
+            ContentBriefPillarAssignment.brief_id.in_(brief_ids),
+            ContentPillar.status == "active",
+        )
+        .order_by(
+            ContentBriefPillarAssignment.brief_id.asc(),
+            ContentBriefPillarAssignment.relationship_type.asc(),
+            ContentBriefPillarAssignment.created_at.asc(),
+        )
+    )
+
+    payload: dict[str, dict] = {}
+    for assignment, pillar in result.all():
+        brief_id = str(assignment.brief_id)
+        entry = payload.setdefault(
+            brief_id,
+            {"primary": None, "secondary": [], "confidence": None, "secondary_ids": set()},
+        )
+        ref = IntegrationPillarReference(
+            id=str(pillar.id),
+            name=pillar.name,
+            slug=pillar.slug,
+        )
+        relationship_type = str(assignment.relationship_type or "").strip().lower()
+        if relationship_type == "primary" and entry["primary"] is None:
+            entry["primary"] = ref
+            entry["confidence"] = assignment.confidence_score
+            continue
+        if str(pillar.id) in entry["secondary_ids"]:
+            continue
+        entry["secondary"].append(ref)
+        entry["secondary_ids"].add(str(pillar.id))
+
+    for entry in payload.values():
+        entry.pop("secondary_ids", None)
+    return payload
 
 
 async def _get_article_version(
@@ -162,7 +217,13 @@ async def integration_index(request: Request) -> IntegrationIndexResponse:
         openapi_path=_resolve_integration_path(request, "/openapi.json"),
         guide_path=_resolve_integration_path(request, "/guide/donkey-client"),
         guide_markdown_path=_resolve_integration_path(request, "/guide/donkey-client.md"),
-        article_list_path_template="/articles?project_id={project_id}&page={page}&page_size={page_size}",
+        article_list_path_template=(
+            "/articles?project_id={project_id}&page={page}&page_size={page_size}"
+            "&pillar_slug={pillar_slug_optional}"
+        ),
+        pillar_list_path_template=(
+            "/pillars?project_id={project_id}&include_archived={include_archived_optional}"
+        ),
         article_latest_path_template="/article/{article_id}?project_id={project_id}",
         article_version_path_template=(
             "/article/{article_id}/versions/{version_number}?project_id={project_id}"
@@ -219,6 +280,7 @@ async def list_project_articles(
     project_id: str = Query(..., min_length=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    pillar_slug: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> IntegrationArticleListResponse:
     """List articles with lightweight metadata for integration clients."""
@@ -226,21 +288,36 @@ async def list_project_articles(
     page = int(page)
     offset = (page - 1) * page_size
 
-    total_result = await session.execute(
-        select(func.count())
-        .select_from(ContentArticle)
-        .where(ContentArticle.project_id == project_id)
-    )
+    article_query = select(ContentArticle).where(ContentArticle.project_id == project_id)
+    if pillar_slug:
+        article_query = (
+            article_query.join(
+                ContentBriefPillarAssignment,
+                ContentBriefPillarAssignment.brief_id == ContentArticle.brief_id,
+            )
+            .join(ContentPillar, ContentPillar.id == ContentBriefPillarAssignment.pillar_id)
+            .where(
+                ContentBriefPillarAssignment.project_id == project_id,
+                ContentPillar.slug == pillar_slug,
+                ContentPillar.status == "active",
+            )
+            .distinct()
+        )
+
+    total_result = await session.execute(select(func.count()).select_from(article_query.subquery()))
     total = int(total_result.scalar_one() or 0)
 
     result = await session.execute(
-        select(ContentArticle)
-        .where(ContentArticle.project_id == project_id)
-        .order_by(ContentArticle.updated_at.desc(), ContentArticle.created_at.desc())
+        article_query.order_by(ContentArticle.updated_at.desc(), ContentArticle.created_at.desc())
         .offset(offset)
         .limit(page_size)
     )
     articles = list(result.scalars().all())
+    pillar_payloads = await _load_integration_pillar_payloads(
+        session=session,
+        project_id=project_id,
+        brief_ids=[str(article.brief_id) for article in articles],
+    )
 
     items = [
         IntegrationArticleSummaryResponse(
@@ -255,6 +332,21 @@ async def list_project_articles(
             publish_status=article.publish_status,
             published_at=article.published_at,
             published_url=article.published_url,
+            primary_pillar=(
+                pillar_payloads.get(str(article.brief_id), {}).get("primary")
+                if isinstance(pillar_payloads.get(str(article.brief_id)), dict)
+                else None
+            ),
+            secondary_pillars=(
+                pillar_payloads.get(str(article.brief_id), {}).get("secondary", [])
+                if isinstance(pillar_payloads.get(str(article.brief_id)), dict)
+                else []
+            ),
+            pillar_assignment_confidence=(
+                pillar_payloads.get(str(article.brief_id), {}).get("confidence")
+                if isinstance(pillar_payloads.get(str(article.brief_id)), dict)
+                else None
+            ),
             created_at=article.created_at,
             updated_at=article.updated_at,
         )
@@ -266,6 +358,120 @@ async def list_project_articles(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+@protected_router.get(
+    "/pillars",
+    response_model=IntegrationPillarListResponse,
+    summary="List project pillars",
+    description=(
+        "Return all project pillars with assignment/article counts. "
+        "Use this for frontend category navigation."
+    ),
+)
+async def list_project_pillars(
+    project_id: str = Query(..., min_length=1),
+    include_archived: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+) -> IntegrationPillarListResponse:
+    """List project content pillars for integration clients."""
+    query = select(ContentPillar).where(ContentPillar.project_id == project_id)
+    if not include_archived:
+        query = query.where(ContentPillar.status == "active")
+    query = query.order_by(ContentPillar.name.asc(), ContentPillar.created_at.asc())
+
+    result = await session.execute(query)
+    pillars = list(result.scalars().all())
+    if not pillars:
+        return IntegrationPillarListResponse(items=[], total=0)
+
+    pillar_ids = [str(pillar.id) for pillar in pillars]
+
+    assignment_result = await session.execute(
+        select(
+            ContentBriefPillarAssignment.pillar_id,
+            ContentBriefPillarAssignment.relationship_type,
+            func.count(ContentBriefPillarAssignment.id),
+        )
+        .where(
+            ContentBriefPillarAssignment.project_id == project_id,
+            ContentBriefPillarAssignment.pillar_id.in_(pillar_ids),
+        )
+        .group_by(
+            ContentBriefPillarAssignment.pillar_id,
+            ContentBriefPillarAssignment.relationship_type,
+        )
+    )
+    assignment_counts: dict[str, dict[str, int]] = {
+        pillar_id: {"primary": 0, "secondary": 0} for pillar_id in pillar_ids
+    }
+    for pillar_id, relationship_type, count in assignment_result.all():
+        role = str(relationship_type or "").strip().lower()
+        if role not in {"primary", "secondary"}:
+            continue
+        assignment_counts[str(pillar_id)][role] = int(count or 0)
+
+    article_result = await session.execute(
+        select(
+            ContentBriefPillarAssignment.pillar_id,
+            func.count(ContentArticle.id),
+            func.count(ContentArticle.id).filter(
+                or_(
+                    ContentArticle.publish_status == "published",
+                    ContentArticle.published_at.is_not(None),
+                )
+            ),
+        )
+        .join(
+            ContentArticle,
+            and_(
+                ContentArticle.project_id == ContentBriefPillarAssignment.project_id,
+                ContentArticle.brief_id == ContentBriefPillarAssignment.brief_id,
+            ),
+        )
+        .where(
+            ContentBriefPillarAssignment.project_id == project_id,
+            ContentBriefPillarAssignment.relationship_type == "primary",
+            ContentBriefPillarAssignment.pillar_id.in_(pillar_ids),
+        )
+        .group_by(ContentBriefPillarAssignment.pillar_id)
+    )
+    article_counts: dict[str, tuple[int, int]] = {
+        str(pillar_id): (int(article_count or 0), int(published_count or 0))
+        for pillar_id, article_count, published_count in article_result.all()
+    }
+
+    items = []
+    for pillar in pillars:
+        pillar_id = str(pillar.id)
+        role_counts = assignment_counts.get(pillar_id, {"primary": 0, "secondary": 0})
+        primary_count = int(role_counts.get("primary", 0))
+        secondary_count = int(role_counts.get("secondary", 0))
+        article_count, published_count = article_counts.get(pillar_id, (0, 0))
+        items.append(
+            IntegrationPillarResponse(
+                id=pillar_id,
+                project_id=str(pillar.project_id),
+                name=pillar.name,
+                slug=pillar.slug,
+                description=pillar.description,
+                status=pillar.status,
+                source=pillar.source,
+                locked=bool(pillar.locked),
+                primary_brief_count=primary_count,
+                secondary_brief_count=secondary_count,
+                total_brief_count=primary_count + secondary_count,
+                primary_article_count=article_count,
+                published_primary_article_count=published_count,
+                created_at=pillar.created_at,
+                updated_at=pillar.updated_at,
+            )
+        )
+
+    return IntegrationPillarListResponse(
+        items=items,
+        total=len(items),
     )
 
 

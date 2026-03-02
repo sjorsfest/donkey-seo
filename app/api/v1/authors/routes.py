@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.api.v1.authors.constants import AUTHOR_NOT_FOUND_DETAIL
 from app.api.v1.dependencies import get_user_project
+from app.core.ids import generate_cuid
 from app.dependencies import CurrentUser, DbSession
+from app.integrations.author_image_store import AuthorImageStore
 from app.models.author import Author
 from app.models.generated_dtos import AuthorCreateDTO, AuthorPatchDTO
-from app.schemas.author import AuthorCreate, AuthorListResponse, AuthorResponse, AuthorUpdate
+from app.schemas.author import (
+    AuthorCreate,
+    AuthorListResponse,
+    AuthorProfileImageSignedUploadRequest,
+    AuthorProfileImageSignedUploadResponse,
+    AuthorResponse,
+    AuthorUpdate,
+)
 from app.services.author_profiles import (
     build_author_profile_image_signed_url,
     sync_author_profile_image_from_source,
@@ -150,6 +159,62 @@ async def update_author(
     return _to_author_response(author)
 
 
+@router.post(
+    "/{project_id}/{author_id}/profile-image/signed-upload-url",
+    response_model=AuthorProfileImageSignedUploadResponse,
+    summary="Get signed upload URL for author profile image",
+    description="Mint a short-lived signed PUT URL so clients can upload a profile image directly.",
+)
+async def get_author_profile_image_signed_upload_url(
+    project_id: str,
+    author_id: str,
+    payload: AuthorProfileImageSignedUploadRequest,
+    current_user: CurrentUser,
+    session: DbSession,
+    ttl_seconds: int | None = Query(default=None, ge=1, le=3600),
+) -> AuthorProfileImageSignedUploadResponse:
+    """Mint a signed upload URL and stage profile image object metadata on the author."""
+    await get_user_project(project_id, current_user, session)
+    author = await _get_project_author_or_404(session=session, project_id=project_id, author_id=author_id)
+
+    object_key = _build_profile_image_upload_object_key(
+        project_id=project_id,
+        author_id=author_id,
+        content_type=payload.content_type,
+    )
+    store = AuthorImageStore()
+    upload_url = store.create_signed_upload_url(
+        object_key=object_key,
+        ttl_seconds=ttl_seconds,
+        content_type=payload.content_type,
+    )
+    expires_in = int(ttl_seconds or store.settings.signed_url_ttl_seconds)
+
+    author.patch(
+        session,
+        AuthorPatchDTO.from_partial(
+            {
+                "profile_image_source_url": None,
+                "profile_image_object_key": object_key,
+                "profile_image_mime_type": payload.content_type,
+                "profile_image_width": None,
+                "profile_image_height": None,
+                "profile_image_byte_size": None,
+                "profile_image_sha256": None,
+            }
+        ),
+    )
+    await session.flush()
+
+    return AuthorProfileImageSignedUploadResponse(
+        author_id=author_id,
+        object_key=object_key,
+        upload_url=upload_url,
+        expires_in_seconds=expires_in,
+        required_headers={"Content-Type": payload.content_type},
+    )
+
+
 @router.delete(
     "/{project_id}/{author_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -208,3 +273,8 @@ def _to_author_response(author: Author) -> AuthorResponse:
         created_at=author.created_at,
         updated_at=author.updated_at,
     )
+
+
+def _build_profile_image_upload_object_key(*, project_id: str, author_id: str, content_type: str) -> str:
+    extension = AuthorImageStore.extension_for_mime_type(content_type)
+    return f"projects/{project_id}/authors/{author_id}/uploads/{generate_cuid()}{extension}"

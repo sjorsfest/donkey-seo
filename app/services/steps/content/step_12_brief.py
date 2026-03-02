@@ -22,6 +22,10 @@ from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
 from app.services.content_keyword_tracking import sync_brief_keywords
+from app.services.content_pillar_service import (
+    ContentPillarService,
+    PlannedPillarAssignment,
+)
 from app.services.discovery.topic_overlap import (
     build_comparison_key,
     build_family_key,
@@ -275,6 +279,12 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 skipped_batch_diversification=skipped_batch_diversification,
             )
 
+        pillar_service = ContentPillarService(self.session)
+        pillar_assignments_by_topic = await pillar_service.plan_assignments(
+            project_id=input_data.project_id,
+            topics=topics_to_generate,
+        )
+
         # Prepare brand context
         brand_context = self._build_brand_context(brand)
         money_pages = self._extract_money_pages(brand)
@@ -353,6 +363,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
             # Determine overlap status
             overlap_status = "checked" if step_10_ran else "unknown"
+            pillar_assignment = pillar_assignments_by_topic.get(str(topic.id))
 
             # Check if there are warnings
             has_warnings = (
@@ -441,6 +452,17 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "must_include_sections": brief_data.must_include_sections,
                     "recommended_schema_type": brief_data.recommended_schema_type,
                     "proposed_publication_date": proposed_publication_date,
+                    "pillar_assignment": (
+                        {
+                            "topic_id": pillar_assignment.topic_id,
+                            "primary_pillar_id": pillar_assignment.primary_pillar_id,
+                            "secondary_pillar_ids": pillar_assignment.secondary_pillar_ids,
+                            "confidence_score": pillar_assignment.confidence_score,
+                            "assignment_method": pillar_assignment.assignment_method,
+                        }
+                        if pillar_assignment is not None
+                        else None
+                    ),
                     "has_warnings": has_warnings,
                     "warnings": self._collect_warnings(
                         collision_status,
@@ -495,6 +517,17 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "supporting_keyword_ids": supporting_keyword_ids,
                     "target_word_count": {"min": 1500, "max": 2500},
                     "proposed_publication_date": fallback_publication_date,
+                    "pillar_assignment": (
+                        {
+                            "topic_id": pillar_assignment.topic_id,
+                            "primary_pillar_id": pillar_assignment.primary_pillar_id,
+                            "secondary_pillar_ids": pillar_assignment.secondary_pillar_ids,
+                            "confidence_score": pillar_assignment.confidence_score,
+                            "assignment_method": pillar_assignment.assignment_method,
+                        }
+                        if pillar_assignment is not None
+                        else None
+                    ),
                     "has_warnings": True,
                     "warnings": fallback_warnings,
                 })
@@ -1527,6 +1560,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
     async def _persist_results(self, result: BriefOutput) -> None:
         """Save content briefs to database."""
         await self._lock_project_publication_schedule()
+        pillar_service = ContentPillarService(self.session)
 
         topic_ids = [
             brief_data["topic_id"]
@@ -1654,6 +1688,12 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     primary_keyword_id=primary_keyword_id,
                     supporting_keyword_ids=supporting_keyword_ids,
                 )
+                await self._persist_pillar_assignment(
+                    pillar_service=pillar_service,
+                    brief_id=str(existing.id),
+                    topic_id=topic_id,
+                    brief_data=brief_data,
+                )
                 continue
 
             create_dto = ContentBriefCreateDTO(
@@ -1696,6 +1736,12 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 primary_keyword_id=primary_keyword_id,
                 supporting_keyword_ids=supporting_keyword_ids,
             )
+            await self._persist_pillar_assignment(
+                pillar_service=pillar_service,
+                brief_id=str(created_brief.id),
+                topic_id=topic_id,
+                brief_data=brief_data,
+            )
 
         # Update project step
         project_result = await self.session.execute(
@@ -1724,6 +1770,47 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         })
 
         await self.session.commit()
+
+    async def _persist_pillar_assignment(
+        self,
+        *,
+        pillar_service: ContentPillarService,
+        brief_id: str,
+        topic_id: str,
+        brief_data: dict[str, Any],
+    ) -> None:
+        assignment_payload = brief_data.get("pillar_assignment")
+        if not isinstance(assignment_payload, dict):
+            return
+
+        primary_pillar_id = self._optional_str(assignment_payload.get("primary_pillar_id"))
+        if primary_pillar_id is None:
+            return
+
+        secondary_values = assignment_payload.get("secondary_pillar_ids")
+        secondary_ids = (
+            [value for value in self._str_list_or_none(secondary_values) or [] if value != primary_pillar_id]
+        )[:2]
+        confidence_value = assignment_payload.get("confidence_score")
+        confidence = None
+        try:
+            if confidence_value is not None:
+                confidence = float(confidence_value)
+        except (TypeError, ValueError):
+            confidence = None
+        assignment_method = self._optional_str(assignment_payload.get("assignment_method")) or "auto"
+
+        await pillar_service.persist_assignments(
+            project_id=self.project_id,
+            brief_id=brief_id,
+            assignment=PlannedPillarAssignment(
+                topic_id=topic_id,
+                primary_pillar_id=primary_pillar_id,
+                secondary_pillar_ids=secondary_ids,
+                confidence_score=(confidence if confidence is not None else 0.0),
+                assignment_method=assignment_method,
+            ),
+        )
 
     async def _lock_project_publication_schedule(self) -> None:
         """Serialize publication-date allocation per project."""

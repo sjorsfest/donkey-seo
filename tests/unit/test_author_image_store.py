@@ -76,3 +76,36 @@ def test_create_signed_read_url_uses_s3_presign() -> None:
             120,
         )
     ]
+
+
+def test_create_signed_upload_url_uses_s3_presign() -> None:
+    store = AuthorImageStore(app_settings=_settings())
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict, int]] = []
+
+        def generate_presigned_url(self, operation: str, Params: dict, ExpiresIn: int) -> str:  # noqa: N803
+            self.calls.append((operation, Params, ExpiresIn))
+            return "https://signed.example/upload"
+
+    fake_client = _FakeClient()
+    store._client = fake_client
+
+    signed_url = store.create_signed_upload_url(
+        object_key="projects/p1/authors/a1/uploads/test.png",
+        content_type="image/png",
+    )
+
+    assert signed_url == "https://signed.example/upload"
+    assert fake_client.calls == [
+        (
+            "put_object",
+            {
+                "Bucket": "private-bucket",
+                "Key": "projects/p1/authors/a1/uploads/test.png",
+                "ContentType": "image/png",
+            },
+            120,
+        )
+    ]

@@ -56,6 +56,7 @@ except ImportError:  # pragma: no cover - bootstrap before DTO regeneration
 
 if TYPE_CHECKING:
     from app.models.author import Author
+    from app.models.content_pillar import ContentBriefPillarAssignment
     from app.models.keyword import Keyword
     from app.models.project import Project
     from app.models.topic import Topic
@@ -157,6 +158,11 @@ class ContentBrief(
         back_populates="brief",
         cascade="all, delete-orphan",
         order_by="ContentBriefKeyword.position",
+    )
+    pillar_assignments: Mapped[list[ContentBriefPillarAssignment]] = relationship(
+        "ContentBriefPillarAssignment",
+        back_populates="brief",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

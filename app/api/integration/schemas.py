@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class IntegrationIndexResponse(BaseModel):
@@ -18,6 +18,7 @@ class IntegrationIndexResponse(BaseModel):
     guide_path: str
     guide_markdown_path: str
     article_list_path_template: str
+    pillar_list_path_template: str
     article_latest_path_template: str
     article_version_path_template: str
     article_publication_patch_path_template: str
@@ -60,6 +61,34 @@ class IntegrationArticleVersionResponse(BaseModel):
     updated_at: datetime
 
 
+class IntegrationPillarReference(BaseModel):
+    """Pillar reference payload for integration clients."""
+
+    id: str
+    name: str
+    slug: str
+
+
+class IntegrationPillarResponse(BaseModel):
+    """Pillar list payload for integration clients."""
+
+    id: str
+    project_id: str
+    name: str
+    slug: str
+    description: str | None
+    status: str
+    source: str
+    locked: bool
+    primary_brief_count: int
+    secondary_brief_count: int
+    total_brief_count: int
+    primary_article_count: int
+    published_primary_article_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class IntegrationArticleSummaryResponse(BaseModel):
     """Lightweight article summary for listing integrations."""
 
@@ -74,6 +103,9 @@ class IntegrationArticleSummaryResponse(BaseModel):
     publish_status: str | None
     published_at: datetime | None
     published_url: str | None
+    primary_pillar: IntegrationPillarReference | None = None
+    secondary_pillars: list[IntegrationPillarReference] = Field(default_factory=list)
+    pillar_assignment_confidence: float | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -85,6 +117,13 @@ class IntegrationArticleListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class IntegrationPillarListResponse(BaseModel):
+    """Pillar listing response for integrations."""
+
+    items: list[IntegrationPillarResponse]
+    total: int
 
 
 class IntegrationArticlePublicationPatchRequest(BaseModel):

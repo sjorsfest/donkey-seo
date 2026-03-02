@@ -13,6 +13,7 @@ from app.models.content import (
     PublicationWebhookDelivery,
     WriterInstructions,
 )
+from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
 from app.models.discovery_snapshot import DiscoveryTopicSnapshot
 from app.models.discovery_learning import DiscoveryIterationLearning
 from app.models.keyword import Keyword, SeedTopic
@@ -38,6 +39,8 @@ __all__ = [
     "Topic",
     "ContentBrief",
     "ContentBriefKeyword",
+    "ContentPillar",
+    "ContentBriefPillarAssignment",
     "WriterInstructions",
     "ContentFeaturedImage",
     "ContentArticle",
