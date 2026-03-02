@@ -132,7 +132,7 @@ class ContentPipelineConfig(BaseModel):
         description="Preferred publish weekdays where Monday=0 ... Sunday=6.",
     )
     min_lead_days: int = Field(
-        default=7,
+        default=3,
         ge=1,
         le=60,
         description="Minimum days from today before the first proposed publish date.",
@@ -249,7 +249,7 @@ class PipelineStartRequest(BaseModel):
                         "max_briefs": 20,
                         "posts_per_week": 3,
                         "preferred_weekdays": [0, 2, 4],
-                        "min_lead_days": 7,
+                        "min_lead_days": 3,
                     },
                 },
                 {

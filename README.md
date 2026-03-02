@@ -239,7 +239,7 @@ Start discovery with adaptive retries and immediate content task dispatch:
     "max_briefs": 20,
     "posts_per_week": 3,
     "preferred_weekdays": [0, 2, 4],
-    "min_lead_days": 7
+    "min_lead_days": 3
   }
 }
 ```
