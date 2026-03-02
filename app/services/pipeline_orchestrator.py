@@ -227,6 +227,14 @@ class PipelineOrchestrator:
             )
 
         except Exception as exc:
+            logger.exception(
+                "Pipeline run failed and will be paused",
+                extra={
+                    "project_id": self.project_id,
+                    "run_id": str(run.id),
+                    "pipeline_module": run_module,
+                },
+            )
             paused_at_step = run.paused_at_step or effective_start
             await self._update_run_status(
                 run.id,

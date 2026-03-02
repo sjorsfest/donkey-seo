@@ -126,9 +126,11 @@ class Step4FeaturedImageService(BaseStepService[FeaturedImageInput, FeaturedImag
                 else:
                     generated += 1
             except Exception as exc:
-                logger.warning(
-                    "Featured image generation failed",
-                    extra={"brief_id": brief_id, "error": str(exc)},
+                logger.exception(
+                    "Featured image generation failed for brief %s: %s",
+                    brief_id,
+                    exc,
+                    extra={"project_id": self.project_id},
                 )
                 await generator.mark_failure(
                     session=self.session,
@@ -144,8 +146,39 @@ class Step4FeaturedImageService(BaseStepService[FeaturedImageInput, FeaturedImag
             await self._update_progress(step_progress, f"Processed {index}/{len(briefs)} featured images...")
 
         if failures:
+            failed_brief_ids = [item.get("brief_id", "unknown") for item in failures]
+            preview_parts: list[str] = []
+            for item in failures[:3]:
+                reason = " ".join(str(item.get("reason") or "unknown error").split())
+                if len(reason) > 120:
+                    reason = f"{reason[:117]}..."
+                preview_parts.append(f"{item.get('brief_id', 'unknown')}: {reason}")
+            preview = "; ".join(preview_parts)
+            if len(failures) > 3:
+                preview = f"{preview}; +{len(failures) - 3} more failures"
+
+            self.set_result_summary(
+                {
+                    "briefs_processed": len(briefs),
+                    "images_generated": generated,
+                    "images_reused": reused,
+                    "images_skipped_existing_articles": skipped_existing_articles,
+                    "images_failed": len(failures),
+                    "failed_brief_ids": failed_brief_ids,
+                    "failure_preview": preview,
+                }
+            )
+            logger.error(
+                "Featured image generation exhausted retries for one or more briefs",
+                extra={
+                    "project_id": self.project_id,
+                    "failed_count": len(failures),
+                    "failed_brief_ids": failed_brief_ids,
+                    "failure_preview": preview,
+                },
+            )
             raise ValueError(
-                f"Featured image generation failed for {len(failures)} briefs"
+                f"Featured image generation failed for {len(failures)} briefs. {preview}"
             )
 
         await self._update_progress(100, "Featured image generation complete")

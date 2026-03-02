@@ -107,10 +107,7 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
             return StepResult(success=True, data=result)
 
         except Exception as e:
-            logger.warning(
-                "Step failed",
-                extra={**step_info, "error": str(e)},
-            )
+            logger.exception("Step failed: %s", e, extra=step_info)
             try:
                 await self._handle_error(e)
             except Exception:
