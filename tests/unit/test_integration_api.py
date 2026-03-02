@@ -87,16 +87,30 @@ def test_integration_docs_and_guide_are_public() -> None:
         docs_response = client.get(f"{INTEGRATION_API_BASE_PATH}/docs")
         openapi_response = client.get(f"{INTEGRATION_API_BASE_PATH}/openapi.json")
         guide_response = client.get(f"{INTEGRATION_API_BASE_PATH}/guide/donkey-client")
+        modular_doc_guide_response = client.get(
+            f"{INTEGRATION_API_BASE_PATH}/guide/modular-document"
+        )
+        webhook_guide_response = client.get(f"{INTEGRATION_API_BASE_PATH}/guide/webhooks")
 
     assert docs_response.status_code == 200
     assert openapi_response.status_code == 200
     assert "/article/{article_id}" in openapi_response.json()["paths"]
     assert "/article/{article_id}/publication" in openapi_response.json()["paths"]
+    assert "/guide/modular-document" in openapi_response.json()["paths"]
+    assert "/guide/webhooks" in openapi_response.json()["paths"]
     assert guide_response.status_code == 200
     guide_payload = guide_response.json()
     assert "modular_document" in guide_payload["markdown"]
     assert "content.article.publish_requested" in guide_payload["markdown"]
     assert guide_payload["modular_document_contract"]["schema_version"] == "1.0"
+    assert "author" in guide_payload["modular_document_contract"]
+    assert "DONKEY_SEO_API_KEY" in guide_payload["client_env_vars"]
+    assert modular_doc_guide_response.status_code == 200
+    assert webhook_guide_response.status_code == 200
+    webhook_payload = webhook_guide_response.json()
+    assert webhook_payload["webhook_contract"]["events"][0]["event_type"] == (
+        "content.article.publish_requested"
+    )
 
 
 def test_standalone_documentation_route_serves_integration_openapi() -> None:
@@ -119,6 +133,8 @@ def test_integration_index_exposes_publication_callback_template() -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["modular_document_guide_path"].endswith("/guide/modular-document")
+    assert payload["webhook_guide_path"].endswith("/guide/webhooks")
     assert (
         payload["article_publication_patch_path_template"]
         == "/article/{article_id}/publication?project_id={project_id}"
@@ -254,7 +270,9 @@ def test_integration_publication_patch_requires_api_key() -> None:
     assert response.json()["detail"] == "Invalid or missing API key"
 
 
-def test_integration_publication_patch_updates_article_and_cancels_pending(monkeypatch: Any) -> None:
+def test_integration_publication_patch_updates_article_and_cancels_pending(
+    monkeypatch: Any,
+) -> None:
     original_keys = settings.integration_api_keys
     settings.integration_api_keys = "valid-key"
     article = _MutableArticle(article_id="article_1", project_id="project_1")

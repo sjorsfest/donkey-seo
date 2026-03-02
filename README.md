@@ -286,6 +286,8 @@ Start content-only module:
 - `GET /api/v1/integration/openapi.json` - Integration OpenAPI schema (unprotected)
 - `GET /api/v1/integration/guide/donkey-client` - Client implementation guide (unprotected)
 - `GET /api/v1/integration/guide/donkey-client.md` - Same guide as markdown (unprotected)
+- `GET /api/v1/integration/guide/modular-document` - Field-level modular document + block guide
+- `GET /api/v1/integration/guide/webhooks` - Webhook event catalog + payload/header/signature guide
 - `GET /api/v1/integration/article/{article_id}?project_id={project_id}` - Latest article version
 - `GET /api/v1/integration/article/{article_id}/versions/{version_number}?project_id={project_id}`
   - Specific immutable article version
@@ -302,6 +304,11 @@ API_V1_PREFIX=/api/v1
 INTERNAL_API_PREFIX=
 INTEGRATION_API_PREFIX=/integration
 INTEGRATION_API_KEYS=comma,separated,long,random,keys
+
+# External Donkey SEO client credentials (set in your client app, not in this backend)
+# Generate both from the Donkey SEO dashboard for the project.
+DONKEY_SEO_API_KEY=replace-with-project-integration-api-key
+DONKEY_SEO_WEBHOOK_SECRET=replace-with-project-webhook-signing-secret
 
 # Database
 DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/donkeyseo

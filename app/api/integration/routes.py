@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.integration.dependencies import require_integration_api_key
 from app.api.integration.docs import (
     DONKEY_CLIENT_GUIDE_MARKDOWN,
+    INTEGRATION_CLIENT_ENV_TEMPLATE,
+    INTEGRATION_CLIENT_ENV_VARS,
+    MODULAR_BLOCK_TYPE_REFERENCE,
     MODULAR_DOCUMENT_CONTRACT,
+    MODULAR_DOCUMENT_FIELD_REFERENCE,
+    PUBLICATION_WEBHOOK_CONTRACT,
 )
 from app.api.integration.schemas import (
     IntegrationArticlePublicationPatchRequest,
@@ -21,20 +26,22 @@ from app.api.integration.schemas import (
     IntegrationArticleVersionResponse,
     IntegrationGuideResponse,
     IntegrationIndexResponse,
+    IntegrationModularDocumentGuideResponse,
+    IntegrationWebhookGuideResponse,
 )
 from app.api.v1.content.constants import (
     CONTENT_ARTICLE_NOT_FOUND_DETAIL,
     CONTENT_ARTICLE_VERSION_NOT_FOUND_DETAIL,
 )
 from app.core.database import get_session
+from app.integrations.content_image_store import ContentImageStore
 from app.models.content import ContentArticle, ContentArticleVersion
 from app.models.generated_dtos import ContentArticlePatchDTO
-from app.integrations.content_image_store import ContentImageStore
-from app.services.internal_link_resolver import (
-    resolve_deferred_internal_links_for_published_article,
-)
 from app.services.author_profiles import (
     enrich_modular_document_with_signed_author_image,
+)
+from app.services.internal_link_resolver import (
+    resolve_deferred_internal_links_for_published_article,
 )
 from app.services.publication_webhook import (
     cancel_pending_publication_webhook_deliveries,
@@ -155,6 +162,11 @@ async def integration_index(request: Request) -> IntegrationIndexResponse:
         openapi_path=_resolve_integration_path(request, "/openapi.json"),
         guide_path=_resolve_integration_path(request, "/guide/donkey-client"),
         guide_markdown_path=_resolve_integration_path(request, "/guide/donkey-client.md"),
+        modular_document_guide_path=_resolve_integration_path(
+            request,
+            "/guide/modular-document",
+        ),
+        webhook_guide_path=_resolve_integration_path(request, "/guide/webhooks"),
         article_latest_path_template="/article/{article_id}?project_id={project_id}",
         article_version_path_template=(
             "/article/{article_id}/versions/{version_number}?project_id={project_id}"
@@ -179,6 +191,11 @@ async def integration_client_guide() -> IntegrationGuideResponse:
         schema_version="1.0",
         markdown=DONKEY_CLIENT_GUIDE_MARKDOWN.strip(),
         modular_document_contract=MODULAR_DOCUMENT_CONTRACT,
+        modular_document_field_reference=MODULAR_DOCUMENT_FIELD_REFERENCE,
+        block_type_reference=MODULAR_BLOCK_TYPE_REFERENCE,
+        webhook_contract=PUBLICATION_WEBHOOK_CONTRACT,
+        client_env_vars=INTEGRATION_CLIENT_ENV_VARS,
+        client_env_template=INTEGRATION_CLIENT_ENV_TEMPLATE.strip(),
     )
 
 
@@ -191,6 +208,54 @@ async def integration_client_guide() -> IntegrationGuideResponse:
 async def integration_client_guide_markdown() -> str:
     """Return markdown version of coding-agent implementation guide."""
     return DONKEY_CLIENT_GUIDE_MARKDOWN.strip()
+
+
+@public_router.get(
+    "/guide/modular-document",
+    response_model=IntegrationModularDocumentGuideResponse,
+    summary="Modular document field and block guide",
+    description=(
+        "Return a complete field-level and block-level reference for the "
+        "modular_document contract."
+    ),
+)
+async def integration_modular_document_guide() -> IntegrationModularDocumentGuideResponse:
+    """Return modular-document contract and handling guidance."""
+    return IntegrationModularDocumentGuideResponse(
+        title="Donkey SEO modular_document Guide",
+        schema_version="1.0",
+        overview=(
+            "Use this reference to implement deterministic parsing and rendering for every "
+            "known modular_document field and block type."
+        ),
+        modular_document_contract=MODULAR_DOCUMENT_CONTRACT,
+        modular_document_field_reference=MODULAR_DOCUMENT_FIELD_REFERENCE,
+        block_type_reference=MODULAR_BLOCK_TYPE_REFERENCE,
+    )
+
+
+@public_router.get(
+    "/guide/webhooks",
+    response_model=IntegrationWebhookGuideResponse,
+    summary="Publication webhook event guide",
+    description=(
+        "Return outbound webhook event types, payload fields, headers, "
+        "signature verification, and retry policy."
+    ),
+)
+async def integration_webhook_guide() -> IntegrationWebhookGuideResponse:
+    """Return publication webhook contract reference."""
+    return IntegrationWebhookGuideResponse(
+        title="Donkey SEO Publication Webhook Guide",
+        schema_version="1.0",
+        overview=(
+            "Use this reference to build and harden your webhook receiver for all currently "
+            "emitted Donkey SEO publication events."
+        ),
+        webhook_contract=PUBLICATION_WEBHOOK_CONTRACT,
+        client_env_vars=INTEGRATION_CLIENT_ENV_VARS,
+        client_env_template=INTEGRATION_CLIENT_ENV_TEMPLATE.strip(),
+    )
 
 
 @protected_router.get(
