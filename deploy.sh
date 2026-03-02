@@ -77,6 +77,9 @@ compose_up_service_allow_port_in_use redis 6379 Redis
 echo "Syncing Python dependencies..."
 uv sync --frozen
 
+echo "Ensuring Playwright Chromium browser is installed..."
+uv run python -m playwright install chromium
+
 echo "Running database migrations..."
 uv run alembic upgrade head
 

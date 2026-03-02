@@ -30,6 +30,8 @@ dependencies = [
     "boto3>=1.34.0",
     # Image metadata extraction
     "pillow>=10.0.0",
+    # HTML/CSS image rendering backend
+    "playwright>=1.52.0",
     # JWT Authentication
     "python-jose[cryptography]>=3.3.0",
     "bcrypt>=4.0.0",

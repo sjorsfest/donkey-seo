@@ -99,6 +99,20 @@ def test_integration_docs_and_guide_are_public() -> None:
     assert guide_payload["modular_document_contract"]["schema_version"] == "1.0"
 
 
+def test_standalone_documentation_route_serves_integration_openapi() -> None:
+    with TestClient(create_app()) as client:
+        docs_response = client.get("/documentation")
+        openapi_response = client.get("/documentation/openapi.json")
+
+    assert docs_response.status_code == 200
+    assert "swagger-ui" in docs_response.text
+
+    assert openapi_response.status_code == 200
+    payload = openapi_response.json()
+    assert "/article/{article_id}" in payload["paths"]
+    assert payload["servers"][0]["url"] == INTEGRATION_API_BASE_PATH
+
+
 def test_integration_index_exposes_publication_callback_template() -> None:
     with TestClient(create_app()) as client:
         response = client.get(f"{INTEGRATION_API_BASE_PATH}/")

@@ -2,12 +2,15 @@
 
 import asyncio
 import logging
+from copy import deepcopy
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from fastapi import FastAPI
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.integration import integration_app
 from app.api.v1.pipeline.openapi_docs import (
@@ -96,6 +99,40 @@ def create_app() -> FastAPI:
     # Include API routers
     app.include_router(api_router, prefix=settings.resolved_internal_api_prefix)
     app.mount(settings.versioned_integration_api_prefix, integration_app)
+
+    @app.get("/documentation", include_in_schema=False)
+    async def integration_documentation() -> Any:
+        """Render integration API docs without the app's versioned API prefix."""
+        return get_swagger_ui_html(
+            openapi_url="/documentation/openapi.json",
+            title=f"{settings.app_name} Integration API Documentation",
+            swagger_ui_parameters={
+                "docExpansion": "list",
+                "defaultModelsExpandDepth": -1,
+                "displayRequestDuration": True,
+                "persistAuthorization": True,
+            },
+        )
+
+    @app.get("/documentation/redoc", include_in_schema=False)
+    async def integration_documentation_redoc() -> Any:
+        """Render ReDoc for integration API docs without versioned API prefix."""
+        return get_redoc_html(
+            openapi_url="/documentation/openapi.json",
+            title=f"{settings.app_name} Integration API Reference",
+        )
+
+    @app.get("/documentation/openapi.json", include_in_schema=False)
+    async def integration_documentation_openapi() -> JSONResponse:
+        """Expose integration-only OpenAPI schema for the standalone docs route."""
+        schema = deepcopy(integration_app.openapi())
+        schema["servers"] = [
+            {
+                "url": settings.versioned_integration_api_prefix,
+                "description": "Integration API base path",
+            }
+        ]
+        return JSONResponse(schema)
 
     @app.get(
         "/health",

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.services.steps.setup.step_02_brand_core import BrandCoreInput, Step02BrandCoreService
+from app.services.steps.setup.step_03_brand_icp import BrandIcpInput, Step03BrandIcpService
 from app.services.steps.setup.step_04_brand_assets import (
     BrandAssetsInput,
     Step04BrandAssetsService,
@@ -223,3 +224,212 @@ async def test_step05_brand_visual_fallback_when_agent_fails(monkeypatch: pytest
     assert output.visual_extraction_confidence == 0.2
     assert "{article_topic}" in output.visual_prompt_contract["template"]
     assert "required_variables" in output.visual_prompt_contract
+
+
+@pytest.mark.asyncio
+async def test_step02_brand_core_retries_low_signal_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
+    project = SimpleNamespace(name="Acme", domain="example.com")
+    session = _SingleResultSession(project)
+
+    low_signal_profile = SimpleNamespace(
+        company_name="Acme",
+        tagline="Automation for support",
+        products_services=[],
+        money_pages=["https://example.com/pricing"],
+        unique_value_props=[],
+        differentiators=[],
+        target_audience=SimpleNamespace(
+            target_roles=["Support Lead"],
+            target_industries=["SaaS"],
+            company_sizes=[],
+            primary_pains=[],
+            desired_outcomes=[],
+            common_objections=[],
+        ),
+        tone_attributes=["pragmatic"],
+        allowed_claims=[],
+        restricted_claims=[],
+        in_scope_topics=[],
+        out_of_scope_topics=[],
+        extraction_confidence=0.4,
+    )
+    strong_profile = SimpleNamespace(
+        company_name="Acme",
+        tagline="Automation for support",
+        products_services=[
+            SimpleNamespace(
+                name="Acme Flow",
+                description="Automates support handoffs",
+                category="automation",
+                target_audience="support",
+                core_benefits=["faster response"],
+            )
+        ],
+        money_pages=["https://example.com/pricing"],
+        unique_value_props=["Fast setup"],
+        differentiators=["Workflow-native"],
+        target_audience=SimpleNamespace(
+            target_roles=["Support Lead"],
+            target_industries=["SaaS"],
+            company_sizes=["SMB"],
+            primary_pains=["ticket backlog"],
+            desired_outcomes=["faster response times"],
+            common_objections=["migration effort"],
+        ),
+        tone_attributes=["pragmatic"],
+        allowed_claims=["reduces manual work"],
+        restricted_claims=["guaranteed ROI"],
+        in_scope_topics=["support automation"],
+        out_of_scope_topics=["medical advice"],
+        extraction_confidence=0.83,
+    )
+
+    class _RetryAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, _input: object) -> object:
+            self.calls += 1
+            if self.calls == 1:
+                return low_signal_profile
+            return strong_profile
+
+    agent = _RetryAgent()
+    monkeypatch.setattr(
+        "app.services.steps.setup.step_02_brand_core.BrandExtractorAgent",
+        lambda: agent,
+    )
+    monkeypatch.setattr(
+        "app.services.steps.setup.step_02_brand_core.scrape_website",
+        AsyncMock(
+            return_value={
+                "combined_content": "content",
+                "source_urls": ["https://example.com", "https://example.com/pricing"],
+                "asset_candidates": [],
+                "homepage_visual_signals": {},
+                "site_visual_signals": {},
+            }
+        ),
+    )
+
+    service = Step02BrandCoreService.__new__(Step02BrandCoreService)
+    service.session = session
+    service.project_id = "project-1"
+    service.execution = SimpleNamespace(result_summary=None)
+    service._update_progress = AsyncMock()
+    service.update_steps_config = AsyncMock()
+
+    output = await service._execute(BrandCoreInput(project_id="project-1"))
+
+    assert agent.calls == 2
+    assert output.extraction_attempts == 2
+    assert output.unique_value_props == ["Fast setup"]
+    assert output.differentiators == ["Workflow-native"]
+    assert any("low_signal" in warning for warning in output.extraction_warnings)
+
+
+@pytest.mark.asyncio
+async def test_step03_brand_icp_retries_low_signal_recommendations(monkeypatch: pytest.MonkeyPatch) -> None:
+    brand = SimpleNamespace(
+        company_name="Acme",
+        tagline="Automation for support",
+        products_services=[
+            {
+                "name": "Acme Flow",
+                "description": "Automates support handoffs",
+                "category": "automation",
+                "target_audience": "support",
+                "core_benefits": ["faster response"],
+            }
+        ],
+        unique_value_props=["Fast setup"],
+        differentiators=["Workflow-native"],
+        target_roles=["Support Lead"],
+        target_industries=["SaaS"],
+        company_sizes=["SMB"],
+        primary_pains=["ticket backlog"],
+        desired_outcomes=["faster response times"],
+        objections=["migration effort"],
+    )
+    session = _SingleResultSession(brand)
+
+    class _Niche:
+        def model_dump(self) -> dict[str, object]:
+            return {
+                "niche_name": "SaaS Support Teams",
+                "target_roles": ["Support Lead"],
+                "target_industries": ["SaaS"],
+                "company_sizes": ["SMB"],
+                "primary_pains": ["ticket backlog"],
+                "desired_outcomes": ["faster response times"],
+                "likely_objections": ["migration effort"],
+            }
+
+    class _RetryRecommender:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, _input: object) -> object:
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(suggested_niches=[])
+            return SimpleNamespace(suggested_niches=[_Niche()])
+
+    recommender = _RetryRecommender()
+    monkeypatch.setattr(
+        "app.services.steps.setup.step_03_brand_icp.ICPRecommenderAgent",
+        lambda: recommender,
+    )
+
+    service = Step03BrandIcpService.__new__(Step03BrandIcpService)
+    service.session = session
+    service.project_id = "project-1"
+    service.execution = SimpleNamespace(result_summary=None)
+    service._update_progress = AsyncMock()
+
+    output = await service._execute(BrandIcpInput(project_id="project-1"))
+
+    assert recommender.calls == 2
+    assert output.recommendation_attempts == 2
+    assert len(output.suggested_icp_niches) == 1
+    assert any("low_signal" in warning for warning in output.recommendation_warnings)
+
+
+@pytest.mark.asyncio
+async def test_step03_brand_icp_continues_after_max_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    brand = SimpleNamespace(
+        company_name="Acme",
+        tagline="Automation for support",
+        products_services=[],
+        unique_value_props=[],
+        differentiators=[],
+        target_roles=["Support Lead"],
+        target_industries=["SaaS"],
+        company_sizes=[],
+        primary_pains=[],
+        desired_outcomes=[],
+        objections=[],
+    )
+    session = _SingleResultSession(brand)
+
+    class _FailingRecommender:
+        async def run(self, _input: object) -> object:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "app.services.steps.setup.step_03_brand_icp.ICPRecommenderAgent",
+        lambda: _FailingRecommender(),
+    )
+
+    service = Step03BrandIcpService.__new__(Step03BrandIcpService)
+    service.session = session
+    service.project_id = "project-1"
+    service.execution = SimpleNamespace(result_summary=None)
+    service._update_progress = AsyncMock()
+
+    output = await service._execute(BrandIcpInput(project_id="project-1"))
+
+    assert output.recommendation_attempts == 3
+    assert output.suggested_icp_niches == []
+    assert output.target_audience["target_roles"] == ["Support Lead"]
+    assert len(output.recommendation_warnings) == 3
