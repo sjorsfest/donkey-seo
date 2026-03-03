@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
+from fnmatch import fnmatch
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -62,6 +63,38 @@ class _FakeSession:
         if self._calls == 1:
             return _FakeExecuteResult(self._article)
         return _FakeExecuteResult(self._article_version)
+
+
+class _FakeRedisCache:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.get_calls = 0
+        self.set_calls = 0
+        self.delete_calls = 0
+
+    async def get(self, key: str) -> str | None:
+        self.get_calls += 1
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> bool:
+        _ = ex
+        self.set_calls += 1
+        self.values[key] = value
+        return True
+
+    async def scan_iter(self, *, match: str) -> Any:
+        for key in list(self.values.keys()):
+            if fnmatch(key, match):
+                yield key
+
+    async def delete(self, *keys: str) -> int:
+        self.delete_calls += 1
+        removed = 0
+        for key in keys:
+            if key in self.values:
+                self.values.pop(key)
+                removed += 1
+        return removed
 
 
 class _MutableArticle:
@@ -520,6 +553,127 @@ def test_integration_article_returns_latest_version() -> None:
     assert payload["modular_document"]["schema_version"] == "1.0"
 
 
+def test_integration_article_returns_cached_version_on_repeat_request(
+    monkeypatch: Any,
+) -> None:
+    original_keys = settings.integration_api_keys
+    settings.integration_api_keys = "valid-key"
+
+    article = SimpleNamespace(id="article_1", project_id="project_1", current_version=2)
+    now = datetime.now(timezone.utc)
+    article_version = SimpleNamespace(
+        id="version_2",
+        article_id="article_1",
+        version_number=2,
+        title="Article title",
+        slug="article-title",
+        primary_keyword="primary keyword",
+        modular_document={"schema_version": "1.0", "blocks": []},
+        rendered_html="<article><h1>Article title</h1></article>",
+        qa_report=None,
+        status="draft",
+        change_reason=None,
+        generation_model="openrouter:model",
+        generation_temperature=0.2,
+        created_by_regeneration=False,
+        created_at=now,
+        updated_at=now,
+    )
+    fake_session = _FakeSession(article=article, article_version=article_version)
+    fake_redis = _FakeRedisCache()
+    monkeypatch.setattr(
+        "app.api.integration.routes.get_redis_client",
+        lambda: fake_redis,
+    )
+
+    async def _fake_get_session() -> AsyncGenerator[_FakeSession, None]:
+        yield fake_session
+
+    integration_app.dependency_overrides[get_session] = _fake_get_session
+    try:
+        with TestClient(create_app()) as client:
+            first_response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1",
+                params={"project_id": "project_1"},
+                headers={"X-API-Key": "valid-key"},
+            )
+            second_response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1",
+                params={"project_id": "project_1"},
+                headers={"X-API-Key": "valid-key"},
+            )
+    finally:
+        integration_app.dependency_overrides.clear()
+        settings.integration_api_keys = original_keys
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json()["id"] == second_response.json()["id"]
+    assert fake_session._calls == 2
+    assert fake_redis.set_calls >= 2
+
+
+def test_integration_specific_article_version_returns_cached_version_on_repeat_request(
+    monkeypatch: Any,
+) -> None:
+    original_keys = settings.integration_api_keys
+    settings.integration_api_keys = "valid-key"
+
+    article = SimpleNamespace(id="article_1", project_id="project_1", current_version=4)
+    now = datetime.now(timezone.utc)
+    article_version = SimpleNamespace(
+        id="version_4",
+        article_id="article_1",
+        version_number=4,
+        title="Article title",
+        slug="article-title",
+        primary_keyword="primary keyword",
+        modular_document={"schema_version": "1.0", "blocks": []},
+        rendered_html="<article><h1>Article title</h1></article>",
+        qa_report={"passed": True},
+        status="approved",
+        change_reason=None,
+        generation_model="openrouter:model",
+        generation_temperature=0.2,
+        created_by_regeneration=False,
+        created_at=now,
+        updated_at=now,
+    )
+    fake_session = _FakeSession(article=article, article_version=article_version)
+    fake_redis = _FakeRedisCache()
+    monkeypatch.setattr(
+        "app.api.integration.routes.get_redis_client",
+        lambda: fake_redis,
+    )
+
+    async def _fake_get_session() -> AsyncGenerator[_FakeSession, None]:
+        yield fake_session
+
+    integration_app.dependency_overrides[get_session] = _fake_get_session
+    try:
+        with TestClient(create_app()) as client:
+            first_response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1/versions/4",
+                params={"project_id": "project_1"},
+                headers={"X-API-Key": "valid-key"},
+            )
+            second_response = client.get(
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1/versions/4",
+                params={"project_id": "project_1"},
+                headers={"X-API-Key": "valid-key"},
+            )
+    finally:
+        integration_app.dependency_overrides.clear()
+        settings.integration_api_keys = original_keys
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json()["version_number"] == 4
+    assert second_response.json()["version_number"] == 4
+    assert fake_session._calls == 2
+    assert fake_redis.set_calls == 1
+
+
 def test_integration_publication_patch_requires_api_key() -> None:
     original_keys = settings.integration_api_keys
     settings.integration_api_keys = "valid-key"
@@ -562,6 +716,14 @@ def test_integration_publication_patch_updates_article_and_cancels_pending(
         "app.api.integration.routes.resolve_deferred_internal_links_for_published_article",
         resolve_links_mock,
     )
+    fake_redis = _FakeRedisCache()
+    fake_redis.values[
+        "integration:article-version:v1:project_1:article_1:latest"
+    ] = '{"version_number":1}'
+    monkeypatch.setattr(
+        "app.api.integration.routes.get_redis_client",
+        lambda: fake_redis,
+    )
 
     async def _fake_get_session() -> AsyncGenerator[_FakePublicationSession, None]:
         yield fake_session
@@ -593,6 +755,11 @@ def test_integration_publication_patch_updates_article_and_cancels_pending(
     assert fake_session.refresh_called is True
     cancel_mock.assert_awaited_once()
     resolve_links_mock.assert_awaited_once()
+    assert (
+        "integration:article-version:v1:project_1:article_1:latest"
+        not in fake_redis.values
+    )
+    assert fake_redis.delete_calls >= 1
 
 
 def test_integration_publication_patch_validates_required_published_fields() -> None:

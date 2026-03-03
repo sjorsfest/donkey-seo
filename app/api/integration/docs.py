@@ -325,7 +325,10 @@ PUBLICATION_WEBHOOK_CONTRACT: dict[str, Any] = {
                 "modular_document": (
                     "Full modular document payload, including optional author and image metadata."
                 ),
-                "rendered_html": "Rendered fallback HTML snapshot.",
+                "rendered_html": (
+                    "Rendered reference HTML snapshot. External clients should not use this as "
+                    "their canonical renderer."
+                ),
             },
         }
     ],
@@ -366,19 +369,29 @@ This API is split into:
   pillar navigation retrieval, and publication callbacks
 
 Core client contract:
-- Donkey SEO is the source of truth for immutable article versions.
-- Your integration fetches versions, preserves `modular_document` structure,
-  publishes to your CMS/viewer, and reports publication state back.
+- Donkey SEO is the source of truth for article content and publication intent.
+- Store the article payload delivered by webhook as your canonical local article record
+  (single local record per `article_id`; do not create separate local version rows).
+- Preserve `modular_document` structure, build your own block renderer for it,
+  publish through your CMS/viewer, and report publication state back.
 
 Agent execution recommendation:
 - If your agent supports planning mode, start in planning mode before changing code.
+- Scope implementation as separate parts:
+  1) Donkey SEO API client
+  2) signed webhook receiver for publish requests
+  3) `modular_document` block renderer
+  4) optional local webhook-data model
 - Use planning mode to define storage schema, parser behavior, webhook handling,
   pillar/disambiguation routing, and publication callback updates before implementation.
+- If your agent asks planning questions, every question MUST include context so the
+  implementer understands why the answer matters.
 - After planning, execute the approved implementation plan.
 
 How pillar taxonomy works:
 - Fetch project pillars from `GET __INTEGRATION_BASE_PATH__/pillars`.
 - Use pillars as category/navigation primitives in your frontend.
+- You may store/snapshot pillars locally to support disambiguation pages and navigation.
 - Main-page requirement: render active pillars in the footer as links to
   disambiguation pages (for example `/pillars/{pillar.slug}` or your CMS equivalent).
 - Article list responses include `primary_pillar`, `secondary_pillars`, and
@@ -396,10 +409,16 @@ How `modular_document` works:
 - Supported `block_type` values:
   `hero`, `summary`, `section`, `list`, `comparison_table`,
   `steps`, `faq`, `cta`, `conclusion`, `sources`.
+- You MUST build a block renderer for `modular_document` in your client.
 - Preserve order and nested structures (`faq_items`, `cta`, `links`,
   `table_columns/table_rows`) exactly.
+- If block content contains markdown, your block renderer MUST render that markdown
+  correctly in the published output.
+- `rendered_html` is NOT meant to be used by the other person's client renderer.
 - Signed image URLs in `author.profile_image.signed_url` and
   `featured_image.signed_url` are short-lived and should not be stored durably.
+- Download image assets from signed URLs and store them in your own public bucket,
+  because signed URLs expire.
 
 How publication webhooks work:
 - Outbound event type: `content.article.publish_requested`.
@@ -409,7 +428,7 @@ How publication webhooks work:
   - `article` (`article_id`, `brief_id`, `version_number`, `title`, `slug`,
     `primary_keyword`, `proposed_publication_date`)
   - `modular_document`
-  - `rendered_html`
+  - `rendered_html` (reference only; not canonical for client rendering)
 - Headers include:
   - `X-Donkey-Event`
   - `X-Donkey-Delivery-Id`
@@ -438,22 +457,332 @@ DONKEY_CLIENT_GUIDE_MARKDOWN = """
 # Donkey SEO Client Implementation Guide (For Agents and Engineers)
 
 Use this guide if you are building a Donkey SEO client with or without LLM coding.
-Goal: ingest immutable article versions, preserve structured content exactly, publish via
-CMS/viewer, and report publication state back to Donkey SEO.
 
-## 0) Agent Workflow (Planning Mode First)
+## 0) Mission
+
+You are expected to create code for a full Donkey SEO implementation in the user's project.
+The implementation must ingest Donkey SEO payloads, render content accurately, publish it,
+and sync publication state back.
+
+## 1) What Donkey SEO Is
+
+Donkey SEO is an automatic SEO tool that generates structured SEO content and publication
+signals. It provides article data through API endpoints and triggers publication workflows
+through signed webhooks.
+
+## 2) Implementation Parts (Required + Optional)
+
+### 2.1) Donkey SEO Client (Required)
+
+Build a client that calls the integration endpoints listed in this guide.
+The client should fetch articles/pillars and PATCH publication state.
+
+Example (TypeScript):
+```ts
+type PublicationPatch = {
+  publish_status?: "scheduled" | "published" | "failed";
+  published_at?: string;
+  published_url?: string;
+};
+
+class DonkeySeoClient {
+  constructor(private baseUrl: string, private apiKey: string) {}
+
+  private headers() {
+    return { "X-API-Key": this.apiKey, "Content-Type": "application/json" };
+  }
+
+  async getLatestArticle(projectId: string, articleId: string) {
+    const url = `${this.baseUrl}/api/v1/integration/article/${articleId}?project_id=${projectId}`;
+    return fetch(url, { headers: this.headers() }).then((r) => r.json());
+  }
+
+  async getPillars(projectId: string) {
+    const url = `${this.baseUrl}/api/v1/integration/pillars?project_id=${projectId}`;
+    return fetch(url, { headers: this.headers() }).then((r) => r.json());
+  }
+
+  async patchPublication(projectId: string, articleId: string, payload: PublicationPatch) {
+    const url = `${this.baseUrl}/api/v1/integration/article/${articleId}/publication?project_id=${projectId}`;
+    return fetch(url, {
+      method: "PATCH",
+      headers: this.headers(),
+      body: JSON.stringify(payload),
+    }).then((r) => r.json());
+  }
+}
+```
+
+### 2.2) Webhook Endpoint For Incoming Publish Requests (Required)
+
+Build an HTTP endpoint that receives `content.article.publish_requested`, verifies signature,
+processes idempotently via `event_id`, and triggers publishing.
+
+Example (Express):
+```ts
+import crypto from "crypto";
+import express from "express";
+
+const app = express();
+app.use("/webhooks/donkey", express.raw({ type: "application/json" }));
+
+app.post("/webhooks/donkey", async (req, res) => {
+  const timestamp = String(req.header("X-Donkey-Timestamp") || "");
+  const signature = String(req.header("X-Donkey-Signature") || "");
+  const body = req.body as Buffer;
+  const signed = crypto
+    .createHmac("sha256", process.env.DONKEY_SEO_WEBHOOK_SECRET || "")
+    .update(`${timestamp}.${body.toString("utf8")}`)
+    .digest("hex");
+
+  if (signature !== `sha256=${signed}`) return res.status(401).send("invalid signature");
+
+  const event = JSON.parse(body.toString("utf8"));
+  if (await alreadyProcessed(event.event_id)) return res.status(200).send("ok");
+
+  await handlePublishRequested(event);
+  await markProcessed(event.event_id);
+  return res.status(200).send("ok");
+});
+```
+
+### 2.3) Modular Block Renderer (Required)
+
+`modular_document.blocks[]` is a list of modular content items, not pre-rendered HTML.
+Each block can carry multiple structured fields such as:
+- `heading`, `body`
+- `items` (list/steps)
+- `links`
+- `faq_items`
+- `table_columns` + `table_rows`
+- `cta`
+- `semantic_tag`
+
+Your renderer should:
+1. Parse by `block_type`.
+2. Use `semantic_tag` to choose semantic container elements (`header`, `section`,
+   `aside`, `table`, `footer`, etc).
+3. Render modular sub-items into semantic HTML components.
+4. Render markdown in text fields safely (no raw HTML injection).
+5. Preserve order of blocks and nested arrays exactly.
+
+Example (React):
+```tsx
+import React from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeSanitize from "rehype-sanitize";
+
+type LinkItem = { anchor: string; href: string; target_brief_id?: string };
+type FaqItem = { question: string; answer: string };
+type Cta = { label: string; href: string } | null;
+
+type Block = {
+  block_type:
+    | "hero"
+    | "summary"
+    | "section"
+    | "list"
+    | "comparison_table"
+    | "steps"
+    | "faq"
+    | "cta"
+    | "conclusion"
+    | "sources";
+  semantic_tag?: "header" | "section" | "aside" | "footer" | "table" | string | null;
+  heading?: string | null;
+  level?: number | null;
+  body?: string | null;
+  items: string[];
+  ordered: boolean;
+  links: LinkItem[];
+  faq_items: FaqItem[];
+  table_columns: string[];
+  table_rows: string[][];
+  cta: Cta;
+};
+
+type ModularDocument = {
+  seo_meta?: { h1?: string; meta_title?: string; meta_description?: string; slug?: string };
+  author?: { name?: string; bio?: string };
+  blocks: Block[];
+};
+
+const MarkdownText = ({ text }: { text?: string | null }) => {
+  if (!text) return null;
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
+      {text}
+    </ReactMarkdown>
+  );
+};
+
+const Heading = ({ heading, level }: { heading?: string | null; level?: number | null }) => {
+  if (!heading) return null;
+  const normalized = Math.min(6, Math.max(1, level ?? 2));
+  const Tag = `h${normalized}` as keyof JSX.IntrinsicElements;
+  return <Tag>{heading}</Tag>;
+};
+
+const SemanticContainer = ({
+  semanticTag,
+  className,
+  children,
+}: {
+  semanticTag?: Block["semantic_tag"];
+  className?: string;
+  children: React.ReactNode;
+}) => {
+  const allowed = new Set(["header", "section", "aside", "footer"]);
+  const tag = semanticTag && allowed.has(semanticTag) ? semanticTag : "section";
+  return React.createElement(tag, { className }, children);
+};
+
+const SharedContent = ({ block }: { block: Block }) => (
+  <>
+    <Heading heading={block.heading} level={block.level} />
+    <MarkdownText text={block.body} />
+
+    {block.items.length > 0 ? (
+      block.ordered ? (
+        <ol>{block.items.map((item, i) => <li key={i}><MarkdownText text={item} /></li>)}</ol>
+      ) : (
+        <ul>{block.items.map((item, i) => <li key={i}><MarkdownText text={item} /></li>)}</ul>
+      )
+    ) : null}
+
+    {block.links.length > 0 ? (
+      <nav aria-label="Related links">
+        <ul>
+          {block.links.map((link, i) => (
+            <li key={`${link.anchor}-${i}`}>
+              <a href={link.href}>{link.anchor}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    ) : null}
+  </>
+);
+
+const ComparisonTableBlock = ({ block }: { block: Block }) => (
+  <section className="block block-comparison-table">
+    <Heading heading={block.heading} level={block.level ?? 2} />
+    <table>
+      <thead>
+        <tr>{block.table_columns.map((col, i) => <th key={i}>{col}</th>)}</tr>
+      </thead>
+      <tbody>
+        {block.table_rows.map((row, r) => (
+          <tr key={r}>{row.map((cell, c) => <td key={c}><MarkdownText text={cell} /></td>)}</tr>
+        ))}
+      </tbody>
+    </table>
+  </section>
+);
+
+const FaqBlock = ({ block }: { block: Block }) => (
+  <section className="block block-faq">
+    <Heading heading={block.heading} level={block.level ?? 2} />
+    {block.faq_items.map((item, i) => (
+      <details key={i}>
+        <summary>{item.question}</summary>
+        <MarkdownText text={item.answer} />
+      </details>
+    ))}
+  </section>
+);
+
+const CtaBlock = ({ block }: { block: Block }) => (
+  <aside className="block block-cta">
+    <SharedContent block={block} />
+    {block.cta ? <a href={block.cta.href}>{block.cta.label}</a> : null}
+  </aside>
+);
+
+function renderBlock(block: Block, index: number) {
+  switch (block.block_type) {
+    case "comparison_table":
+      return <ComparisonTableBlock key={index} block={block} />;
+    case "faq":
+      return <FaqBlock key={index} block={block} />;
+    case "cta":
+      return <CtaBlock key={index} block={block} />;
+    default:
+      return (
+        <SemanticContainer
+          key={index}
+          semanticTag={block.semantic_tag}
+          className={`block block-${block.block_type}`}
+        >
+          <SharedContent block={block} />
+        </SemanticContainer>
+      );
+  }
+}
+
+export function ArticleRenderer({ document }: { document: ModularDocument }) {
+  return <article>{document.blocks.map((block, i) => renderBlock(block, i))}</article>;
+}
+```
+
+### 2.4) Data Model For Webhook Data (Optional, Recommended)
+
+Optionally store incoming payloads in the user's own database for traceability and
+republish workflows. Recommended: one canonical local article row per `article_id`
+(no separate local version rows) plus an idempotency/event log table.
+
+Example (SQL):
+```sql
+create table donkey_articles (
+  article_id text primary key,
+  project_id text not null,
+  brief_id text not null,
+  version_number integer not null,
+  title text not null,
+  slug text not null,
+  primary_keyword text not null,
+  proposed_publication_date date null,
+  modular_document jsonb not null,
+  rendered_html text null,
+  updated_at timestamptz not null default now()
+);
+
+create table donkey_webhook_events (
+  event_id text primary key,
+  article_id text not null,
+  occurred_at timestamptz not null,
+  processed_at timestamptz not null default now()
+);
+```
+
+## 3) Extra Notes (MUST)
+
+- Build and use your own `modular_document` block renderer.
+- If markdown appears in block fields, render it properly.
+- `rendered_html` is reference/debug output and is NOT the canonical renderer output.
+- Store the webhook article payload as your canonical local article record.
+- Do not create separate local article-version rows.
+- Signed image URLs are short-lived; copy images to your own public bucket.
+- You may store pillars locally for navigation/disambiguation pages.
+- If your agent asks planning questions, each question MUST include implementation context.
+
+## 4) Agent Workflow (Planning Mode First)
 
 If your coding agent supports planning mode, start in planning mode before implementation.
 Plan at least:
-- immutable storage model and version keying,
+- webhook-first storage model for a single article record per `article_id`,
 - parser mapping for `modular_document` block types,
 - webhook validation + retry/idempotency handling,
 - pillar/disambiguation page wiring and footer link rendering,
 - publication status PATCH flow.
 
+If your agent asks planning questions, each question must include context explaining
+why the question is being asked and how the answer affects implementation.
+
 Then implement the approved plan.
 
-## 1) Credentials and Environment Variables
+## 5) Credentials and Environment Variables
 
 Use these environment variables in your client config or `.env.example`:
 
@@ -468,7 +797,7 @@ How to obtain values:
 - `DONKEY_SEO_WEBHOOK_SECRET` is used only by your webhook receiver to validate
   `X-Donkey-Signature`.
 
-## 2) Endpoints To Implement
+## 6) Endpoints To Implement
 
 Production API base URL:
 - `https://api.donkeyseo.io`
@@ -625,32 +954,32 @@ response:
 }
 ```
 
-## 3) Immutable Storage Rules
+## 7) Webhook-First Storage Rules (No Separate Local Versions)
 
-Persist these fields for each version:
-- `article_id`
-- `project_id`
-- `version_number`
-- `title`
-- `slug`
-- `primary_keyword`
-- `status`
+Persist these fields from the incoming webhook article payload:
+- `article.article_id`
+- `article.brief_id`
+- `article.version_number`
+- `article.title`
+- `article.slug`
+- `article.primary_keyword`
+- `article.proposed_publication_date`
+- `project.id` (and optionally `project.domain`, `project.locale`)
 - `modular_document` (store raw JSON unchanged)
-- `rendered_html`
-- `qa_report`
-- `change_reason`
-- `generation_model`
-- `generation_temperature`
-- `created_by_regeneration`
-- `created_at`
-- `updated_at`
+- `event_id`, `occurred_at` (for idempotency + tracing)
+
+Optional fields:
+- `rendered_html` for debugging/reference only (not for client rendering)
+- `article` metadata fetched from read endpoints for reconciliation
 
 Rules:
-1. Use `(article_id, version_number)` as immutable key.
-2. Never overwrite old versions.
-3. Store raw payload before transformations.
+1. Store the article sent by the webhook as the canonical local article record.
+2. Do not store separate local article-version rows.
+3. Upsert by `article_id` when newer webhook payloads arrive.
+4. Store raw payload before transformations.
+5. Track `event_id` to make webhook processing idempotent.
 
-## 4) Canonical `modular_document` Fields (All Known Fields)
+## 8) Canonical `modular_document` Fields (All Known Fields)
 
 Top-level keys:
 - `schema_version`
@@ -684,11 +1013,18 @@ Top-level keys:
 - `cta` with `label`, `href`, optional `target_brief_id`
 - `links[]` with `anchor`, `href`, optional `target_brief_id`
 
+Renderer requirement:
+- You MUST build a block renderer for `modular_document` and map blocks by `block_type`.
+- If block fields contain markdown (for example in `body`, `items`, or FAQ answers),
+  your parser/renderer must display that markdown correctly.
+- `rendered_html` is NOT meant to be used by the other person's client renderer.
+
 Signed URL rule:
 - Never persist `featured_image.signed_url` or `author.profile_image.signed_url` as durable values.
 - Treat signed URLs as short-lived read URLs for transient fetches only.
+- Download those assets promptly and store them in your own public bucket.
 
-## 5) Block Purpose and Best Handling (No Ambiguity)
+## 9) Block Purpose and Best Handling (No Ambiguity)
 
 - `hero`
   - Purpose: top-of-page opener and primary promise.
@@ -730,7 +1066,7 @@ Signed URL rule:
   - Purpose: references/citations for trust and compliance.
   - Handling: preserve anchors/URLs for traceability and audits.
 
-## 6) Parsing Requirements
+## 10) Parsing Requirements
 
 1. Parse by `block_type` (never by position).
 2. Preserve block order exactly.
@@ -739,8 +1075,9 @@ Signed URL rule:
 5. Keep pipeline auditable: raw payload -> normalized model -> publish payload.
 6. Parser must be `schema_version` aware.
 7. Add parser tests for every supported block type.
+8. Render markdown content correctly when markdown appears in block fields.
 
-## 7) Webhook Events and Fields
+## 11) Webhook Events and Fields
 
 Current outbound event set:
 - `content.article.publish_requested`
@@ -751,7 +1088,7 @@ Payload fields sent for this event:
 - `article` (`article_id`, `brief_id`, `version_number`, `title`, `slug`)
 - `article` (`primary_keyword`, `proposed_publication_date`)
 - `modular_document`
-- `rendered_html`
+- `rendered_html` (reference/debug only; not canonical for client rendering)
 
 Outbound headers:
 - `X-Donkey-Event`
@@ -832,19 +1169,20 @@ Body:
 }
 ```
 
-## 8) End-to-End Client Flow
+## 12) End-to-End Client Flow
 
 1. Receive webhook `content.article.publish_requested`.
 2. Verify signature using `DONKEY_SEO_WEBHOOK_SECRET`.
-3. Fetch latest/target article version with `DONKEY_SEO_API_KEY`.
-4. Fetch project pillars from `GET __INTEGRATION_BASE_PATH__/pillars?project_id=...`.
-5. Persist raw immutable payload.
-6. Normalize `modular_document` and map blocks to CMS/viewer components.
+3. Persist webhook payload as your canonical local article record (`article_id` upsert).
+4. Build/render article content from `modular_document` using your block renderer.
+5. Copy signed author/featured images into your own public bucket.
+6. Optionally fetch and store project pillars from
+   `GET __INTEGRATION_BASE_PATH__/pillars?project_id=...`.
 7. Render main-page footer pillar links pointing to pillar disambiguation pages.
 8. Publish/stage content.
 9. PATCH publication status back to Donkey SEO.
 
-## 9) Best-Practice Architecture (Recommended, Not Required)
+## 13) Best-Practice Architecture (Recommended, Not Required)
 
 Recommended publishing target:
 1. If you have a CMS/blog platform, integrate Donkey SEO output into that CMS.
@@ -855,13 +1193,16 @@ Recommended publishing target:
 
 Recommended storage model:
 1. Create an `article`/`blogpost` model in your database as the canonical local entity.
-2. Store immutable Donkey SEO versions keyed by `(article_id, version_number)`.
-3. Store mutable publication state separately (publish status, live URL, timestamps).
+2. Store incoming webhook article payload by `article_id` as your canonical local record.
+3. Do not create separate local version tables for Donkey SEO article versions.
+4. Store images from signed URLs in your own public bucket and persist stable URLs/keys.
+5. Potentially store pillars locally for navigation, disambiguation, and caching.
+6. Store mutable publication state separately (publish status, live URL, timestamps).
 
 These are best-practice defaults. You can choose a different architecture if it better
 fits your product constraints.
 
-## 10) Documentation Access
+## 14) Documentation Access
 
 - `GET __INTEGRATION_BASE_PATH__/guide/donkey-client`
   - Full implementation guide (markdown + structured JSON sections).

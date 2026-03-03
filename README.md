@@ -298,6 +298,15 @@ Production API base URL: `https://api.donkeyseo.io`
 - `PATCH /api/v1/integration/article/{article_id}/publication?project_id={project_id}`
   - Callback route to persist `publish_status`, `published_at`, and `published_url`
 
+Integration implementation rules:
+- Client implementations MUST build a block renderer for `modular_document`.
+- If block content contains markdown, the block parser/renderer MUST display that markdown properly.
+- `rendered_html` is reference/debug output and is NOT meant to be used by the other person's client renderer.
+- Store the article payload sent by the webhook as your canonical local article record; do not create separate local article-version rows.
+- Signed image URLs expire; copy article/author images to your own public bucket and persist stable URLs/keys.
+- You may store pillars locally to support navigation/disambiguation pages.
+- In planning mode, if an agent asks implementation questions, each question should include context about why it matters.
+
 ## Configuration
 
 Key environment variables:

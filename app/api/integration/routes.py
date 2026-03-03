@@ -36,7 +36,9 @@ from app.api.v1.content.constants import (
     CONTENT_ARTICLE_NOT_FOUND_DETAIL,
     CONTENT_ARTICLE_VERSION_NOT_FOUND_DETAIL,
 )
+from app.config import settings
 from app.core.database import get_session
+from app.core.redis import get_redis_client
 from app.integrations.content_image_store import ContentImageStore
 from app.models.content import ContentArticle, ContentArticleVersion
 from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
@@ -54,11 +56,111 @@ from app.services.publication_webhook import (
 public_router = APIRouter()
 protected_router = APIRouter(dependencies=[Depends(require_integration_api_key)])
 logger = logging.getLogger(__name__)
+INTEGRATION_ARTICLE_CACHE_PREFIX = "integration:article-version"
+INTEGRATION_ARTICLE_CACHE_NAMESPACE = "v1"
+INTEGRATION_ARTICLE_VERSION_CACHE_TTL_SECONDS = max(1, int(settings.cache_ttl_seconds))
+INTEGRATION_ARTICLE_LATEST_CACHE_TTL_SECONDS = max(
+    30,
+    min(INTEGRATION_ARTICLE_VERSION_CACHE_TTL_SECONDS, 300),
+)
 
 
 def _resolve_integration_path(request: Request, suffix: str) -> str:
     root_path = str(request.scope.get("root_path") or "")
     return f"{root_path}{suffix}"
+
+
+def _integration_article_cache_key(
+    *,
+    project_id: str,
+    article_id: str,
+    version_token: str,
+) -> str:
+    return (
+        f"{INTEGRATION_ARTICLE_CACHE_PREFIX}:{INTEGRATION_ARTICLE_CACHE_NAMESPACE}:"
+        f"{project_id}:{article_id}:{version_token}"
+    )
+
+
+async def _read_cached_integration_article_version(
+    *,
+    project_id: str,
+    article_id: str,
+    version_token: str,
+) -> IntegrationArticleVersionResponse | None:
+    cache_key = _integration_article_cache_key(
+        project_id=project_id,
+        article_id=article_id,
+        version_token=version_token,
+    )
+    try:
+        redis = get_redis_client()
+        raw_payload = await redis.get(cache_key)
+    except Exception:
+        logger.exception(
+            "Failed to read integration article cache payload",
+            extra={"cache_key": cache_key},
+        )
+        return None
+    if not isinstance(raw_payload, str) or not raw_payload:
+        return None
+    try:
+        return IntegrationArticleVersionResponse.model_validate_json(raw_payload)
+    except Exception:
+        logger.warning(
+            "Invalid integration article cache payload",
+            extra={"cache_key": cache_key},
+        )
+        return None
+
+
+async def _write_cached_integration_article_version(
+    *,
+    project_id: str,
+    article_id: str,
+    version_token: str,
+    payload: IntegrationArticleVersionResponse,
+    ttl_seconds: int,
+) -> None:
+    cache_key = _integration_article_cache_key(
+        project_id=project_id,
+        article_id=article_id,
+        version_token=version_token,
+    )
+    try:
+        redis = get_redis_client()
+        await redis.set(
+            cache_key,
+            payload.model_dump_json(),
+            ex=max(1, int(ttl_seconds)),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to write integration article cache payload",
+            extra={"cache_key": cache_key},
+        )
+
+
+async def _invalidate_cached_integration_article_versions(
+    *,
+    project_id: str,
+    article_id: str,
+) -> None:
+    cache_pattern = _integration_article_cache_key(
+        project_id=project_id,
+        article_id=article_id,
+        version_token="*",
+    )
+    try:
+        redis = get_redis_client()
+        keys = [key async for key in redis.scan_iter(match=cache_pattern)]
+        if keys:
+            await redis.delete(*keys)
+    except Exception:
+        logger.exception(
+            "Failed to invalidate integration article cache payloads",
+            extra={"cache_pattern": cache_pattern},
+        )
 
 
 async def _load_integration_pillar_payloads(
@@ -491,13 +593,49 @@ async def get_latest_article_version(
     session: AsyncSession = Depends(get_session),
 ) -> IntegrationArticleVersionResponse:
     """Fetch latest or explicit version snapshot for an article."""
+    version_token = (
+        f"version:{int(version_number)}" if version_number is not None else "latest"
+    )
+    cached_payload = await _read_cached_integration_article_version(
+        project_id=project_id,
+        article_id=article_id,
+        version_token=version_token,
+    )
+    if cached_payload is not None:
+        return cached_payload
+
     article, article_version = await _get_article_version(
         session=session,
         project_id=project_id,
         article_id=article_id,
         version_number=version_number,
     )
-    return _serialize_article_version(article, article_version)
+    payload = _serialize_article_version(article, article_version)
+
+    if version_number is None:
+        await _write_cached_integration_article_version(
+            project_id=project_id,
+            article_id=article_id,
+            version_token="latest",
+            payload=payload,
+            ttl_seconds=INTEGRATION_ARTICLE_LATEST_CACHE_TTL_SECONDS,
+        )
+        await _write_cached_integration_article_version(
+            project_id=project_id,
+            article_id=article_id,
+            version_token=f"version:{int(article_version.version_number)}",
+            payload=payload,
+            ttl_seconds=INTEGRATION_ARTICLE_VERSION_CACHE_TTL_SECONDS,
+        )
+    else:
+        await _write_cached_integration_article_version(
+            project_id=project_id,
+            article_id=article_id,
+            version_token=version_token,
+            payload=payload,
+            ttl_seconds=INTEGRATION_ARTICLE_VERSION_CACHE_TTL_SECONDS,
+        )
+    return payload
 
 
 @protected_router.get(
@@ -513,13 +651,30 @@ async def get_specific_article_version(
     session: AsyncSession = Depends(get_session),
 ) -> IntegrationArticleVersionResponse:
     """Fetch explicit immutable version snapshot for an article."""
+    version_token = f"version:{int(version_number)}"
+    cached_payload = await _read_cached_integration_article_version(
+        project_id=project_id,
+        article_id=article_id,
+        version_token=version_token,
+    )
+    if cached_payload is not None:
+        return cached_payload
+
     article, article_version = await _get_article_version(
         session=session,
         project_id=project_id,
         article_id=article_id,
         version_number=version_number,
     )
-    return _serialize_article_version(article, article_version)
+    payload = _serialize_article_version(article, article_version)
+    await _write_cached_integration_article_version(
+        project_id=project_id,
+        article_id=article_id,
+        version_token=version_token,
+        payload=payload,
+        ttl_seconds=INTEGRATION_ARTICLE_VERSION_CACHE_TTL_SECONDS,
+    )
+    return payload
 
 
 @protected_router.patch(
@@ -568,6 +723,10 @@ async def update_article_publication(
 
     await session.flush()
     await session.refresh(article)
+    await _invalidate_cached_integration_article_versions(
+        project_id=str(article.project_id),
+        article_id=str(article.id),
+    )
 
     return IntegrationArticlePublicationResponse(
         article_id=str(article.id),
