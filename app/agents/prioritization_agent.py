@@ -174,10 +174,13 @@ class PrioritizationAgent(BaseAgent[PrioritizationAgentInput, PrioritizationAgen
 
 10. **Recommended Primary Keyword**:
    - Choose from keyword_candidates
+   - Treat brand profile fit as the PRIMARY ranking axis (not optional)
    - Prioritize brand compatibility and blog-post suitability first
+   - Respect brand boundaries: out-of-scope topics, restricted claims, and audience mismatch are disqualifiers
+   - Prefer keywords that map naturally to the brand's products/services, ICP pains, and desired outcomes
    - Prefer informational/commercial intent and blog/guide/comparison style targets
    - Use keyword_candidate_profiles as supporting signals
-   - Treat search volume as a tie-breaker only, never the main reason
+   - Treat search volume as a weak tie-breaker only, never the main reason
 
 11. **Validation Notes**: Flag any concerns about the prioritization
 
@@ -261,8 +264,11 @@ Keep responses concise. For EACH topic, provide:
 11. target_money_pages
 12. validation_notes
 
-When selecting recommended_primary_keyword, prioritize brand/blog compatibility and use
-volume only as a tie-breaker.
+When selecting recommended_primary_keyword:
+- Brand profile fit is mandatory and dominates the decision
+- Reject candidates that conflict with in/out-of-scope boundaries or restricted claims
+- Prefer keywords aligned to product/service relevance + ICP pain/outcome match
+- Use volume only as a weak tie-breaker among otherwise brand-valid options
 
 Also provide overall_strategy_notes for the backlog."""
 
@@ -287,8 +293,11 @@ For EACH topic, provide:
 11. Target money pages to link to
 12. Validation notes if the prioritization seems off
 
-When selecting recommended_primary_keyword, prioritize brand/blog compatibility and use
-volume only as a tie-breaker.
+When selecting recommended_primary_keyword:
+- Brand profile fit is mandatory and dominates the decision
+- Reject candidates that conflict with in/out-of-scope boundaries or restricted claims
+- Prefer keywords aligned to product/service relevance + ICP pain/outcome match
+- Use volume only as a weak tie-breaker among otherwise brand-valid options
 
 Also provide overall_strategy_notes for the content backlog."""
 

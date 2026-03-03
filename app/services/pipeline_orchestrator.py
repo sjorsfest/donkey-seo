@@ -48,6 +48,12 @@ from app.services.pipelines import (
     SETUP_LOCAL_TO_INPUT,
     SETUP_LOCAL_TO_SERVICE,
 )
+from app.services.discovery_pipeline_halt import (
+    DISCOVERY_AUTO_HALT_STAGE,
+    build_discovery_auto_halt_detail,
+    build_discovery_auto_halt_reason,
+    resolve_discovery_pipeline_halt_state,
+)
 from app.services.pipelines.discovery.loop import (
     DISCOVERY_STEPS,
     AcceptedTopicState,
@@ -105,6 +111,10 @@ class PipelineOrchestrator:
             steps_config=steps_config,
         )
         run_module = self._as_pipeline_module(run.pipeline_module)
+        if run_module == "discovery":
+            should_pause_for_capacity = await self._auto_halt_discovery_run_if_needed(run=run)
+            if should_pause_for_capacity:
+                return run
 
         await self._assert_can_start_module(
             pipeline_module=run_module,
@@ -457,6 +467,10 @@ class PipelineOrchestrator:
 
         if run.status == "completed":
             return False
+        if run_module == "discovery":
+            should_pause_for_capacity = await self._auto_halt_discovery_run_if_needed(run=run)
+            if should_pause_for_capacity:
+                return False
 
         if run.status == "paused" and job_kind != "resume":
             logger.info(
@@ -675,6 +689,56 @@ class PipelineOrchestrator:
             current_step_name=module_cfg["step_names"].get(start_step),
             error_message=None,
         )
+
+    async def _auto_halt_discovery_run_if_needed(
+        self,
+        *,
+        run: PipelineRun,
+    ) -> bool:
+        run_module = self._as_pipeline_module(run.pipeline_module)
+        if run_module != "discovery":
+            return False
+
+        async with self._active_session() as session:
+            halt_state = await resolve_discovery_pipeline_halt_state(
+                session=session,
+                project_id=self.project_id,
+            )
+        if not halt_state.should_halt:
+            return False
+
+        module_cfg = self._module_config("discovery")
+        paused_at_step = run.paused_at_step
+        if paused_at_step is None:
+            paused_at_step = (
+                run.start_step if run.start_step is not None else module_cfg["default_start"]
+            )
+        error_message = build_discovery_auto_halt_reason(halt_state)
+        await self._update_run_status_with_retry(
+            run_id=str(run.id),
+            status="paused",
+            paused_at_step=paused_at_step,
+            error_message=error_message,
+        )
+        run.status = "paused"
+        run.paused_at_step = paused_at_step
+        run.error_message = error_message
+        await self.task_manager.set_task_state(
+            task_id=str(run.id),
+            status="paused",
+            stage=DISCOVERY_AUTO_HALT_STAGE,
+            project_id=self.project_id,
+            pipeline_module="discovery",
+            source_topic_id=run.source_topic_id,
+            current_step=paused_at_step,
+            current_step_name=module_cfg["step_names"].get(paused_at_step),
+            error_message=build_discovery_auto_halt_detail(
+                upcoming_scheduled_items=halt_state.upcoming_scheduled_items,
+                halt_threshold=halt_state.halt_threshold,
+                window_days=halt_state.window_days,
+            ),
+        )
+        return True
 
     async def _run_standard_slice(self, run: PipelineRun) -> bool:
         module = self._as_pipeline_module(run.pipeline_module)

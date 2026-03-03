@@ -6,7 +6,10 @@ import pytest
 from fastapi import HTTPException, status
 
 from app.api.v1.pipeline.constants import CONTENT_ARTICLE_LIMIT_REACHED_DETAIL
-from app.api.v1.pipeline.routes import _resolve_content_start_max_briefs
+from app.api.v1.pipeline.routes import (
+    _resolve_content_start_max_briefs,
+    _resolve_discovery_auto_halt_detail,
+)
 
 
 def test_resolve_content_start_max_briefs_raises_when_no_remaining_slots() -> None:
@@ -26,3 +29,15 @@ def test_resolve_content_start_max_briefs_clamps_to_remaining_slots() -> None:
         remaining_article_slots=3,
     )
     assert effective == 3
+
+
+def test_resolve_discovery_auto_halt_detail_includes_threshold_and_window() -> None:
+    detail = _resolve_discovery_auto_halt_detail(
+        count=12,
+        threshold=10,
+        window_days=60,
+    )
+
+    assert "auto-halted" in detail
+    assert "12 briefs/articles" in detail
+    assert "60 days" in detail

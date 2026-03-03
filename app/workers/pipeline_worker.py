@@ -7,10 +7,16 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
+from datetime import datetime, timezone
 
+from app.config import settings
 from app.core.database import close_db
 from app.core.logging import setup_logging
 from app.core.redis import close_redis
+from app.services.discovery_pipeline_halt import (
+    reconcile_discovery_auto_halted_runs,
+    write_discovery_reconciliation_metrics,
+)
 from app.services.pipeline_task_manager import (
     PipelineModule,
     PipelineTaskWorker,
@@ -89,6 +95,12 @@ async def run_workers(
     logger.info("Pipeline worker process started", extra={"modules": modules})
 
     stop_event = asyncio.Event()
+    reconciliation_task: asyncio.Task[None] | None = None
+    if "discovery" in modules:
+        reconciliation_task = asyncio.create_task(
+            _run_discovery_auto_halt_reconciliation_loop(stop_event),
+            name="discovery-auto-halt-reconciliation",
+        )
     loop = asyncio.get_running_loop()
 
     def _request_stop() -> None:
@@ -104,10 +116,53 @@ async def run_workers(
         await stop_event.wait()
     finally:
         logger.info("Stopping pipeline worker process")
+        if reconciliation_task is not None:
+            reconciliation_task.cancel()
+            await asyncio.gather(reconciliation_task, return_exceptions=True)
         for worker in workers:
             await worker.stop()
         await close_redis()
         await close_db()
+
+
+async def _run_discovery_auto_halt_reconciliation_loop(stop_event: asyncio.Event) -> None:
+    """Sweep paused discovery runs and auto-resume eligible projects."""
+    interval_seconds = max(60, int(settings.discovery_pipeline_halt_reconcile_interval_seconds))
+    logger.info(
+        "Discovery auto-halt reconciliation loop started",
+        extra={"interval_seconds": interval_seconds},
+    )
+    try:
+        while not stop_event.is_set():
+            sweep_started_at = datetime.now(timezone.utc)
+            try:
+                resumed = await reconcile_discovery_auto_halted_runs()
+                logger.info(
+                    "Discovery auto-halt reconciliation sweep finished",
+                    extra={"resumed_runs": resumed},
+                )
+                await write_discovery_reconciliation_metrics(
+                    started_at=sweep_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    status="ok",
+                    resumed_runs=resumed,
+                    error_message=None,
+                )
+            except Exception:
+                logger.exception("Discovery auto-halt reconciliation sweep failed")
+                await write_discovery_reconciliation_metrics(
+                    started_at=sweep_started_at,
+                    finished_at=datetime.now(timezone.utc),
+                    status="error",
+                    resumed_runs=0,
+                    error_message="reconciliation_sweep_failed",
+                )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=float(interval_seconds))
+            except asyncio.TimeoutError:
+                continue
+    except asyncio.CancelledError:
+        return
 
 
 def main() -> int:

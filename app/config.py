@@ -190,6 +190,9 @@ class Settings(BaseSettings):
     discovery_pipeline_task_queue_size: int = 200
     content_pipeline_task_workers: int = 3
     content_pipeline_task_queue_size: int = 300
+    discovery_pipeline_halt_threshold: int = 10
+    discovery_pipeline_halt_window_days: int = 60
+    discovery_pipeline_halt_reconcile_interval_seconds: int = 86_400
 
     @property
     def stripe_enabled(self) -> bool:

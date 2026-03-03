@@ -267,9 +267,9 @@ class EmbeddingsClient:
         """Find the best primary keyword in a cluster.
 
         Selection criteria:
-        1. Highest search volume
-        2. Medium difficulty (not hardest)
-        3. Closest to cluster centroid (most representative)
+        1. Closest to cluster centroid (most representative)
+        2. Reasonable difficulty (not hardest)
+        3. Search volume as a weak tie-breaker
 
         Args:
             items: List of keyword dicts with metrics
@@ -302,9 +302,9 @@ class EmbeddingsClient:
 
             # Combined score (weighted)
             combined = (
-                volume_score * 0.5 +
-                difficulty_score * 0.2 +
-                centroid_sim * 0.3
+                volume_score * 0.12 +
+                difficulty_score * 0.23 +
+                centroid_sim * 0.65
             )
             scores.append(combined)
 

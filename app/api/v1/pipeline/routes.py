@@ -11,6 +11,7 @@ from app.api.v1.pipeline.constants import (
     CONTENT_ARTICLE_LIMIT_REACHED_DETAIL,
     CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL,
     DEFAULT_RUN_LIMIT,
+    DISCOVERY_PIPELINE_AUTO_HALTED_DETAIL,
     DISCOVERY_PIPELINE_ALREADY_RUNNING_DETAIL,
     MAX_RUN_LIMIT,
     MULTIPLE_RUNNING_PIPELINES_DETAIL,
@@ -35,6 +36,10 @@ from app.schemas.pipeline import (
 )
 from app.services.pipeline_orchestrator import PipelineOrchestrator
 from app.services.pipelines import CONTENT_DEFAULT_END_STEP
+from app.services.discovery_pipeline_halt import (
+    build_discovery_auto_halt_detail,
+    resolve_discovery_pipeline_halt_state,
+)
 from app.services.pipeline_task_manager import (
     PipelineQueueFullError,
     get_content_pipeline_task_manager,
@@ -65,6 +70,18 @@ def _resolve_content_start_max_briefs(
             detail=limit_reached_detail or CONTENT_ARTICLE_LIMIT_REACHED_DETAIL,
         )
     return max(1, min(requested_max_briefs, remaining_article_slots))
+
+
+def _resolve_discovery_auto_halt_detail(*, count: int, threshold: int, window_days: int) -> str:
+    """Format API detail for auto-halted discovery pipeline starts/resumes."""
+    return (
+        f"{DISCOVERY_PIPELINE_AUTO_HALTED_DETAIL}. "
+        + build_discovery_auto_halt_detail(
+            upcoming_scheduled_items=count,
+            halt_threshold=threshold,
+            window_days=window_days,
+        )
+    )
 
 
 @router.post(
@@ -116,6 +133,21 @@ async def start_pipeline(
         else:
             detail = CONTENT_PIPELINE_ALREADY_RUNNING_DETAIL
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    if pipeline_module == "discovery":
+        halt_state = await resolve_discovery_pipeline_halt_state(
+            session=session,
+            project_id=project_id_str,
+        )
+        if halt_state.should_halt:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_resolve_discovery_auto_halt_detail(
+                    count=halt_state.upcoming_scheduled_items,
+                    threshold=halt_state.halt_threshold,
+                    window_days=halt_state.window_days,
+                ),
+            )
 
     strategy_payload = request.strategy.model_dump() if request.strategy else None
     discovery_payload = request.discovery.model_dump() if request.discovery else None
@@ -464,6 +496,20 @@ async def resume_pipeline(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=NO_PAUSED_PIPELINE_DETAIL,
         )
+    if pipeline_run.pipeline_module == "discovery":
+        halt_state = await resolve_discovery_pipeline_halt_state(
+            session=session,
+            project_id=str(project_id),
+        )
+        if halt_state.should_halt:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=_resolve_discovery_auto_halt_detail(
+                    count=halt_state.upcoming_scheduled_items,
+                    threshold=halt_state.halt_threshold,
+                    window_days=halt_state.window_days,
+                ),
+            )
 
     task_manager = TaskManager()
     await task_manager.set_task_state(

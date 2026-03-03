@@ -10,7 +10,10 @@ import pytest
 
 from app.core.exceptions import PipelineAlreadyRunningError, PipelineDelayedResumeRequested
 from app.services.pipeline_task_manager import PipelineTaskJob, PipelineTaskWorker
-from app.workers.pipeline_worker import resolve_modules
+from app.workers.pipeline_worker import (
+    _run_discovery_auto_halt_reconciliation_loop,
+    resolve_modules,
+)
 
 
 def test_resolve_modules_defaults_to_all() -> None:
@@ -263,3 +266,30 @@ async def test_pipeline_task_worker_auto_pauses_blocked_run_after_busy_limit(
     pause_mock.assert_awaited_once()
     sleep_mock.assert_not_awaited()
     assert manager.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_discovery_auto_halt_reconciliation_loop_runs_sweep_once(
+    monkeypatch: Any,
+) -> None:
+    stop_event = asyncio.Event()
+    calls = {"count": 0}
+
+    async def _fake_reconcile() -> int:
+        calls["count"] += 1
+        stop_event.set()
+        return 1
+
+    monkeypatch.setattr(
+        "app.workers.pipeline_worker.reconcile_discovery_auto_halted_runs",
+        _fake_reconcile,
+    )
+    metrics_mock = AsyncMock()
+    monkeypatch.setattr(
+        "app.workers.pipeline_worker.write_discovery_reconciliation_metrics",
+        metrics_mock,
+    )
+
+    await _run_discovery_auto_halt_reconciliation_loop(stop_event)
+    assert calls["count"] == 1
+    metrics_mock.assert_awaited_once()

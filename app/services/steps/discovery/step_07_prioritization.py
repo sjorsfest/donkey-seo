@@ -84,6 +84,7 @@ LLM_RERANK_MAX_DELTA = 8.0
 LLM_RETRY_ATTEMPTS = 2
 LLM_FIT_ADJUSTMENT_MIN = -0.15
 LLM_FIT_ADJUSTMENT_MAX = 0.18
+COMPACT_MODE_BRAND_CONTEXT_MAX_CHARS = 1800
 PRIMARY_PROMOTION_TOLERANCE = 0.04
 SECONDARY_PROMOTION_TOLERANCE = 0.06
 MIN_GAP_BETWEEN_THRESHOLDS = 0.03
@@ -623,12 +624,61 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         if brand:
             if brand.company_name:
                 parts.append(f"Company: {brand.company_name}")
+            if brand.tagline:
+                parts.append(f"Tagline: {brand.tagline}")
             if brand.products_services:
-                products = [p.get("name", "") for p in brand.products_services[:5] if p.get("name")]
-                if products:
-                    parts.append(f"Products: {', '.join(products)}")
+                product_lines: list[str] = []
+                for product in brand.products_services[:5]:
+                    if not isinstance(product, dict):
+                        continue
+                    name = str(product.get("name", "")).strip()
+                    if not name:
+                        continue
+                    desc = str(product.get("description", "")).strip()
+                    audience = str(product.get("target_audience", "")).strip()
+                    benefits_raw = product.get("core_benefits", [])
+                    benefits = [
+                        str(item).strip()
+                        for item in (benefits_raw if isinstance(benefits_raw, list) else [])
+                        if str(item).strip()
+                    ][:4]
+                    detail_parts = [name]
+                    if desc:
+                        detail_parts.append(f"desc={desc}")
+                    if audience:
+                        detail_parts.append(f"audience={audience}")
+                    if benefits:
+                        detail_parts.append(f"benefits={', '.join(benefits)}")
+                    product_lines.append(" | ".join(detail_parts))
+                if product_lines:
+                    parts.append("Products:\n  - " + "\n  - ".join(product_lines))
             if brand.unique_value_props:
-                parts.append(f"Value Props: {', '.join(brand.unique_value_props[:3])}")
+                parts.append(f"Value Props: {', '.join(brand.unique_value_props[:6])}")
+            if brand.differentiators:
+                parts.append(f"Differentiators: {', '.join(brand.differentiators[:6])}")
+            if brand.target_roles:
+                parts.append(f"Target Roles: {', '.join(brand.target_roles[:8])}")
+            if brand.target_industries:
+                parts.append(f"Target Industries: {', '.join(brand.target_industries[:8])}")
+            if brand.company_sizes:
+                parts.append(f"Company Sizes: {', '.join(brand.company_sizes[:8])}")
+            if brand.primary_pains:
+                parts.append(f"Primary Pains: {', '.join(brand.primary_pains[:8])}")
+            if brand.desired_outcomes:
+                parts.append(f"Desired Outcomes: {', '.join(brand.desired_outcomes[:8])}")
+            if brand.objections:
+                parts.append(f"Likely Objections: {', '.join(brand.objections[:6])}")
+            if brand.allowed_claims:
+                parts.append(f"Allowed Claims: {', '.join(brand.allowed_claims[:6])}")
+            if brand.restricted_claims:
+                parts.append(
+                    "Restricted Claims (do not imply): "
+                    f"{', '.join(brand.restricted_claims[:6])}"
+                )
+            if brand.in_scope_topics:
+                parts.append(f"In-Scope Topics (brand): {', '.join(brand.in_scope_topics[:10])}")
+            if brand.out_of_scope_topics:
+                parts.append(f"Out-of-Scope Topics (brand): {', '.join(brand.out_of_scope_topics[:10])}")
 
         if strategy.conversion_intents:
             parts.append(f"Conversion Intents: {', '.join(strategy.conversion_intents[:8])}")
@@ -644,6 +694,13 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             parts.append(f"Out of Scope: {', '.join(strategy.exclude_topics[:8])}")
 
         return "\n".join(parts)
+
+    def _compact_brand_context(self, brand_context: str) -> str:
+        """Keep essential brand context in compact mode while trimming token load."""
+        normalized = str(brand_context or "").strip()
+        if len(normalized) <= COMPACT_MODE_BRAND_CONTEXT_MAX_CHARS:
+            return normalized
+        return normalized[:COMPACT_MODE_BRAND_CONTEXT_MAX_CHARS].rstrip()
 
     def _extract_money_pages(self, brand: BrandProfile | None) -> list[str]:
         """Extract money page URLs from brand profile."""
@@ -1838,7 +1895,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                             compact_mode=compact_mode,
                             offer_terms=offer_terms,
                         ),
-                        brand_context=brand_context if not compact_mode else brand_context[:600],
+                        brand_context=(
+                            brand_context
+                            if not compact_mode
+                            else self._compact_brand_context(brand_context)
+                        ),
                         money_pages=money_pages,
                         primary_goal=primary_goal,
                         compact_mode=compact_mode,

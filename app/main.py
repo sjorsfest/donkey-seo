@@ -23,6 +23,7 @@ from app.config import settings
 from app.core.database import close_db, init_db
 from app.core.logging import setup_logging
 from app.core.redis import close_redis
+from app.services.discovery_pipeline_halt import read_discovery_reconciliation_metrics
 from app.services.pipeline_task_manager import (
     get_content_pipeline_task_manager,
     get_discovery_pipeline_task_manager,
@@ -159,6 +160,8 @@ def create_app() -> FastAPI:
             discovery_manager.get_queue_size(),
             content_manager.get_queue_size(),
         )
+        reconciliation = await read_discovery_reconciliation_metrics()
+        reconciliation_payload = reconciliation or {}
 
         return {
             "status": "healthy",
@@ -181,6 +184,13 @@ def create_app() -> FastAPI:
                 },
             },
             "total_queued": setup_count + discovery_count + content_count,
+            "discovery_auto_halt_reconciliation": {
+                "last_run_started_at": reconciliation_payload.get("started_at"),
+                "last_run_finished_at": reconciliation_payload.get("finished_at"),
+                "last_status": reconciliation_payload.get("status"),
+                "last_resumed_runs": reconciliation_payload.get("resumed_runs"),
+                "last_error_message": reconciliation_payload.get("error_message"),
+            },
         }
 
     return app
