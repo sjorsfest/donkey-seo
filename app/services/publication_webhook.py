@@ -8,6 +8,7 @@ import json
 import logging
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from sqlalchemy import select
@@ -43,6 +44,14 @@ PUBLICATION_WEBHOOK_SIGNED_URL_TTL_SECONDS = max(1, int(settings.signed_url_ttl_
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _sanitize_webhook_endpoint(endpoint: str) -> str:
+    """Strip query/fragment from endpoint before writing logs."""
+    parsed = urlsplit(endpoint)
+    if not parsed.scheme or not parsed.netloc:
+        return endpoint
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
 def scheduled_publication_datetime(publication_date: date) -> datetime:
@@ -472,6 +481,13 @@ async def dispatch_publication_webhook_delivery(
     if context is None:
         delivery = await PublicationWebhookDelivery.get(session, delivery_id)
         if delivery is not None and delivery.status not in PUBLICATION_WEBHOOK_TERMINAL_STATUSES:
+            logger.warning(
+                "Publication webhook delivery context missing",
+                extra={
+                    "delivery_id": delivery_id,
+                    "status": delivery.status,
+                },
+            )
             attempted_at = _utc_now()
             patch_payload = apply_publication_delivery_attempt_result(
                 delivery=delivery,
@@ -500,6 +516,14 @@ async def dispatch_publication_webhook_delivery(
 
     if not endpoint or not secret:
         error_message = "project_webhook_not_configured"
+        logger.warning(
+            "Publication webhook dispatch skipped: project webhook not configured",
+            extra={
+                "delivery_id": str(delivery.id),
+                "project_id": str(project.id),
+                "article_id": str(article.id),
+            },
+        )
     else:
         payload = build_publication_webhook_payload(
             delivery=delivery,
@@ -523,6 +547,18 @@ async def dispatch_publication_webhook_delivery(
             "X-Donkey-Timestamp": timestamp,
             "X-Donkey-Signature": signature,
         }
+        logger.info(
+            "Dispatching publication webhook payload",
+            extra={
+                "delivery_id": str(delivery.id),
+                "project_id": str(project.id),
+                "article_id": str(article.id),
+                "event_type": PUBLICATION_WEBHOOK_EVENT_TYPE,
+                "attempt_number": int(delivery.attempt_count or 0) + 1,
+                "endpoint": _sanitize_webhook_endpoint(endpoint),
+                "payload_bytes": len(raw_body),
+            },
+        )
 
         own_client = http_client is None
         client = http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
@@ -535,8 +571,28 @@ async def dispatch_publication_webhook_delivery(
                     f"webhook_http_{response.status_code}: "
                     f"{response.text[:400]}"
                 )
+                logger.warning(
+                    "Publication webhook endpoint returned non-2xx status",
+                    extra={
+                        "delivery_id": str(delivery.id),
+                        "project_id": str(project.id),
+                        "article_id": str(article.id),
+                        "endpoint": _sanitize_webhook_endpoint(endpoint),
+                        "http_status": response.status_code,
+                    },
+                )
         except httpx.HTTPError as exc:
             error_message = str(exc)
+            logger.warning(
+                "Publication webhook request raised HTTP transport error",
+                extra={
+                    "delivery_id": str(delivery.id),
+                    "project_id": str(project.id),
+                    "article_id": str(article.id),
+                    "endpoint": _sanitize_webhook_endpoint(endpoint),
+                    "error": str(exc),
+                },
+            )
         finally:
             if own_client:
                 await client.aclose()
@@ -553,6 +609,25 @@ async def dispatch_publication_webhook_delivery(
         PublicationWebhookDeliveryPatchDTO.from_partial(patch_payload),
     )
     await session.flush()
+    next_attempt_at_raw = patch_payload.get("next_attempt_at")
+    next_attempt_at_iso = (
+        next_attempt_at_raw.isoformat()
+        if isinstance(next_attempt_at_raw, datetime)
+        else None
+    )
+    logger.info(
+        "Publication webhook delivery attempt persisted",
+        extra={
+            "delivery_id": str(delivery.id),
+            "project_id": str(project.id),
+            "article_id": str(article.id),
+            "status": patch_payload.get("status"),
+            "attempt_count": patch_payload.get("attempt_count"),
+            "http_status": patch_payload.get("last_http_status"),
+            "next_attempt_at": next_attempt_at_iso,
+            "last_error": patch_payload.get("last_error"),
+        },
+    )
     return success
 
 
