@@ -46,6 +46,9 @@ def author_modular_document_payload(author: Author) -> dict[str, Any]:
 
 def enrich_modular_document_with_signed_author_image(
     modular_document: dict[str, Any],
+    *,
+    ttl_seconds: int | None = None,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """Append signed profile image URL to modular-document author payload when possible."""
     if not isinstance(modular_document, dict):
@@ -68,8 +71,13 @@ def enrich_modular_document_with_signed_author_image(
     enriched_profile_image = dict(profile_image)
     try:
         store = AuthorImageStore()
-        enriched_profile_image["signed_url"] = store.create_signed_read_url(object_key=object_key)
+        enriched_profile_image["signed_url"] = store.create_signed_read_url(
+            object_key=object_key,
+            ttl_seconds=ttl_seconds,
+        )
     except Exception as exc:
+        if strict:
+            raise
         logger.warning(
             "Failed to add author profile image signed URL",
             extra={"object_key": object_key, "error": str(exc)},
@@ -79,14 +87,21 @@ def enrich_modular_document_with_signed_author_image(
     return payload
 
 
-def build_author_profile_image_signed_url(author: Author) -> str | None:
+def build_author_profile_image_signed_url(
+    author: Author,
+    *,
+    ttl_seconds: int | None = None,
+) -> str | None:
     """Generate an ephemeral signed read URL for author profile image object keys."""
     object_key = str(author.profile_image_object_key or "").strip()
     if not object_key:
         return None
     try:
         store = AuthorImageStore()
-        return store.create_signed_read_url(object_key=object_key)
+        return store.create_signed_read_url(
+            object_key=object_key,
+            ttl_seconds=ttl_seconds,
+        )
     except Exception as exc:
         logger.warning(
             "Failed to mint author profile image signed URL",

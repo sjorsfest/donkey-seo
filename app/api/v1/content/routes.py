@@ -2,6 +2,7 @@
 
 import logging
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
@@ -15,7 +16,9 @@ from app.api.v1.content.constants import (
     MAX_PAGE_SIZE,
 )
 from app.api.v1.dependencies import get_user_project
+from app.config import settings
 from app.dependencies import CurrentUser, DbSession
+from app.integrations.content_image_store import ContentImageStore
 from app.models.author import Author
 from app.models.brand import BrandProfile
 from app.models.content import (
@@ -57,6 +60,7 @@ from app.services.article_generation import ArticleGenerationService
 from app.services.author_profiles import (
     author_modular_document_payload,
     choose_random_author,
+    enrich_modular_document_with_signed_author_image,
 )
 from app.services.content_keyword_tracking import (
     analyze_keyword_usage,
@@ -80,6 +84,7 @@ from app.services.publication_webhook import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+CONTENT_ARTICLE_SIGNED_URL_TTL_SECONDS = max(1, int(settings.signed_url_ttl_seconds))
 
 
 def _brief_payload(brief: ContentBrief, *, locked_title: str | None = None) -> dict:
@@ -353,12 +358,61 @@ def _article_detail_response(
     base = _article_response(article, pillar_payload=pillar_payload).model_dump()
     base.update(
         {
-            "modular_document": article.modular_document,
+            "modular_document": _enrich_modular_document_with_signed_featured_image(
+                article.modular_document or {}
+            ),
             "rendered_html": article.rendered_html,
             "qa_report": article.qa_report,
         }
     )
     return ContentArticleDetailResponse.model_validate(base)
+
+
+def _article_version_response(version: ContentArticleVersion) -> ContentArticleVersionResponse:
+    return ContentArticleVersionResponse(
+        id=str(version.id),
+        article_id=str(version.article_id),
+        version_number=int(version.version_number),
+        title=version.title,
+        slug=version.slug,
+        primary_keyword=version.primary_keyword,
+        modular_document=_enrich_modular_document_with_signed_featured_image(
+            version.modular_document or {}
+        ),
+        rendered_html=version.rendered_html,
+        qa_report=version.qa_report,
+        status=version.status,
+        change_reason=version.change_reason,
+        generation_model=version.generation_model,
+        generation_temperature=version.generation_temperature,
+        created_by_regeneration=bool(version.created_by_regeneration),
+        created_at=version.created_at,
+        updated_at=version.updated_at,
+    )
+
+
+def _enrich_modular_document_with_signed_featured_image(
+    modular_document: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(modular_document, dict):
+        return {}
+    payload = dict(modular_document)
+    featured_image = payload.get("featured_image")
+    if isinstance(featured_image, dict):
+        object_key = str(featured_image.get("object_key") or "").strip()
+        if object_key:
+            enriched_featured_image = dict(featured_image)
+            store = ContentImageStore()
+            enriched_featured_image["signed_url"] = store.create_signed_read_url(
+                object_key=object_key,
+                ttl_seconds=CONTENT_ARTICLE_SIGNED_URL_TTL_SECONDS,
+            )
+            payload["featured_image"] = enriched_featured_image
+    return enrich_modular_document_with_signed_author_image(
+        payload,
+        ttl_seconds=CONTENT_ARTICLE_SIGNED_URL_TTL_SECONDS,
+        strict=True,
+    )
 
 
 @router.get(
@@ -1088,7 +1142,7 @@ async def get_article_version(
     version_number: int,
     current_user: CurrentUser,
     session: DbSession,
-) -> ContentArticleVersion:
+) -> ContentArticleVersionResponse:
     """Get a specific article version snapshot."""
     await get_user_project(project_id, current_user, session)
 
@@ -1118,4 +1172,4 @@ async def get_article_version(
             detail=CONTENT_ARTICLE_VERSION_NOT_FOUND_DETAIL,
         )
 
-    return version
+    return _article_version_response(version)

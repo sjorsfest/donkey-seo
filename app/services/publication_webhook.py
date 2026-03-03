@@ -13,6 +13,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.database import get_session_context
 from app.integrations.content_image_store import ContentImageStore
 from app.models.content import (
@@ -37,6 +38,7 @@ PUBLICATION_WEBHOOK_MAX_ATTEMPTS = 5
 PUBLICATION_WEBHOOK_BASE_BACKOFF_SECONDS = 60
 PUBLICATION_WEBHOOK_DISPATCH_HOUR_UTC = 9
 PUBLICATION_WEBHOOK_CLAIM_LEASE_SECONDS = 30
+PUBLICATION_WEBHOOK_SIGNED_URL_TTL_SECONDS = max(1, int(settings.signed_url_ttl_seconds))
 
 
 def _utc_now() -> datetime:
@@ -120,18 +122,17 @@ def _enrich_modular_document_with_signed_featured_image(
         object_key = str(featured_image.get("object_key") or "").strip()
         if object_key:
             enriched_featured_image = dict(featured_image)
-            try:
-                store = ContentImageStore()
-                enriched_featured_image["signed_url"] = store.create_signed_read_url(
-                    object_key=object_key
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to add featured image signed URL to webhook payload",
-                    extra={"object_key": object_key, "error": str(exc)},
-                )
+            store = ContentImageStore()
+            enriched_featured_image["signed_url"] = store.create_signed_read_url(
+                object_key=object_key,
+                ttl_seconds=PUBLICATION_WEBHOOK_SIGNED_URL_TTL_SECONDS,
+            )
             payload["featured_image"] = enriched_featured_image
-    return enrich_modular_document_with_signed_author_image(payload)
+    return enrich_modular_document_with_signed_author_image(
+        payload,
+        ttl_seconds=PUBLICATION_WEBHOOK_SIGNED_URL_TTL_SECONDS,
+        strict=True,
+    )
 
 
 def apply_publication_delivery_attempt_result(

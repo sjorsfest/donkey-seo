@@ -63,6 +63,7 @@ INTEGRATION_ARTICLE_LATEST_CACHE_TTL_SECONDS = max(
     30,
     min(INTEGRATION_ARTICLE_VERSION_CACHE_TTL_SECONDS, 300),
 )
+INTEGRATION_SIGNED_URL_TTL_SECONDS = max(1, int(settings.signed_url_ttl_seconds))
 
 
 def _resolve_integration_path(request: Request, suffix: str) -> str:
@@ -279,6 +280,19 @@ def _serialize_article_version(
     )
 
 
+def _refresh_article_signed_urls(
+    payload: IntegrationArticleVersionResponse,
+) -> IntegrationArticleVersionResponse:
+    """Refresh modular-document signed URLs before returning a cached payload."""
+    return payload.model_copy(
+        update={
+            "modular_document": _enrich_modular_document_with_signed_featured_image(
+                payload.modular_document or {}
+            )
+        }
+    )
+
+
 def _enrich_modular_document_with_signed_featured_image(
     modular_document: dict[str, Any],
 ) -> dict[str, Any]:
@@ -290,19 +304,18 @@ def _enrich_modular_document_with_signed_featured_image(
         object_key = str(featured_image.get("object_key") or "").strip()
         if object_key:
             enriched_featured_image = dict(featured_image)
-            try:
-                store = ContentImageStore()
-                enriched_featured_image["signed_url"] = store.create_signed_read_url(
-                    object_key=object_key
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to enrich featured image with signed URL",
-                    extra={"object_key": object_key, "error": str(exc)},
-                )
+            store = ContentImageStore()
+            enriched_featured_image["signed_url"] = store.create_signed_read_url(
+                object_key=object_key,
+                ttl_seconds=INTEGRATION_SIGNED_URL_TTL_SECONDS,
+            )
             payload["featured_image"] = enriched_featured_image
 
-    return enrich_modular_document_with_signed_author_image(payload)
+    return enrich_modular_document_with_signed_author_image(
+        payload,
+        ttl_seconds=INTEGRATION_SIGNED_URL_TTL_SECONDS,
+        strict=True,
+    )
 
 
 @public_router.get(
@@ -602,7 +615,7 @@ async def get_latest_article_version(
         version_token=version_token,
     )
     if cached_payload is not None:
-        return cached_payload
+        return _refresh_article_signed_urls(cached_payload)
 
     article, article_version = await _get_article_version(
         session=session,
@@ -658,7 +671,7 @@ async def get_specific_article_version(
         version_token=version_token,
     )
     if cached_payload is not None:
-        return cached_payload
+        return _refresh_article_signed_urls(cached_payload)
 
     article, article_version = await _get_article_version(
         session=session,
