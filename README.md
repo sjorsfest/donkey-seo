@@ -277,6 +277,7 @@ Start content-only module:
 - `POST /api/v1/content/{project_id}/briefs` - Create brief
 - `GET /api/v1/content/{project_id}/briefs/{brief_id}/instructions` - Get writer instructions
 - `GET /api/v1/content/{project_id}/articles` - List generated articles
+- `POST /api/v1/content/{project_id}/articles/{article_id}/publish-now` - Set publication date to call-day and dispatch publication webhook immediately
 - `GET /api/v1/content/{project_id}/briefs/{brief_id}/article` - Get canonical article for brief
 - `POST /api/v1/content/{project_id}/briefs/{brief_id}/article/regenerate` - Regenerate article version
 - `GET /api/v1/content/{project_id}/articles/{article_id}/versions/{version_number}` - Get article version

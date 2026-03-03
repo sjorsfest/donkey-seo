@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -13,6 +12,7 @@ from app.models.content_pillar import ContentBriefPillarAssignment, ContentPilla
 from app.models.generated_dtos import (
     ContentBriefPillarAssignmentCreateDTO,
     ContentPillarCreateDTO,
+    ContentPillarPatchDTO,
 )
 from app.models.topic import Topic
 
@@ -71,12 +71,34 @@ class PlannedPillarAssignment:
 class ContentPillarService:
     """Build and assign stable content pillars for project briefs."""
 
-    MAX_ACTIVE_PILLARS = 7
+    MAX_ACTIVE_PILLARS = 5
     MIN_BOOTSTRAP_PILLARS = 3
     MIN_PRIMARY_MATCH_SCORE = 0.18
     SECONDARY_MATCH_SCORE = 0.15
     SECONDARY_DELTA = 0.08
     STRICT_NEW_PILLAR_MIN_UNCOVERED = 4
+    HIGH_LEVEL_PILLARS: tuple[tuple[str, str], ...] = (
+        (
+            "Blog",
+            "General informational and educational content for broad awareness topics.",
+        ),
+        (
+            "Comparison",
+            "Competitor alternatives, versus pages, and evaluation-focused content.",
+        ),
+        (
+            "How To",
+            "Step-by-step implementation, setup, and tutorial-style content.",
+        ),
+        (
+            "Use Case",
+            "Audience or workflow-specific scenarios and jobs-to-be-done content.",
+        ),
+        (
+            "Commercial",
+            "Pricing, reviews, best-of, and evaluation-ready purchase intent content.",
+        ),
+    )
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -100,16 +122,7 @@ class ContentPillarService:
         if not pillars:
             pillars = await self._bootstrap_pillars(project_id=project_id, docs=corpus_docs)
 
-        if not pillars:
-            # Last-resort single pillar keeps downstream assignment deterministic.
-            fallback_name = self._fallback_pillar_name(corpus_docs)
-            pillars = await self._create_pillars(
-                project_id=project_id,
-                names=[fallback_name],
-                source="auto",
-            )
-
-        pillars = await self._strictly_expand_taxonomy(
+        pillars = await self._ensure_high_level_taxonomy(
             project_id=project_id,
             pillars=pillars,
             docs=corpus_docs,
@@ -195,40 +208,105 @@ class ContentPillarService:
             return []
         return await self._create_pillars(project_id=project_id, names=names, source="auto")
 
-    async def _strictly_expand_taxonomy(
+    async def _ensure_high_level_taxonomy(
         self,
         *,
         project_id: str,
         pillars: list[ContentPillar],
         docs: list[TopicDoc],
     ) -> list[ContentPillar]:
-        """Add new pillars only when unmatched topic evidence is strong."""
+        """Keep auto-generated taxonomy fixed to high-level pillar buckets."""
         current = list(pillars)
+        if any(
+            bool(pillar.locked) or str(pillar.source or "").strip().lower() == "manual"
+            for pillar in current
+        ):
+            return current
 
-        while len(current) < self.MAX_ACTIVE_PILLARS:
-            uncovered = self._collect_uncovered_docs(docs, current)
-            if len(uncovered) < self.STRICT_NEW_PILLAR_MIN_UNCOVERED:
-                break
+        target_names = self._derive_bootstrap_names(docs)
+        target_canonicals = {
+            canonical
+            for canonical in (self._canonical_pillar_key(name) for name in target_names)
+            if canonical is not None
+        }
+        if not target_canonicals:
+            target_names = [name for name, _ in self.HIGH_LEVEL_PILLARS[: self.MIN_BOOTSTRAP_PILLARS]]
+            target_canonicals = {
+                canonical
+                for canonical in (self._canonical_pillar_key(name) for name in target_names)
+                if canonical is not None
+            }
 
-            candidate_name = self._derive_single_name(uncovered)
-            if not candidate_name:
-                break
+        keep_ids: set[str] = set()
+        seen_canonical: set[str] = set()
+        for pillar in current:
+            canonical = self._canonical_pillar_key(pillar.name)
+            if canonical is None or canonical in seen_canonical or canonical not in target_canonicals:
+                continue
+            keep_ids.add(str(pillar.id))
+            seen_canonical.add(canonical)
 
-            normalized_candidate = candidate_name.strip().lower()
-            existing_names = {pillar.name.strip().lower() for pillar in current}
-            if normalized_candidate in existing_names:
-                break
+        for pillar in current:
+            if str(pillar.id) in keep_ids:
+                continue
+            if pillar.status != "archived":
+                pillar.patch(
+                    self.session,
+                    ContentPillarPatchDTO.from_partial({"status": "archived"}),
+                )
+        await self.session.flush()
+        current = await self._load_active_pillars(project_id)
 
-            created = await self._create_pillars(
-                project_id=project_id,
-                names=[candidate_name],
-                source="auto",
-            )
-            if not created:
-                break
-            current.extend(created)
+        canonical_to_pillar: dict[str, ContentPillar] = {}
+        for pillar in current:
+            canonical = self._canonical_pillar_key(pillar.name)
+            if canonical:
+                canonical_to_pillar[canonical] = pillar
 
-        return current
+        for pillar_name in target_names:
+            canonical = self._canonical_pillar_key(pillar_name)
+            if canonical is None:
+                continue
+            pillar_description = self._high_level_pillar_description(pillar_name)
+            existing = canonical_to_pillar.get(canonical)
+            if existing is None:
+                created = await self._create_pillars(
+                    project_id=project_id,
+                    names=[pillar_name],
+                    source="auto",
+                )
+                if created:
+                    existing = created[0]
+                    canonical_to_pillar[canonical] = existing
+                    current.extend(created)
+            if existing is None:
+                continue
+
+            patch_payload: dict[str, str] = {}
+            if existing.name != pillar_name:
+                patch_payload["name"] = pillar_name
+            if pillar_description is not None and existing.description != pillar_description:
+                patch_payload["description"] = pillar_description
+            if existing.status != "active":
+                patch_payload["status"] = "active"
+
+            desired_slug = self._slugify(pillar_name) or "pillar"
+            if existing.slug != desired_slug:
+                used_slugs = {
+                    pillar.slug
+                    for pillar in current
+                    if pillar.status == "active" and str(pillar.id) != str(existing.id)
+                }
+                patch_payload["slug"] = self._build_unique_slug(pillar_name, used_slugs)
+
+            if patch_payload:
+                existing.patch(
+                    self.session,
+                    ContentPillarPatchDTO.from_partial(patch_payload),
+                )
+
+        await self.session.flush()
+        return await self._load_active_pillars(project_id)
 
     def _collect_uncovered_docs(self, docs: list[TopicDoc], pillars: list[ContentPillar]) -> list[TopicDoc]:
         uncovered: list[TopicDoc] = []
@@ -265,6 +343,7 @@ class ContentPillarService:
                 continue
             slug = self._build_unique_slug(clean_name, existing_slugs)
             existing_slugs.add(slug)
+            description = self._high_level_pillar_description(clean_name)
             created.append(
                 ContentPillar.create(
                     self.session,
@@ -272,7 +351,7 @@ class ContentPillarService:
                         project_id=project_id,
                         name=clean_name,
                         slug=slug,
-                        description=None,
+                        description=description,
                         status="active",
                         source=source,
                         locked=False,
@@ -291,6 +370,13 @@ class ContentPillarService:
     ) -> dict[str, PlannedPillarAssignment]:
         if not pillars:
             return {}
+
+        high_level_ids = self._high_level_pillar_ids(pillars)
+        if high_level_ids:
+            return self._assign_docs_with_high_level_taxonomy(
+                docs=docs,
+                high_level_ids=high_level_ids,
+            )
 
         scored_pillars = [
             (
@@ -334,6 +420,39 @@ class ContentPillarService:
 
         return assignments
 
+    def _assign_docs_with_high_level_taxonomy(
+        self,
+        *,
+        docs: list[TopicDoc],
+        high_level_ids: dict[str, str],
+    ) -> dict[str, PlannedPillarAssignment]:
+        assignments: dict[str, PlannedPillarAssignment] = {}
+        for doc in docs:
+            labels = self._classify_doc_labels(doc.text)
+            primary_label = next((label for label in labels if label in high_level_ids), None)
+            if primary_label is None:
+                continue
+            primary_id = high_level_ids[primary_label]
+            secondary_ids: list[str] = []
+            for label in labels:
+                if label == primary_label:
+                    continue
+                secondary_id = high_level_ids.get(label)
+                if secondary_id is None or secondary_id == primary_id:
+                    continue
+                secondary_ids.append(secondary_id)
+                if len(secondary_ids) >= 2:
+                    break
+            confidence = 0.9 if primary_label in {"comparison", "how_to"} else 0.78
+            assignments[doc.topic_id] = PlannedPillarAssignment(
+                topic_id=doc.topic_id,
+                primary_pillar_id=primary_id,
+                secondary_pillar_ids=secondary_ids,
+                confidence_score=confidence,
+                assignment_method="auto_high_level",
+            )
+        return assignments
+
     def _topic_docs_from_topics(self, topics: list[Topic]) -> list[TopicDoc]:
         docs: list[TopicDoc] = []
         for topic in topics:
@@ -359,66 +478,35 @@ class ContentPillarService:
         return docs
 
     def _derive_bootstrap_names(self, docs: list[TopicDoc]) -> list[str]:
-        target_count = min(
-            self.MAX_ACTIVE_PILLARS,
-            max(self.MIN_BOOTSTRAP_PILLARS, min(len(docs), 5)),
-        )
+        selected: list[str] = ["Blog"]
+        if any(self._is_comparison_text(doc.text) for doc in docs):
+            selected.append("Comparison")
+        if any(self._is_how_to_text(doc.text) for doc in docs):
+            selected.append("How To")
+        if any(self._is_use_case_text(doc.text) for doc in docs):
+            selected.append("Use Case")
+        if any(self._is_commercial_text(doc.text) for doc in docs):
+            selected.append("Commercial")
 
-        token_counts: Counter[str] = Counter()
-        for doc in docs:
-            token_counts.update(set(doc.tokens))
-
-        names: list[str] = []
-        seen: set[str] = set()
-
-        for token, count in token_counts.most_common():
-            if count < 2:
-                continue
-            label = self._clean_label(token.title())
-            if not label:
-                continue
-            key = label.lower()
-            if key in seen:
-                continue
-            names.append(label)
-            seen.add(key)
-            if len(names) >= target_count:
-                return names
-
-        for doc in docs:
-            label = self._fallback_from_text(doc.text)
-            if not label:
-                continue
-            key = label.lower()
-            if key in seen:
-                continue
-            names.append(label)
-            seen.add(key)
-            if len(names) >= target_count:
+        defaults = [name for name, _ in self.HIGH_LEVEL_PILLARS]
+        for name in defaults:
+            if len(selected) >= self.MIN_BOOTSTRAP_PILLARS:
                 break
-
-        if not names:
-            names.append(self._fallback_pillar_name(docs))
-
-        return names[:target_count]
-
-    def _derive_single_name(self, docs: list[TopicDoc]) -> str | None:
-        token_counts: Counter[str] = Counter()
-        for doc in docs:
-            token_counts.update(set(doc.tokens))
-        for token, count in token_counts.most_common():
-            if count < 2:
+            if name in selected:
                 continue
-            label = self._clean_label(token.title())
-            if label:
-                return label
-        return self._fallback_from_text(docs[0].text) if docs else None
+            selected.append(name)
 
-    def _fallback_pillar_name(self, docs: list[TopicDoc]) -> str:
-        if not docs:
-            return "General"
-        fallback = self._fallback_from_text(docs[0].text)
-        return fallback or "General"
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for name in selected:
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(name)
+            if len(deduped) >= self.MAX_ACTIVE_PILLARS:
+                break
+        return deduped
 
     def _fallback_from_text(self, text: str) -> str | None:
         tokens = self._tokenize(text)
@@ -457,6 +545,86 @@ class ContentPillarService:
         if not compact:
             return ""
         return compact[:80]
+
+    def _high_level_pillar_description(self, name: str) -> str | None:
+        canonical = self._canonical_pillar_key(name)
+        if canonical is None:
+            return None
+        for pillar_name, pillar_description in self.HIGH_LEVEL_PILLARS:
+            if self._canonical_pillar_key(pillar_name) == canonical:
+                return pillar_description
+        return None
+
+    def _high_level_pillar_ids(self, pillars: list[ContentPillar]) -> dict[str, str]:
+        ids: dict[str, str] = {}
+        for pillar in pillars:
+            canonical = self._canonical_pillar_key(pillar.name)
+            if canonical is None:
+                continue
+            ids[canonical] = str(pillar.id)
+        return ids
+
+    def _canonical_pillar_key(self, label: str) -> str | None:
+        normalized = re.sub(r"[^a-z0-9]+", " ", str(label or "").strip().lower()).strip()
+        if not normalized:
+            return None
+        if normalized in {"blog", "blogs"}:
+            return "blog"
+        if normalized in {"comparison", "comparisons"}:
+            return "comparison"
+        if normalized in {"how to", "howto", "how to guides", "guide", "guides"}:
+            return "how_to"
+        if normalized in {"use case", "use cases", "workflow", "workflows"}:
+            return "use_case"
+        if normalized in {"commercial", "purchase intent", "buyer intent"}:
+            return "commercial"
+        return None
+
+    def _classify_doc_labels(self, text: str) -> list[str]:
+        normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        labels: list[str] = []
+        if self._is_comparison_text(normalized):
+            labels.append("comparison")
+        if self._is_how_to_text(normalized):
+            labels.append("how_to")
+        if self._is_commercial_text(normalized):
+            labels.append("commercial")
+        if self._is_use_case_text(normalized):
+            labels.append("use_case")
+        labels.append("blog")
+        return labels
+
+    def _is_comparison_text(self, text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(vs|versus|compare|comparison|alternative|alternatives|replace|replacement)\b",
+                text,
+            )
+        )
+
+    def _is_how_to_text(self, text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(how to|guide|tutorial|walkthrough|step by step|setup|set up|implement)\b",
+                text,
+            )
+        )
+
+    def _is_use_case_text(self, text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(use case|workflow|workflows|scenario|for teams|for startups|for agencies)\b",
+                text,
+            )
+        )
+
+    def _is_commercial_text(self, text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(pricing|price|cost|review|reviews|best|top|buy|purchase|demo)\b",
+                text,
+            )
+        )
 
     def _tokenize(self, text: str) -> list[str]:
         tokens = re.findall(r"[a-z0-9]+", str(text or "").lower())

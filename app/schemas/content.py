@@ -277,11 +277,26 @@ class ContentArticleListResponse(BaseModel):
     page_size: int
 
 
+class ContentArticlePublishNowResponse(BaseModel):
+    """Response payload for immediate article publish webhook dispatch."""
+
+    article_id: str
+    brief_id: str
+    project_id: str
+    proposed_publication_date: date
+    webhook_delivery_id: str | None
+    webhook_dispatch_triggered: bool
+    webhook_delivery_status: str | None
+    webhook_attempt_count: int | None
+    webhook_last_http_status: int | None
+    webhook_last_error: str | None
+
+
 ContentCalendarItemState = Literal[
     "brief_ready",
     "writer_instructions_ready",
     "article_ready",
-    "article_needs_review",
+    "publish_pending",
     "published",
 ]
 

@@ -36,6 +36,7 @@ from app.models.style_guide import BriefDelta
 from app.schemas.content import (
     ContentArticleDetailResponse,
     ContentArticleListResponse,
+    ContentArticlePublishNowResponse,
     ContentArticleResponse,
     ContentArticleVersionResponse,
     ContentBriefCreate,
@@ -71,6 +72,8 @@ from app.services.featured_image_generation import (
     retry_with_backoff,
 )
 from app.services.publication_webhook import (
+    dispatch_publication_webhook_delivery,
+    schedule_publication_webhook_for_article,
     reschedule_publication_webhook_for_brief,
 )
 
@@ -229,16 +232,28 @@ def _resolve_calendar_state(
     *,
     has_writer_instructions: bool,
     article: ContentArticle | None,
+    publication_date: date | None,
+    today: date | None = None,
 ) -> ContentCalendarItemState:
-    if article and (article.publish_status == "published" or article.published_at is not None):
+    reference_today = today or date.today()
+    if article and (
+        article.publish_status == "published"
+        or article.published_at is not None
+        or article.status == "published"
+    ):
         return "published"
-    if article and article.status == "needs_review":
-        return "article_needs_review"
     if article:
+        if publication_date is not None and publication_date < reference_today:
+            return "publish_pending"
         return "article_ready"
     if has_writer_instructions:
         return "writer_instructions_ready"
     return "brief_ready"
+
+
+def _publish_now_date() -> date:
+    """Resolve publication date for immediate publish requests."""
+    return date.today()
 
 
 async def _load_pillar_payloads_for_briefs(
@@ -443,6 +458,7 @@ async def get_content_calendar(
         calendar_state = _resolve_calendar_state(
             has_writer_instructions=has_writer_instructions,
             article=article,
+            publication_date=brief.proposed_publication_date,
         )
         working_title = (brief.working_titles or [None])[0]
         article_id = str(article.id) if article else None
@@ -743,6 +759,98 @@ async def list_articles(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.post(
+    "/{project_id}/articles/{article_id}/publish-now",
+    response_model=ContentArticlePublishNowResponse,
+    summary="Publish article now",
+    description=(
+        "Set the article's brief publication date to the current call-day and "
+        "dispatch its publication webhook immediately."
+    ),
+)
+async def publish_article_now(
+    project_id: str,
+    article_id: str,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> ContentArticlePublishNowResponse:
+    """Set publication date to today and trigger immediate webhook dispatch."""
+    await get_user_project(project_id, current_user, session)
+
+    article_result = await session.execute(
+        select(ContentArticle).where(
+            ContentArticle.id == article_id,
+            ContentArticle.project_id == project_id,
+        )
+    )
+    article = article_result.scalar_one_or_none()
+    if article is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CONTENT_ARTICLE_NOT_FOUND_DETAIL,
+        )
+
+    brief_result = await session.execute(
+        select(ContentBrief).where(
+            ContentBrief.id == article.brief_id,
+            ContentBrief.project_id == project_id,
+        )
+    )
+    brief = brief_result.scalar_one_or_none()
+    if brief is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=CONTENT_BRIEF_NOT_FOUND_DETAIL,
+        )
+
+    if (
+        article.publish_status == "published"
+        or article.published_at is not None
+        or article.status == "published"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Article is already published",
+        )
+
+    publication_date = _publish_now_date()
+    if brief.proposed_publication_date != publication_date:
+        brief.patch(
+            session,
+            ContentBriefPatchDTO.from_partial(
+                {"proposed_publication_date": publication_date}
+            ),
+        )
+
+    delivery = await schedule_publication_webhook_for_article(
+        session,
+        article=article,
+        proposed_publication_date=publication_date,
+    )
+    await session.flush()
+
+    webhook_dispatch_triggered = False
+    if delivery is not None:
+        webhook_dispatch_triggered = await dispatch_publication_webhook_delivery(
+            session,
+            delivery_id=str(delivery.id),
+        )
+        await session.refresh(delivery)
+
+    return ContentArticlePublishNowResponse(
+        article_id=str(article.id),
+        brief_id=str(article.brief_id),
+        project_id=str(article.project_id),
+        proposed_publication_date=publication_date,
+        webhook_delivery_id=str(delivery.id) if delivery is not None else None,
+        webhook_dispatch_triggered=webhook_dispatch_triggered,
+        webhook_delivery_status=delivery.status if delivery is not None else None,
+        webhook_attempt_count=delivery.attempt_count if delivery is not None else None,
+        webhook_last_http_status=delivery.last_http_status if delivery is not None else None,
+        webhook_last_error=delivery.last_error if delivery is not None else None,
     )
 
 
