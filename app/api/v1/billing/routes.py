@@ -308,6 +308,7 @@ async def create_billing_portal_session(
     return BillingPortalResponse(url=url)
 
 
+@router.post("/webhooks/stripe/", include_in_schema=False)
 @router.post(
     "/webhooks/stripe",
     response_model=StripeWebhookResponse,
