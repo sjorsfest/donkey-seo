@@ -756,6 +756,88 @@ create table donkey_webhook_events (
 );
 ```
 
+### 2.5) Article Renderer Best Practices (Recommended)
+
+Use this checklist when implementing your renderer.
+
+Core architecture:
+1. Use modular block components (`HeroBlock`, `SectionBlock`, `FaqBlock`, `CtaBlock`, etc).
+2. Route rendering by `block_type` with a fallback block for unknown types.
+3. Keep each block independently styled and maintainable.
+
+Readability and visual design:
+1. Render content inside a white/light "reading canvas" container.
+2. Maintain high text contrast (target WCAG AAA where possible).
+3. Use clear typography hierarchy (`h1`/`h2`/`h3`/`h4`) and generous spacing.
+4. Prefer subtle borders/gradients over heavy, high-noise visual treatments.
+
+Block-level patterns:
+1. Hero blocks should feel introductory, not visually overwhelming.
+2. CTA blocks should be inviting and clear, not aggressive.
+3. Comparison tables should be semantic (`<table>`, `<thead>`, `<tbody>`) with clean row/column styling.
+4. FAQ blocks should use accessible disclosure/accordion patterns.
+5. Lists and steps should be visually scannable (custom bullets, clear step numbers).
+
+Markdown and content rendering:
+1. Support markdown in text fields like `body`, `items`, `faq_items.answer`, and table cells.
+2. Render markdown safely (sanitized markdown pipeline, no raw HTML injection).
+3. Support inline markdown patterns (`**bold**`, `` `code` ``, `[links](url)`) and fenced code blocks.
+
+Data safety and robustness:
+1. Use safe extractors (`safeString`, `safeArray`) and TypeScript type guards.
+2. Skip empty blocks with early returns.
+3. Preserve block order and nested item order exactly.
+
+Image and URL handling:
+1. Prefer permanent CDN/R2 URLs in the renderer.
+2. Do not rely on signed URLs for long-term rendering; signed URLs are temporary.
+3. In webhook sync, copy signed assets to your own storage and persist permanent URLs.
+
+Semantic HTML and accessibility:
+1. Use semantic tags (`article`, `header`, `section`, `aside`, `footer`, `table`).
+2. Maintain heading hierarchy (do not skip levels).
+3. Provide descriptive `alt` text, ARIA labels where needed, and safe external link attrs.
+
+Performance and responsiveness:
+1. Do not render empty content structures.
+2. Use native lazy loading for non-critical images (`loading="lazy"`).
+3. Use mobile-first typography/padding with responsive breakpoints.
+
+Reference shell:
+```tsx
+export function ArticleRenderer({
+  document,
+  featuredImageUrl,
+}: {
+  document: ModularDocument;
+  featuredImageUrl?: string | null; // permanent CDN/R2 URL
+}) {
+  const h1 = document.seo_meta?.h1 ?? "";
+  const blocks = Array.isArray(document.blocks) ? document.blocks : [];
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <article className="space-y-12 rounded-3xl border border-gray-100 bg-white px-8 py-12 sm:px-12 lg:px-16">
+        {h1 ? <h1 className="text-4xl font-bold text-gray-900 sm:text-5xl lg:text-6xl">{h1}</h1> : null}
+
+        {featuredImageUrl ? (
+          <img
+            src={featuredImageUrl}
+            alt={h1 || "Article featured image"}
+            loading="lazy"
+            className="w-full rounded-2xl object-cover"
+          />
+        ) : null}
+
+        {blocks.map((block, i) => (
+          <BlockRenderer key={i} block={block} />
+        ))}
+      </article>
+    </div>
+  );
+}
+```
+
 ## 3) Extra Notes (MUST)
 
 - Build and use your own `modular_document` block renderer.
