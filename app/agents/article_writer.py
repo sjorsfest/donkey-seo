@@ -114,6 +114,7 @@ class ArticleWriterAgent(BaseAgent[ArticleWriterInput, ArticleWriterOutput]):
     """Generates structured modular article blocks from brief artifacts."""
 
     model_tier = "reasoning"
+    model = "openrouter:anthropic/claude-sonnet-4.6"
     temperature = 0.4
 
     @property
