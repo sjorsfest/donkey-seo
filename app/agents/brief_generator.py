@@ -2,6 +2,7 @@
 
 import logging
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +29,10 @@ class OutlineSection(BaseModel):
 
 class ContentBriefResult(BaseModel):
     """Complete content brief for a topic."""
+
+    pillar_slug: Literal["blog", "tools", "guides"] = Field(
+        description="Primary content pillar slug. Must be one of: blog, tools, guides."
+    )
 
     working_titles: list[str] = Field(
         min_length=3,
@@ -184,6 +189,12 @@ Recommend appropriate schema:
 - Date must be in the near future (within roughly 1-4 months from today)
 - Align timing with funnel stage and recommended publish order when provided
 
+### 7. Pillar Selection (Required)
+- Assign exactly one `pillar_slug` from: `blog`, `tools`, `guides`
+- `blog`: broad thought leadership, trends, general education
+- `tools`: comparisons, alternatives, software/tooling, pricing and evaluation content
+- `guides`: how-to content, implementation walkthroughs, tactical playbooks
+
 Be specific and actionable. The writer should know exactly what to create."""
 
     @property
@@ -264,4 +275,5 @@ Create a detailed brief with:
 5. Meta title and description templates
 6. Appropriate word count range
 7. Recommended schema type
-8. Proposed publication date (YYYY-MM-DD, near future)"""
+8. Proposed publication date (YYYY-MM-DD, near future)
+9. Primary pillar slug (`blog`, `tools`, or `guides`)"""

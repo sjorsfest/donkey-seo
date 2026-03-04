@@ -37,7 +37,7 @@ class _FakeSession:
 
 
 def _fake_brief(brief_id: str) -> SimpleNamespace:
-    return SimpleNamespace(id=brief_id, proposed_publication_date=None)
+    return SimpleNamespace(id=brief_id, topic_id=f"topic-{brief_id}", proposed_publication_date=None)
 
 
 def _fake_featured_image(title: str) -> SimpleNamespace:
@@ -57,6 +57,7 @@ def _build_service() -> Step14ArticleWriterService:
     service.get_run_strategy = AsyncMock(return_value=SimpleNamespace(conversion_intents=[]))  # type: ignore[method-assign]
     service._load_pipeline_run = AsyncMock(return_value=SimpleNamespace(id="run-1"))  # type: ignore[method-assign]
     service._build_brand_context = lambda _brand: ""  # type: ignore[method-assign]
+    service._ensure_allowed_pillar_assignments = AsyncMock()  # type: ignore[method-assign]
     service._brief_payload = lambda brief, *, locked_title=None: {  # type: ignore[method-assign]
         "id": str(brief.id),
         "locked_title": locked_title or "",

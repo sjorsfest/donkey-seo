@@ -19,6 +19,7 @@ from app.models.content import (
     ContentFeaturedImage,
     WriterInstructions,
 )
+from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
 from app.models.generated_dtos import (
     ContentArticleCreateDTO,
     ContentArticleVersionCreateDTO,
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 ARTICLE_QUOTA_EXHAUSTED_ERROR = (
     "Article quota exhausted: no remaining article capacity in the current usage window."
 )
+ALLOWED_PILLAR_SLUGS = {"blog", "tools", "guides"}
 
 
 @dataclass
@@ -180,6 +182,11 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
                 articles_failed=len(missing_instruction_failures),
                 failures=missing_instruction_failures,
             )
+
+        await self._ensure_allowed_pillar_assignments(
+            project_id=input_data.project_id,
+            briefs=eligible_briefs,
+        )
 
         current_run = await self._load_pipeline_run()
         current_run_id = str(current_run.id) if current_run is not None else None
@@ -479,6 +486,44 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         for item in result.scalars():
             payload[str(item.brief_id)] = item
         return payload
+
+    async def _ensure_allowed_pillar_assignments(
+        self,
+        *,
+        project_id: str,
+        briefs: list[ContentBrief],
+    ) -> None:
+        if not briefs:
+            return
+
+        brief_ids = [str(brief.id) for brief in briefs]
+        assignment_result = await self.session.execute(
+            select(
+                ContentBriefPillarAssignment.brief_id,
+                ContentPillar.slug,
+            )
+            .join(ContentPillar, ContentPillar.id == ContentBriefPillarAssignment.pillar_id)
+            .where(
+                ContentBriefPillarAssignment.project_id == project_id,
+                ContentBriefPillarAssignment.brief_id.in_(brief_ids),
+                ContentBriefPillarAssignment.relationship_type == "primary",
+                ContentPillar.status == "active",
+            )
+        )
+
+        valid_primary_by_brief_id = {
+            str(brief_id): str(slug).strip().lower()
+            for brief_id, slug in assignment_result.all()
+            if str(slug).strip().lower() in ALLOWED_PILLAR_SLUGS
+        }
+        missing_primary_brief_ids = [
+            str(brief.id) for brief in briefs if str(brief.id) not in valid_primary_by_brief_id
+        ]
+        if missing_primary_brief_ids:
+            raise ValueError(
+                "Cannot generate article: missing valid primary pillar assignment "
+                f"(allowed: blog/tools/guides) for briefs: {', '.join(missing_primary_brief_ids[:5])}"
+            )
 
     async def _load_existing_article_brief_ids(self, briefs: list[ContentBrief]) -> set[str]:
         result = await self.session.execute(

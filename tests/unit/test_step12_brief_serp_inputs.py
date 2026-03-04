@@ -86,6 +86,21 @@ def test_collect_warnings_includes_serp_mismatch_flags() -> None:
     assert any("fetch failed" in warning for warning in warnings)
 
 
+def test_resolve_allowed_pillar_slug_accepts_known_values() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+
+    assert service._resolve_allowed_pillar_slug("blog") == "blog"
+    assert service._resolve_allowed_pillar_slug("tools") == "tools"
+    assert service._resolve_allowed_pillar_slug("guides") == "guides"
+
+
+def test_resolve_allowed_pillar_slug_falls_back_to_blog_for_unknown_values() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+
+    assert service._resolve_allowed_pillar_slug("comparison") == "blog"
+    assert service._resolve_allowed_pillar_slug(None) == "blog"
+
+
 class _ScalarProxy:
     def __init__(self, item: object | None) -> None:
         self._item = item

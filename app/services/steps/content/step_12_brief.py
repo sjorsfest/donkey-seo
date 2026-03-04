@@ -17,15 +17,18 @@ from app.agents.brief_diversifier import BriefDiversifierAgent, BriefDiversifier
 from app.agents.brief_generator import BriefGeneratorAgent, BriefGeneratorInput
 from app.models.brand import BrandProfile
 from app.models.content import ContentBrief
-from app.models.generated_dtos import ContentBriefCreateDTO, ContentBriefPatchDTO
+from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
+from app.models.generated_dtos import (
+    ContentBriefCreateDTO,
+    ContentBriefPatchDTO,
+    ContentBriefPillarAssignmentCreateDTO,
+    ContentPillarCreateDTO,
+    ContentPillarPatchDTO,
+)
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
 from app.services.content_keyword_tracking import sync_brief_keywords
-from app.services.content_pillar_service import (
-    ContentPillarService,
-    PlannedPillarAssignment,
-)
 from app.services.discovery.topic_overlap import (
     build_comparison_key,
     build_family_key,
@@ -41,6 +44,20 @@ logger = logging.getLogger(__name__)
 EXISTING_CONTENT_SKIP_THRESHOLD = 0.82
 IN_BATCH_DIVERSIFICATION_OVERLAP_THRESHOLD = 0.82
 BRIEF_DIVERSIFIER_RETRY_ATTEMPTS = 2
+ALLOWED_PILLAR_CONFIG: dict[str, tuple[str, str]] = {
+    "blog": (
+        "Blog",
+        "General informational and educational content for broad awareness topics.",
+    ),
+    "tools": (
+        "Tools",
+        "Software, templates, calculators, comparisons, alternatives, and product-focused content.",
+    ),
+    "guides": (
+        "Guides",
+        "How-to, implementation walkthroughs, use cases, and educational playbooks.",
+    ),
+}
 
 
 @dataclass
@@ -279,12 +296,6 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 skipped_batch_diversification=skipped_batch_diversification,
             )
 
-        pillar_service = ContentPillarService(self.session)
-        pillar_assignments_by_topic = await pillar_service.plan_assignments(
-            project_id=input_data.project_id,
-            topics=topics_to_generate,
-        )
-
         # Prepare brand context
         brand_context = self._build_brand_context(brand)
         money_pages = self._extract_money_pages(brand)
@@ -363,8 +374,6 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
             # Determine overlap status
             overlap_status = "checked" if step_10_ran else "unknown"
-            pillar_assignment = pillar_assignments_by_topic.get(str(topic.id))
-
             # Check if there are warnings
             has_warnings = (
                 collision_status != "safe"
@@ -400,6 +409,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     today=today,
                     config=schedule_config,
                 )
+                pillar_slug = self._resolve_allowed_pillar_slug(brief_data.pillar_slug)
 
                 output_briefs.append({
                     "topic_id": str(topic.id),
@@ -452,17 +462,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "must_include_sections": brief_data.must_include_sections,
                     "recommended_schema_type": brief_data.recommended_schema_type,
                     "proposed_publication_date": proposed_publication_date,
-                    "pillar_assignment": (
-                        {
-                            "topic_id": pillar_assignment.topic_id,
-                            "primary_pillar_id": pillar_assignment.primary_pillar_id,
-                            "secondary_pillar_ids": pillar_assignment.secondary_pillar_ids,
-                            "confidence_score": pillar_assignment.confidence_score,
-                            "assignment_method": pillar_assignment.assignment_method,
-                        }
-                        if pillar_assignment is not None
-                        else None
-                    ),
+                    "pillar_slug": pillar_slug,
+                    "pillar_confidence": 1.0,
+                    "pillar_assignment_method": "ai_brief",
                     "has_warnings": has_warnings,
                     "warnings": self._collect_warnings(
                         collision_status,
@@ -517,17 +519,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "supporting_keyword_ids": supporting_keyword_ids,
                     "target_word_count": {"min": 1500, "max": 2500},
                     "proposed_publication_date": fallback_publication_date,
-                    "pillar_assignment": (
-                        {
-                            "topic_id": pillar_assignment.topic_id,
-                            "primary_pillar_id": pillar_assignment.primary_pillar_id,
-                            "secondary_pillar_ids": pillar_assignment.secondary_pillar_ids,
-                            "confidence_score": pillar_assignment.confidence_score,
-                            "assignment_method": pillar_assignment.assignment_method,
-                        }
-                        if pillar_assignment is not None
-                        else None
-                    ),
+                    "pillar_slug": "blog",
+                    "pillar_confidence": 0.0,
+                    "pillar_assignment_method": "fallback_default",
                     "has_warnings": True,
                     "warnings": fallback_warnings,
                 })
@@ -1560,7 +1554,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
     async def _persist_results(self, result: BriefOutput) -> None:
         """Save content briefs to database."""
         await self._lock_project_publication_schedule()
-        pillar_service = ContentPillarService(self.session)
+        pillars_by_slug = await self._ensure_allowed_pillars()
 
         topic_ids = [
             brief_data["topic_id"]
@@ -1689,10 +1683,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     supporting_keyword_ids=supporting_keyword_ids,
                 )
                 await self._persist_pillar_assignment(
-                    pillar_service=pillar_service,
                     brief_id=str(existing.id),
-                    topic_id=topic_id,
                     brief_data=brief_data,
+                    pillars_by_slug=pillars_by_slug,
                 )
                 continue
 
@@ -1737,10 +1730,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 supporting_keyword_ids=supporting_keyword_ids,
             )
             await self._persist_pillar_assignment(
-                pillar_service=pillar_service,
                 brief_id=str(created_brief.id),
-                topic_id=topic_id,
                 brief_data=brief_data,
+                pillars_by_slug=pillars_by_slug,
             )
 
         # Update project step
@@ -1774,43 +1766,104 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
     async def _persist_pillar_assignment(
         self,
         *,
-        pillar_service: ContentPillarService,
         brief_id: str,
-        topic_id: str,
         brief_data: dict[str, Any],
+        pillars_by_slug: dict[str, ContentPillar],
     ) -> None:
-        assignment_payload = brief_data.get("pillar_assignment")
-        if not isinstance(assignment_payload, dict):
+        pillar_slug = self._resolve_allowed_pillar_slug(brief_data.get("pillar_slug"))
+        pillar = pillars_by_slug.get(pillar_slug)
+        if pillar is None:
             return
 
-        primary_pillar_id = self._optional_str(assignment_payload.get("primary_pillar_id"))
-        if primary_pillar_id is None:
-            return
+        existing_result = await self.session.execute(
+            select(ContentBriefPillarAssignment).where(
+                ContentBriefPillarAssignment.project_id == self.project_id,
+                ContentBriefPillarAssignment.brief_id == brief_id,
+            )
+        )
+        for assignment in existing_result.scalars().all():
+            await assignment.delete(self.session)
 
-        secondary_values = assignment_payload.get("secondary_pillar_ids")
-        secondary_ids = (
-            [value for value in self._str_list_or_none(secondary_values) or [] if value != primary_pillar_id]
-        )[:2]
-        confidence_value = assignment_payload.get("confidence_score")
+        confidence_value = brief_data.get("pillar_confidence")
         confidence = None
         try:
             if confidence_value is not None:
                 confidence = float(confidence_value)
         except (TypeError, ValueError):
             confidence = None
-        assignment_method = self._optional_str(assignment_payload.get("assignment_method")) or "auto"
+        assignment_method = self._optional_str(brief_data.get("pillar_assignment_method")) or "ai_brief"
 
-        await pillar_service.persist_assignments(
-            project_id=self.project_id,
-            brief_id=brief_id,
-            assignment=PlannedPillarAssignment(
-                topic_id=topic_id,
-                primary_pillar_id=primary_pillar_id,
-                secondary_pillar_ids=secondary_ids,
-                confidence_score=(confidence if confidence is not None else 0.0),
+        ContentBriefPillarAssignment.create(
+            self.session,
+            ContentBriefPillarAssignmentCreateDTO(
+                project_id=self.project_id,
+                brief_id=brief_id,
+                pillar_id=str(pillar.id),
+                relationship_type="primary",
+                confidence_score=confidence,
                 assignment_method=assignment_method,
             ),
         )
+
+    def _resolve_allowed_pillar_slug(self, value: Any) -> str:
+        slug = str(value or "").strip().lower()
+        if slug in ALLOWED_PILLAR_CONFIG:
+            return slug
+        return "blog"
+
+    async def _ensure_allowed_pillars(self) -> dict[str, ContentPillar]:
+        slugs = list(ALLOWED_PILLAR_CONFIG.keys())
+        result = await self.session.execute(
+            select(ContentPillar).where(
+                ContentPillar.project_id == self.project_id,
+                ContentPillar.slug.in_(slugs),
+            )
+        )
+        existing_by_slug = {str(pillar.slug).strip().lower(): pillar for pillar in result.scalars().all()}
+
+        for slug, (name, description) in ALLOWED_PILLAR_CONFIG.items():
+            pillar = existing_by_slug.get(slug)
+            if pillar is None:
+                created = ContentPillar.create(
+                    self.session,
+                    ContentPillarCreateDTO(
+                        project_id=self.project_id,
+                        name=name,
+                        slug=slug,
+                        description=description,
+                        status="active",
+                        source="ai",
+                        locked=False,
+                    ),
+                )
+                existing_by_slug[slug] = created
+                continue
+
+            patch_payload: dict[str, str] = {}
+            if pillar.name != name:
+                patch_payload["name"] = name
+            if pillar.description != description:
+                patch_payload["description"] = description
+            if pillar.status != "active":
+                patch_payload["status"] = "active"
+            if patch_payload:
+                pillar.patch(
+                    self.session,
+                    ContentPillarPatchDTO.from_partial(patch_payload),
+                )
+
+        await self.session.flush()
+        refreshed_result = await self.session.execute(
+            select(ContentPillar).where(
+                ContentPillar.project_id == self.project_id,
+                ContentPillar.slug.in_(slugs),
+                ContentPillar.status == "active",
+            )
+        )
+        return {
+            str(pillar.slug).strip().lower(): pillar
+            for pillar in refreshed_result.scalars().all()
+        }
 
     async def _lock_project_publication_schedule(self) -> None:
         """Serialize publication-date allocation per project."""
