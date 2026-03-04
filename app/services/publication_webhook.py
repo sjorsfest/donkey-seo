@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -11,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -24,6 +25,7 @@ from app.models.content import (
     PublicationWebhookDelivery,
 )
 from app.models.generated_dtos import (
+    ContentArticlePatchDTO,
     PublicationWebhookDeliveryCreateDTO,
     PublicationWebhookDeliveryPatchDTO,
 )
@@ -37,9 +39,10 @@ PUBLICATION_WEBHOOK_PENDING_STATUSES = {"pending", "retrying"}
 PUBLICATION_WEBHOOK_TERMINAL_STATUSES = {"delivered", "failed", "canceled"}
 PUBLICATION_WEBHOOK_MAX_ATTEMPTS = 5
 PUBLICATION_WEBHOOK_BASE_BACKOFF_SECONDS = 60
-PUBLICATION_WEBHOOK_DISPATCH_HOUR_UTC = 9
+PUBLICATION_WEBHOOK_DISPATCH_HOUR_UTC = 0
 PUBLICATION_WEBHOOK_CLAIM_LEASE_SECONDS = 30
 PUBLICATION_WEBHOOK_SIGNED_URL_TTL_SECONDS = max(1, int(settings.signed_url_ttl_seconds))
+PUBLICATION_SENT_STATUS = "publication_sent"
 
 
 def _utc_now() -> datetime:
@@ -60,6 +63,18 @@ def scheduled_publication_datetime(publication_date: date) -> datetime:
         publication_date,
         time(hour=PUBLICATION_WEBHOOK_DISPATCH_HOUR_UTC, tzinfo=timezone.utc),
     )
+
+
+def next_publication_webhook_run_at(*, now: datetime | None = None) -> datetime:
+    """Return the next midnight UTC scheduler run timestamp."""
+    now_utc = (now or _utc_now()).astimezone(timezone.utc)
+    today_midnight = datetime.combine(
+        now_utc.date(),
+        time(hour=0, minute=0, tzinfo=timezone.utc),
+    )
+    if now_utc <= today_midnight:
+        return today_midnight
+    return today_midnight + timedelta(days=1)
 
 
 def calculate_publication_retry_delay_seconds(attempt_count: int) -> int:
@@ -394,20 +409,42 @@ async def claim_due_publication_webhook_delivery_ids(
     *,
     now: datetime,
     batch_size: int,
+    publication_date: date | None = None,
 ) -> list[str]:
     """Claim a small batch of due deliveries with row-level locking."""
-    due_result = await session.execute(
+    timing_filter = PublicationWebhookDelivery.next_attempt_at <= now
+    if publication_date is not None:
+        # Nightly sweep should always attempt the first send for today's publications.
+        timing_filter = or_(
+            PublicationWebhookDelivery.attempt_count == 0,
+            PublicationWebhookDelivery.next_attempt_at <= now,
+        )
+
+    query = (
         select(PublicationWebhookDelivery)
         .join(Project, Project.id == PublicationWebhookDelivery.project_id)
+        .join(ContentArticle, ContentArticle.id == PublicationWebhookDelivery.article_id)
+        .join(ContentBrief, ContentBrief.id == ContentArticle.brief_id)
         .where(
             PublicationWebhookDelivery.event_type == PUBLICATION_WEBHOOK_EVENT_TYPE,
             PublicationWebhookDelivery.status.in_(PUBLICATION_WEBHOOK_PENDING_STATUSES),
-            PublicationWebhookDelivery.next_attempt_at <= now,
+            timing_filter,
+            ContentArticle.published_at.is_(None),
+            or_(
+                ContentArticle.publish_status.is_(None),
+                ContentArticle.publish_status != "published",
+            ),
             Project.notification_webhook.isnot(None),
             Project.notification_webhook_secret.isnot(None),
             Project.notification_webhook != "",
             Project.notification_webhook_secret != "",
         )
+    )
+    if publication_date is not None:
+        query = query.where(ContentBrief.proposed_publication_date == publication_date)
+
+    due_result = await session.execute(
+        query
         .order_by(
             PublicationWebhookDelivery.next_attempt_at.asc(),
             PublicationWebhookDelivery.created_at.asc(),
@@ -608,6 +645,15 @@ async def dispatch_publication_webhook_delivery(
         session,
         PublicationWebhookDeliveryPatchDTO.from_partial(patch_payload),
     )
+    if success and article.publish_status != "published" and article.published_at is None:
+        article.patch(
+            session,
+            ContentArticlePatchDTO.from_partial(
+                {
+                    "publish_status": PUBLICATION_SENT_STATUS,
+                }
+            ),
+        )
     await session.flush()
     next_attempt_at_raw = patch_payload.get("next_attempt_at")
     next_attempt_at_iso = (
@@ -633,12 +679,25 @@ async def dispatch_publication_webhook_delivery(
 
 async def process_due_publication_webhook_deliveries(*, batch_size: int = 20) -> int:
     """Claim and process one batch of due publication webhook deliveries."""
+    return await process_publication_webhook_deliveries_for_date(
+        publication_date=None,
+        batch_size=batch_size,
+    )
+
+
+async def process_publication_webhook_deliveries_for_date(
+    *,
+    publication_date: date | None,
+    batch_size: int = 20,
+) -> int:
+    """Claim and process one batch of due publication webhook deliveries for a date."""
     now = _utc_now()
     async with get_session_context() as session:
         delivery_ids = await claim_due_publication_webhook_delivery_ids(
             session,
             now=now,
             batch_size=batch_size,
+            publication_date=publication_date,
         )
 
     if not delivery_ids:
@@ -659,3 +718,47 @@ async def process_due_publication_webhook_deliveries(*, batch_size: int = 20) ->
                         extra={"delivery_id": delivery_id},
                     )
     return len(delivery_ids)
+
+
+async def run_publication_webhook_nightly_scheduler(
+    *,
+    stop_event: asyncio.Event,
+    batch_size: int = 100,
+) -> None:
+    """Run one sweep each day at 00:00 UTC for today's publication date."""
+    while not stop_event.is_set():
+        next_run_at = next_publication_webhook_run_at()
+        delay_seconds = max(
+            0.0,
+            (next_run_at - _utc_now()).total_seconds(),
+        )
+        if delay_seconds > 0:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=delay_seconds)
+                continue
+            except asyncio.TimeoutError:
+                pass
+
+        publication_date = _utc_now().date()
+        processed_total = 0
+        try:
+            while not stop_event.is_set():
+                processed = await process_publication_webhook_deliveries_for_date(
+                    publication_date=publication_date,
+                    batch_size=max(1, int(batch_size)),
+                )
+                if processed <= 0:
+                    break
+                processed_total += processed
+            logger.info(
+                "Publication webhook nightly sweep completed",
+                extra={
+                    "publication_date": publication_date.isoformat(),
+                    "processed_deliveries": processed_total,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Publication webhook nightly sweep failed",
+                extra={"publication_date": publication_date.isoformat()},
+            )

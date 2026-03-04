@@ -1,5 +1,6 @@
 """Semantic interlinking service for generating high-quality internal link recommendations."""
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -8,6 +9,12 @@ from datetime import datetime, timezone
 import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.sitemap_link_selector import (
+    SitemapLinkCandidate as AgentSitemapLinkCandidate,
+    SitemapLinkSelectorAgent,
+    SitemapLinkSelectorInput,
+)
+from app.config import settings
 from app.integrations.embeddings import EmbeddingsClient
 from app.integrations.sitemap_fetcher import SitemapFetcher, SitemapPage
 from app.models.content import ContentBrief
@@ -97,6 +104,9 @@ class InterlinkingService:
         max_links_per_brief: int = 8,
         max_sitemap_links: int = 5,
         max_batch_links: int = 3,
+        use_llm_sitemap_selector: bool = True,
+        max_sitemap_candidates_for_agent: int = 20,
+        sitemap_selector_timeout_seconds: float = 30.0,
     ) -> None:
         """Initialize interlinking service.
 
@@ -107,6 +117,9 @@ class InterlinkingService:
             max_links_per_brief: Maximum total links to add per brief
             max_sitemap_links: Maximum links to sitemap pages per brief
             max_batch_links: Maximum links to other briefs in batch per brief
+            use_llm_sitemap_selector: Enable LLM-based sitemap URL selection
+            max_sitemap_candidates_for_agent: Max candidate URLs passed to selector agent
+            sitemap_selector_timeout_seconds: Max wait for selector agent per brief
         """
         self.session = session
         self.embeddings_client = embeddings_client
@@ -114,6 +127,15 @@ class InterlinkingService:
         self.max_links_per_brief = max_links_per_brief
         self.max_sitemap_links = max_sitemap_links
         self.max_batch_links = max_batch_links
+        self.max_sitemap_candidates_for_agent = max(1, max_sitemap_candidates_for_agent)
+        self.sitemap_selector_timeout_seconds = max(5.0, sitemap_selector_timeout_seconds)
+        self.use_llm_sitemap_selector = use_llm_sitemap_selector and bool(settings.openrouter_api_key)
+        self._sitemap_selector_agent: SitemapLinkSelectorAgent | None = None
+
+        if use_llm_sitemap_selector and not self.use_llm_sitemap_selector:
+            logger.info(
+                "Sitemap selector agent disabled: OPENROUTER_API_KEY not configured",
+            )
 
     async def analyze_and_enrich_links(
         self,
@@ -217,9 +239,12 @@ class InterlinkingService:
             qualified_candidates.sort(key=lambda c: c.relevance_score, reverse=True)
 
             # Limit links per category
-            sitemap_links = [c for c in qualified_candidates if c.target_type == "sitemap_page"][
-                :self.max_sitemap_links
-            ]
+            sitemap_candidates = [c for c in qualified_candidates if c.target_type == "sitemap_page"]
+            sitemap_links = await self._select_sitemap_links_with_agent(
+                brief=brief,
+                topic=topic,
+                candidates=sitemap_candidates,
+            )
             batch_links = [c for c in qualified_candidates if c.target_type == "batch_brief"][
                 :self.max_batch_links
             ]
@@ -341,6 +366,133 @@ class InterlinkingService:
             )
 
         return candidates
+
+    def _get_sitemap_selector_agent(self) -> SitemapLinkSelectorAgent | None:
+        """Return cached sitemap selector agent when enabled."""
+        if not self.use_llm_sitemap_selector:
+            return None
+        if self._sitemap_selector_agent is None:
+            self._sitemap_selector_agent = SitemapLinkSelectorAgent()
+        return self._sitemap_selector_agent
+
+    async def _select_sitemap_links_with_agent(
+        self,
+        brief: ContentBrief,
+        topic: Topic,
+        candidates: list[LinkCandidate],
+    ) -> list[LinkCandidate]:
+        """Select best sitemap links using LLM selector with deterministic fallback."""
+        if not candidates:
+            return []
+
+        heuristic_ranked = sorted(candidates, key=lambda c: c.relevance_score, reverse=True)
+        default_selection = heuristic_ranked[:self.max_sitemap_links]
+
+        agent = self._get_sitemap_selector_agent()
+        if agent is None or len(heuristic_ranked) <= 1:
+            return default_selection
+
+        candidate_pool = heuristic_ranked[:self.max_sitemap_candidates_for_agent]
+        agent_input = self._build_sitemap_selector_input(
+            brief=brief,
+            topic=topic,
+            candidates=candidate_pool,
+        )
+
+        try:
+            output = await asyncio.wait_for(
+                agent.run(agent_input),
+                timeout=self.sitemap_selector_timeout_seconds,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Sitemap selector agent failed; falling back to heuristic ranking",
+                extra={
+                    "brief_id": str(brief.id),
+                    "candidate_count": len(candidate_pool),
+                    "error": str(exc),
+                },
+            )
+            return default_selection
+
+        selected_urls: list[str] = []
+        for decision in output.selected_urls:
+            url = str(decision.url or "").strip()
+            if not url or url in selected_urls:
+                continue
+            selected_urls.append(url)
+            if len(selected_urls) >= self.max_sitemap_links:
+                break
+
+        if not selected_urls:
+            logger.info(
+                "Sitemap selector returned no URLs; using heuristic fallback",
+                extra={"brief_id": str(brief.id)},
+            )
+            return default_selection
+
+        url_to_candidate = {}
+        for candidate in candidate_pool:
+            target_url = candidate.target_url
+            if target_url and target_url not in url_to_candidate:
+                url_to_candidate[target_url] = candidate
+
+        selected_candidates: list[LinkCandidate] = []
+        for url in selected_urls:
+            candidate = url_to_candidate.get(url)
+            if candidate is None:
+                continue
+            selected_candidates.append(candidate)
+            if len(selected_candidates) >= self.max_sitemap_links:
+                break
+
+        if not selected_candidates:
+            logger.info(
+                "Sitemap selector returned unknown URLs; using heuristic fallback",
+                extra={"brief_id": str(brief.id)},
+            )
+            return default_selection
+
+        return selected_candidates
+
+    def _build_sitemap_selector_input(
+        self,
+        brief: ContentBrief,
+        topic: Topic,
+        candidates: list[LinkCandidate],
+    ) -> SitemapLinkSelectorInput:
+        """Build structured agent input for sitemap URL selection."""
+        agent_candidates: list[AgentSitemapLinkCandidate] = []
+        for candidate in candidates:
+            url = candidate.target_url
+            if not url:
+                continue
+            agent_candidates.append(
+                AgentSitemapLinkCandidate(
+                    url=url,
+                    topic=self._extract_topic_from_url(url),
+                    relevance_score=max(0.0, min(1.0, candidate.relevance_score)),
+                    keyword_overlap=self._calculate_keyword_overlap_from_url(url=url, brief=brief),
+                    anchor_text=candidate.anchor_text,
+                )
+            )
+
+        working_title = ""
+        if brief.working_titles and isinstance(brief.working_titles, list):
+            working_title = str(brief.working_titles[0])
+
+        return SitemapLinkSelectorInput(
+            source_primary_keyword=brief.primary_keyword,
+            source_working_title=working_title,
+            source_topic_name=topic.name,
+            source_intent=topic.dominant_intent,
+            source_funnel_stage=topic.funnel_stage,
+            source_target_audience=brief.target_audience or "",
+            source_reader_job=brief.reader_job_to_be_done or "",
+            supporting_keywords=list(brief.supporting_keywords or []),
+            max_links=self.max_sitemap_links,
+            candidates=agent_candidates,
+        )
 
     def _generate_batch_links(
         self,
@@ -709,12 +861,7 @@ class InterlinkingService:
 
         # If we have a URL, extract topic from it
         if target_url:
-            # Extract last path segment
-            path = target_url.split("?")[0].rstrip("/")
-            slug = path.split("/")[-1]
-            # Convert dashes/underscores to spaces
-            topic = re.sub(r"[-_]", " ", slug)
-            topic = re.sub(r"\s+", " ", topic).strip()
+            topic = self._extract_topic_from_url(target_url)
 
             if topic:
                 return f"learn about {topic}"
@@ -792,14 +939,14 @@ class InterlinkingService:
         Returns:
             Text representation
         """
-        # Extract topic from URL
-        path = page.url.split("?")[0].rstrip("/")
-        slug = path.split("/")[-1]
-        # Convert dashes/underscores to spaces
-        topic = re.sub(r"[-_]", " ", slug)
-        topic = re.sub(r"\s+", " ", topic).strip()
+        return self._extract_topic_from_url(page.url)
 
-        return topic
+    def _extract_topic_from_url(self, url: str) -> str:
+        """Extract a readable topic string from the final URL path segment."""
+        path = url.split("?")[0].rstrip("/")
+        slug = path.split("/")[-1]
+        topic = re.sub(r"[-_]", " ", slug)
+        return re.sub(r"\s+", " ", topic).strip()
 
     def _candidate_to_dict(self, candidate: LinkCandidate) -> dict:
         """Convert LinkCandidate to dictionary for storage.

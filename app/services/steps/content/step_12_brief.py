@@ -98,7 +98,7 @@ class BriefInput:
     max_briefs: int = 20  # Limit number of briefs to generate
     posts_per_week: int = 1
     preferred_weekdays: list[int] | None = None  # 0=Mon ... 6=Sun
-    min_lead_days: int = 3
+    min_lead_days: int = 1
     publication_start_date: date | None = None
     use_llm_timing_hints: bool = True
     llm_timing_flex_days: int = 14

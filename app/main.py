@@ -4,7 +4,7 @@ import asyncio
 import logging
 from copy import deepcopy
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, cast
 
 from fastapi import FastAPI
@@ -29,6 +29,7 @@ from app.services.pipeline_task_manager import (
     get_discovery_pipeline_task_manager,
     get_setup_pipeline_task_manager,
 )
+from app.services.publication_webhook import run_publication_webhook_nightly_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +54,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await init_db()
         logger.info("Development database initialized")
 
-    yield
+    publication_stop_event = asyncio.Event()
+    publication_scheduler_task: asyncio.Task[None] | None = None
+    if settings.publication_webhook_auto_start:
+        publication_scheduler_task = asyncio.create_task(
+            run_publication_webhook_nightly_scheduler(
+                stop_event=publication_stop_event,
+                batch_size=max(1, int(settings.publication_webhook_batch_size)),
+            ),
+            name="publication-webhook-nightly-scheduler",
+        )
+        logger.info(
+            "Publication webhook nightly scheduler auto-started",
+            extra={
+                "batch_size": max(1, int(settings.publication_webhook_batch_size)),
+                "run_time_utc": "00:00",
+            },
+        )
 
-    logger.info("Shutting down DonkeySEO")
-    await close_redis()
-    await close_db()
+    try:
+        yield
+    finally:
+        if publication_scheduler_task is not None:
+            publication_stop_event.set()
+            publication_scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await publication_scheduler_task
+
+        logger.info("Shutting down DonkeySEO")
+        await close_redis()
+        await close_db()
 
 
 def create_app() -> FastAPI:

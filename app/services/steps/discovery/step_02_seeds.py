@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.agents.topic_generator import TopicGeneratorAgent, TopicGeneratorInput
 from app.models.brand import BrandProfile
+from app.models.content import ContentArticle, ContentBrief
 from app.models.generated_dtos import SeedTopicCreateDTO
 from app.models.keyword import SeedTopic
 from app.models.project import Project
@@ -59,6 +60,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
     MAX_SEED_WORDS = 4
     MAX_WORKFLOW_ENTITIES = 4
     MAX_WORKFLOW_SYNTHETIC_SEEDS = 24
+    MAX_EXISTING_COVERAGE_ITEMS = 30
     WORKFLOW_ENTITY_STOPWORDS = {
         "best",
         "cheap",
@@ -120,6 +122,9 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
         )
         await self.set_market_diagnosis(diagnosis.to_dict())
         market_mode = diagnosis.mode
+        existing_coverage = await self._load_existing_content_coverage(
+            project_id=input_data.project_id,
+        )
         learning_context = await self.build_learning_context(
             self.capability_key,
             "TopicGeneratorAgent",
@@ -141,6 +146,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
             unique_value_props=brand.unique_value_props or [],
             in_scope_topics=in_scope_topics,
             out_of_scope_topics=out_of_scope_topics,
+            existing_coverage=existing_coverage,
             learning_context=learning_context,
         )
 
@@ -287,6 +293,63 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
         })
 
         await self.session.commit()
+
+    async def _load_existing_content_coverage(self, *, project_id: str) -> list[str]:
+        """Collect compact existing coverage context for diversification hints."""
+        result = await self.session.execute(
+            select(
+                ContentBrief.primary_keyword,
+                ContentBrief.proposed_publication_date,
+                ContentArticle.title,
+                ContentArticle.primary_keyword,
+            )
+            .select_from(ContentBrief)
+            .outerjoin(ContentArticle, ContentArticle.brief_id == ContentBrief.id)
+            .where(ContentBrief.project_id == project_id)
+            .order_by(ContentBrief.created_at.desc())
+            .limit(self.MAX_EXISTING_COVERAGE_ITEMS)
+        )
+
+        existing_coverage: list[str] = []
+        seen: set[str] = set()
+        for (
+            brief_primary_keyword,
+            publication_date,
+            article_title,
+            article_primary_keyword,
+        ) in result.all():
+            brief_keyword = re.sub(
+                r"\s+",
+                " ",
+                str(brief_primary_keyword or "").strip(),
+            )
+            if brief_keyword:
+                entry = f"Brief keyword: {brief_keyword}"
+                if publication_date is not None:
+                    entry = f"{entry} (date: {publication_date.isoformat()})"
+                key = entry.lower()
+                if key not in seen:
+                    seen.add(key)
+                    existing_coverage.append(entry)
+
+            title = re.sub(r"\s+", " ", str(article_title or "").strip())
+            article_keyword = re.sub(
+                r"\s+",
+                " ",
+                str(article_primary_keyword or "").strip(),
+            )
+            if title:
+                suffix = f" [keyword: {article_keyword}]" if article_keyword else ""
+                entry = f"Article title: {title}{suffix}"
+                key = entry.lower()
+                if key not in seen:
+                    seen.add(key)
+                    existing_coverage.append(entry)
+
+            if len(existing_coverage) >= self.MAX_EXISTING_COVERAGE_ITEMS:
+                break
+
+        return existing_coverage
 
     def _union_workflow_seed_expansion(
         self,

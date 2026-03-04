@@ -247,6 +247,8 @@ def _resolve_calendar_state(
         or article.status == "published"
     ):
         return "published"
+    if article and article.publish_status == "publication_sent":
+        return "publication_sent"
     if article:
         if publication_date is not None and publication_date < reference_today:
             return "publish_pending"

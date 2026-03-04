@@ -12,16 +12,17 @@ from app.services.publication_webhook import (
     apply_publication_delivery_attempt_result,
     build_publication_webhook_payload,
     calculate_publication_retry_delay_seconds,
+    next_publication_webhook_run_at,
     scheduled_publication_datetime,
     sign_publication_webhook_payload,
 )
 
 
-def test_scheduled_publication_datetime_defaults_to_9am_utc() -> None:
+def test_scheduled_publication_datetime_defaults_to_midnight_utc() -> None:
     scheduled = scheduled_publication_datetime(date(2026, 2, 24))
 
     assert scheduled.tzinfo == timezone.utc
-    assert scheduled.hour == 9
+    assert scheduled.hour == 0
     assert scheduled.minute == 0
 
 
@@ -79,6 +80,30 @@ def test_retry_backoff_grows_exponentially() -> None:
     assert calculate_publication_retry_delay_seconds(1) == 60
     assert calculate_publication_retry_delay_seconds(2) == 120
     assert calculate_publication_retry_delay_seconds(3) == 240
+
+
+def test_next_publication_webhook_run_at_rolls_to_next_midnight() -> None:
+    run_at = next_publication_webhook_run_at(
+        now=datetime(2026, 2, 24, 23, 59, 59, tzinfo=timezone.utc)
+    )
+
+    assert run_at == datetime(2026, 2, 25, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def test_next_publication_webhook_run_at_at_exact_midnight_returns_current_midnight() -> None:
+    run_at = next_publication_webhook_run_at(
+        now=datetime(2026, 2, 24, 0, 0, 0, tzinfo=timezone.utc)
+    )
+
+    assert run_at == datetime(2026, 2, 24, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def test_next_publication_webhook_run_at_after_midnight_rolls_to_next_day() -> None:
+    run_at = next_publication_webhook_run_at(
+        now=datetime(2026, 2, 24, 0, 0, 30, tzinfo=timezone.utc)
+    )
+
+    assert run_at == datetime(2026, 2, 25, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def test_apply_delivery_attempt_result_success_marks_delivered() -> None:

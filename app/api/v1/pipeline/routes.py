@@ -185,7 +185,7 @@ async def start_pipeline(
             "max_briefs": content_payload.get("max_briefs", 20),
             "posts_per_week": content_payload.get("posts_per_week", 1),
             "preferred_weekdays": content_payload.get("preferred_weekdays", []),
-            "min_lead_days": content_payload.get("min_lead_days", 3),
+            "min_lead_days": content_payload.get("min_lead_days", 1),
             "publication_start_date": content_payload.get("publication_start_date"),
             "use_llm_timing_hints": content_payload.get("use_llm_timing_hints", True),
             "llm_timing_flex_days": content_payload.get("llm_timing_flex_days", 14),

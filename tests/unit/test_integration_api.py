@@ -764,6 +764,32 @@ def test_integration_publication_patch_updates_article_and_cancels_pending(
     assert fake_redis.delete_calls >= 1
 
 
+def test_integration_publication_patch_accepts_publication_sent_status() -> None:
+    original_keys = settings.integration_api_keys
+    settings.integration_api_keys = "valid-key"
+    article = _MutableArticle(article_id="article_1", project_id="project_1")
+    fake_session = _FakePublicationSession(article=article)
+
+    async def _fake_get_session() -> AsyncGenerator[_FakePublicationSession, None]:
+        yield fake_session
+
+    integration_app.dependency_overrides[get_session] = _fake_get_session
+    try:
+        with TestClient(create_app()) as client:
+            response = client.patch(
+                f"{INTEGRATION_API_BASE_PATH}/article/article_1/publication",
+                params={"project_id": "project_1"},
+                headers={"X-API-Key": "valid-key"},
+                json={"publish_status": "publication_sent"},
+            )
+    finally:
+        integration_app.dependency_overrides.clear()
+        settings.integration_api_keys = original_keys
+
+    assert response.status_code == 200
+    assert response.json()["publish_status"] == "publication_sent"
+
+
 def test_integration_publication_patch_validates_required_published_fields() -> None:
     original_keys = settings.integration_api_keys
     settings.integration_api_keys = "valid-key"

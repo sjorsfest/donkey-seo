@@ -297,6 +297,7 @@ ContentCalendarItemState = Literal[
     "writer_instructions_ready",
     "article_ready",
     "publish_pending",
+    "publication_sent",
     "published",
 ]
 

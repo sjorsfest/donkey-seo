@@ -512,7 +512,7 @@ The client should fetch articles/pillars and PATCH publication state.
 Example (TypeScript):
 ```ts
 type PublicationPatch = {
-  publish_status?: "scheduled" | "published" | "failed";
+  publish_status?: "scheduled" | "publication_sent" | "published" | "failed";
   published_at?: string;
   published_url?: string;
 };
@@ -961,7 +961,7 @@ How to compose endpoint URLs:
   - Receives publication status updates from your CMS/blog integration.
 
 Publication callback payload fields:
-- `publish_status` (`scheduled|published|failed`)
+- `publish_status` (`scheduled|publication_sent|published|failed`)
 - `published_at` (ISO datetime, required when `publish_status=published`)
 - `published_url` (URL, required when `publish_status=published`)
 

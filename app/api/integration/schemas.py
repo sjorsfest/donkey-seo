@@ -141,8 +141,16 @@ class IntegrationArticlePublicationPatchRequest(BaseModel):
             and self.published_url is None
         ):
             raise ValueError("At least one publication field must be provided")
-        if self.publish_status not in {None, "scheduled", "published", "failed"}:
-            raise ValueError("publish_status must be one of: scheduled, published, failed")
+        if self.publish_status not in {
+            None,
+            "scheduled",
+            "publication_sent",
+            "published",
+            "failed",
+        }:
+            raise ValueError(
+                "publish_status must be one of: scheduled, publication_sent, published, failed"
+            )
         if self.publish_status == "published":
             if self.published_at is None or not self.published_url:
                 raise ValueError(

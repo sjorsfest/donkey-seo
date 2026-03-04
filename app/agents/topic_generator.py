@@ -40,6 +40,12 @@ class TopicGeneratorInput(BaseModel):
     unique_value_props: list[str]
     in_scope_topics: list[str]
     out_of_scope_topics: list[str]
+    existing_coverage: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Existing brief/article coverage to steer diversification away from near-duplicate topics."
+        ),
+    )
     learning_context: str = Field(
         default="",
         description="Optional project memory from previous discovery iterations.",
@@ -144,6 +150,7 @@ Organize seeds into these buckets (use only the ones that apply):
                 "buyer_jobs_count": len(input_data.buyer_jobs),
                 "in_scope_count": len(input_data.in_scope_topics),
                 "out_of_scope_count": len(input_data.out_of_scope_topics),
+                "existing_coverage_count": len(input_data.existing_coverage),
             },
         )
         products_text = "\n".join(
@@ -164,6 +171,13 @@ Desired Outcomes: {', '.join(input_data.target_audience.get('desired_outcomes', 
         learning_context = (
             f"\n## Discovery Memory\n{input_data.learning_context}\n"
             if input_data.learning_context
+            else ""
+        )
+        existing_coverage = (
+            "\n## Existing Coverage (Diversify From These)\n"
+            + "\n".join(f"- {item}" for item in input_data.existing_coverage)
+            + "\n"
+            if input_data.existing_coverage
             else ""
         )
 
@@ -190,6 +204,7 @@ Desired Outcomes: {', '.join(input_data.target_audience.get('desired_outcomes', 
 ## Topic Boundaries
 In-scope: {', '.join(input_data.in_scope_topics) or 'Not specified'}
 Out-of-scope: {', '.join(input_data.out_of_scope_topics) or 'Not specified'}
+{existing_coverage}
 {learning_context}
 
 ## Instructions
@@ -198,6 +213,7 @@ Out-of-scope: {', '.join(input_data.out_of_scope_topics) or 'Not specified'}
 3. Each seed must be a broad term suitable for keyword research tool expansion
 4. Score relevance to the brand (0-1)
 5. Note any gaps — areas where you couldn't confidently generate seeds
+6. Avoid repeating existing covered angles; prefer adjacent uncovered demand
 
 Remember: seed keywords are SHORT. "live chat software" not "How to choose the right live chat software for your business".
 """

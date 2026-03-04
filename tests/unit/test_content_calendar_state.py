@@ -91,6 +91,23 @@ def test_calendar_state_article_ready() -> None:
     assert state == "article_ready"
 
 
+def test_calendar_state_publication_sent() -> None:
+    article = SimpleNamespace(
+        status="draft",
+        publish_status="publication_sent",
+        published_at=None,
+    )
+
+    state = _resolve_calendar_state(
+        has_writer_instructions=True,
+        article=article,
+        publication_date=date(2026, 3, 4),
+        today=date(2026, 3, 4),
+    )
+
+    assert state == "publication_sent"
+
+
 def test_calendar_state_status_published_is_published() -> None:
     article = SimpleNamespace(
         status="published",

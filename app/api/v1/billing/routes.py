@@ -19,6 +19,7 @@ from app.config import settings
 from app.dependencies import CurrentUser, DbSession
 from app.integrations.stripe_billing import StripeBillingClient, StripeSignatureError
 from app.models.content import ContentArticle
+from app.models.pipeline import PipelineRun
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.billing import (
@@ -42,6 +43,11 @@ from app.services.billing import (
     resolve_price_id,
     resolve_usage_window,
 )
+from app.services.pipeline_task_manager import (
+    PipelineQueueFullError,
+    get_discovery_pipeline_task_manager,
+)
+from app.services.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +112,146 @@ async def _get_user_by_customer_id(
         select(User).where(User.stripe_customer_id == stripe_customer_id)
     )
     return result.scalar_one_or_none()
+
+
+def _is_free_to_paid_upgrade(
+    *,
+    previous_plan: PlanKey | None,
+    current_plan: PlanKey | None,
+) -> bool:
+    return previous_plan is None and current_plan is not None
+
+
+async def _enqueue_resume_for_halted_discovery_runs(
+    *,
+    session: DbSession,
+    user: User,
+) -> int:
+    paused_result = await session.execute(
+        select(
+            PipelineRun.id,
+            PipelineRun.project_id,
+            PipelineRun.paused_at_step,
+            PipelineRun.source_topic_id,
+        )
+        .join(Project, PipelineRun.project_id == Project.id)
+        .where(
+            Project.user_id == user.id,
+            PipelineRun.pipeline_module == "discovery",
+            PipelineRun.status == "paused",
+            PipelineRun.error_message.is_not(None),
+        )
+        .order_by(PipelineRun.project_id.asc(), PipelineRun.created_at.desc())
+    )
+    paused_rows = list(paused_result.all())
+    latest_by_project: dict[str, tuple[str, int | None, str | None]] = {}
+    for run_id, project_id, paused_at_step, source_topic_id in paused_rows:
+        project_id_str = str(project_id)
+        if project_id_str in latest_by_project:
+            continue
+        latest_by_project[project_id_str] = (
+            str(run_id),
+            int(paused_at_step) if paused_at_step is not None else None,
+            str(source_topic_id) if source_topic_id is not None else None,
+        )
+
+    if not latest_by_project:
+        return 0
+
+    project_ids = list(latest_by_project.keys())
+    running_result = await session.execute(
+        select(PipelineRun.project_id).where(
+            PipelineRun.project_id.in_(project_ids),
+            PipelineRun.pipeline_module == "discovery",
+            PipelineRun.status == "running",
+        )
+    )
+    running_project_ids = {
+        str(project_id)
+        for project_id in running_result.scalars().all()
+        if project_id is not None
+    }
+
+    queue = get_discovery_pipeline_task_manager()
+    task_manager = TaskManager()
+    resumed_count = 0
+    for project_id, (run_id, paused_at_step, source_topic_id) in latest_by_project.items():
+        if project_id in running_project_ids:
+            continue
+
+        await task_manager.set_task_state(
+            task_id=run_id,
+            status="queued",
+            stage="Queued pipeline resume",
+            project_id=project_id,
+            pipeline_module="discovery",
+            source_topic_id=source_topic_id,
+            current_step=paused_at_step,
+            current_step_name=None,
+            error_message=None,
+        )
+        try:
+            await queue.enqueue_resume(
+                project_id=project_id,
+                run_id=run_id,
+            )
+            resumed_count += 1
+        except PipelineQueueFullError:
+            await task_manager.set_task_state(
+                task_id=run_id,
+                status="paused",
+                stage="Pipeline queue is full",
+                error_message="Pipeline queue is full, try again shortly",
+            )
+            logger.warning(
+                "Skipping discovery resume after free-to-paid upgrade because queue is full",
+                extra={
+                    "user_id": str(user.id),
+                    "project_id": project_id,
+                    "run_id": run_id,
+                },
+            )
+    return resumed_count
+
+
+async def _sync_subscription_for_user(
+    *,
+    session: DbSession,
+    user: User,
+    subscription: dict[str, object],
+) -> None:
+    previous_plan = _normalize_plan(user.subscription_plan)
+    apply_subscription_payload(user=user, subscription=subscription)
+    current_plan = _normalize_plan(user.subscription_plan)
+    await session.flush()
+
+    if not _is_free_to_paid_upgrade(
+        previous_plan=previous_plan,
+        current_plan=current_plan,
+    ):
+        return
+
+    await session.commit()
+    try:
+        resumed_count = await _enqueue_resume_for_halted_discovery_runs(
+            session=session,
+            user=user,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to enqueue discovery resume after free-to-paid upgrade",
+            extra={"user_id": str(user.id)},
+        )
+        return
+    logger.info(
+        "Processed free-to-paid discovery resume",
+        extra={
+            "user_id": str(user.id),
+            "from_plan": previous_plan,
+            "to_plan": current_plan,
+            "resumed_discovery_runs": resumed_count,
+        },
+    )
 
 
 @router.get(
@@ -360,8 +506,11 @@ async def stripe_webhook(
                 stripe_customer_id=customer_id if isinstance(customer_id, str) else None,
             )
             if user:
-                apply_subscription_payload(user=user, subscription=event_object)
-                await session.flush()
+                await _sync_subscription_for_user(
+                    session=session,
+                    user=user,
+                    subscription=event_object,
+                )
 
         elif event_type == "checkout.session.completed":
             mode = event_object.get("mode")
@@ -374,8 +523,11 @@ async def stripe_webhook(
                 )
                 if user and isinstance(subscription_id, str):
                     subscription = await stripe.retrieve_subscription(subscription_id)
-                    apply_subscription_payload(user=user, subscription=subscription)
-                    await session.flush()
+                    await _sync_subscription_for_user(
+                        session=session,
+                        user=user,
+                        subscription=subscription,
+                    )
 
         elif event_type in {"invoice.paid", "invoice.payment_failed"}:
             customer_id = event_object.get("customer")
@@ -387,7 +539,10 @@ async def stripe_webhook(
                 )
                 if user:
                     subscription = await stripe.retrieve_subscription(subscription_id)
-                    apply_subscription_payload(user=user, subscription=subscription)
-                    await session.flush()
+                    await _sync_subscription_for_user(
+                        session=session,
+                        user=user,
+                        subscription=subscription,
+                    )
 
         return StripeWebhookResponse(received=True, event_type=event_type)

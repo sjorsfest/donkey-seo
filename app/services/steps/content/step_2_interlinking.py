@@ -34,6 +34,9 @@ class InterlinkingInput:
     max_sitemap_links: int = 5
     max_batch_links: int = 3
     max_sitemap_urls: int = 1000
+    use_llm_sitemap_selector: bool = True
+    max_sitemap_candidates_for_agent: int = 20
+    sitemap_selector_timeout_seconds: float = 30.0
 
 
 @dataclass
@@ -170,6 +173,9 @@ class Step2InterlinkingService(BaseStepService[InterlinkingInput, InterlinkingOu
                 max_links_per_brief=input_data.max_links_per_brief,
                 max_sitemap_links=input_data.max_sitemap_links,
                 max_batch_links=input_data.max_batch_links,
+                use_llm_sitemap_selector=input_data.use_llm_sitemap_selector,
+                max_sitemap_candidates_for_agent=input_data.max_sitemap_candidates_for_agent,
+                sitemap_selector_timeout_seconds=input_data.sitemap_selector_timeout_seconds,
             )
 
             await self._update_progress(40, "Analyzing semantic relationships...")
@@ -203,6 +209,7 @@ class Step2InterlinkingService(BaseStepService[InterlinkingInput, InterlinkingOu
                 "min_relevance_score": input_data.min_relevance_score,
                 "max_links_per_brief": input_data.max_links_per_brief,
                 "sitemap_fetched": input_data.fetch_sitemap,
+                "use_llm_sitemap_selector": input_data.use_llm_sitemap_selector,
             },
         )
 
