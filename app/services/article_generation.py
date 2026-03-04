@@ -484,12 +484,15 @@ class ArticleGenerationService:
         seo_meta: dict[str, Any] = _as_dict(document.get("seo_meta"))
         conversion_plan: dict[str, Any] = _as_dict(document.get("conversion_plan"))
         blocks: list[Any] = _as_list(document.get("blocks"))
+        structured_data: Any = document.get("structured_data")
         normalized: dict[str, Any] = {
             "schema_version": "1.0",
             "seo_meta": seo_meta,
             "conversion_plan": conversion_plan,
             "blocks": blocks,
         }
+        if isinstance(structured_data, (dict, list)):
+            normalized["structured_data"] = structured_data
 
         primary_keyword = str(brief.get("primary_keyword") or "")
         locked_title = str(brief.get("locked_title") or "").strip()
@@ -547,6 +550,7 @@ class ArticleGenerationService:
             )
 
         normalized["blocks"] = normalized_blocks
+        self._sync_faqpage_structured_data(document=normalized)
 
         if not conversion_plan.get("primary_intent"):
             conversion_plan["primary_intent"] = str(brief.get("funnel_stage") or "informational")
@@ -566,6 +570,86 @@ class ArticleGenerationService:
         normalized["conversion_plan"] = conversion_plan
         sanitized = self._sanitize_em_dashes(normalized)
         return sanitized if isinstance(sanitized, dict) else normalized
+
+    def _sync_faqpage_structured_data(
+        self,
+        *,
+        document: dict[str, Any],
+    ) -> None:
+        structured_data = self._coerce_structured_data(document.get("structured_data"))
+        retained_items = [
+            item for item in structured_data if not self._is_faqpage_schema(item)
+        ]
+
+        faq_entities = self._faq_main_entities_from_blocks(_as_list(document.get("blocks")))
+        if faq_entities:
+            retained_items.append(
+                {
+                    "@context": "https://schema.org",
+                    "@type": "FAQPage",
+                    "mainEntity": faq_entities,
+                }
+            )
+
+        if retained_items:
+            document["structured_data"] = retained_items
+            return
+        document.pop("structured_data", None)
+
+    def _coerce_structured_data(self, value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _is_faqpage_schema(self, schema_item: dict[str, Any]) -> bool:
+        schema_type = schema_item.get("@type")
+        if isinstance(schema_type, str):
+            return schema_type.strip().lower() == "faqpage"
+        if isinstance(schema_type, list):
+            return any(
+                isinstance(item, str) and item.strip().lower() == "faqpage"
+                for item in schema_type
+            )
+        return False
+
+    def _faq_main_entities_from_blocks(
+        self,
+        blocks: list[Any],
+    ) -> list[dict[str, Any]]:
+        entities: list[dict[str, Any]] = []
+        seen_questions: set[str] = set()
+
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("block_type") or "").strip().lower() != "faq":
+                continue
+
+            for raw_item in _as_list(block.get("faq_items")):
+                if not isinstance(raw_item, dict):
+                    continue
+                question = str(raw_item.get("question") or "").strip()
+                answer = str(raw_item.get("answer") or "").strip()
+                if not question or not answer:
+                    continue
+                question_key = question.lower()
+                if question_key in seen_questions:
+                    continue
+                seen_questions.add(question_key)
+                entities.append(
+                    {
+                        "@type": "Question",
+                        "name": question,
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": answer,
+                        },
+                    }
+                )
+
+        return entities
 
     def _sanitize_em_dashes(self, value: Any) -> Any:
         if isinstance(value, str):

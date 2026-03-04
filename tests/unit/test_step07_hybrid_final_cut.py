@@ -12,12 +12,10 @@ def test_final_cut_pool_limit_respects_min_and_max_bounds() -> None:
     tiny_target_strategy = resolve_run_strategy(
         strategy_payload={"min_eligible_target": 1},
         brand=None,
-        primary_goal=None,
     )
     large_target_strategy = resolve_run_strategy(
         strategy_payload={"min_eligible_target": 20},
         brand=None,
-        primary_goal=None,
     )
 
     assert service._final_cut_pool_limit(tiny_target_strategy) == 20  # type: ignore[attr-defined]
@@ -57,7 +55,6 @@ def test_zero_result_fallback_promotes_only_non_hard_excluded_candidates() -> No
     strategy = resolve_run_strategy(
         strategy_payload={"min_eligible_target": 2},
         brand=None,
-        primary_goal=None,
     )
 
     hard_excluded = {

@@ -199,6 +199,8 @@ def test_integration_docs_and_guide_are_public() -> None:
     assert "planning mode" in guide_payload["markdown"].lower()
     assert "content.article.publish_requested" in guide_payload["markdown"]
     assert guide_payload["modular_document_contract"]["schema_version"] == "1.0"
+    assert "structured_data" in guide_payload["modular_document_contract"]
+    assert "faqpage" in guide_payload["markdown"].lower()
     assert "author" in guide_payload["modular_document_contract"]
     assert "DONKEY_SEO_API_KEY" in guide_payload["client_env_vars"]
     assert guide_payload["webhook_contract"]["events"][0]["event_type"] == (

@@ -152,8 +152,11 @@ async def start_pipeline(
     strategy_payload = request.strategy.model_dump() if request.strategy else None
     discovery_payload = request.discovery.model_dump() if request.discovery else None
     content_config = request.content
+    default_posts_per_week = max(1, min(int(getattr(project, "posts_per_week", 1) or 1), 7))
     if content_config is None:
-        content_config = ContentPipelineConfig()
+        content_config = ContentPipelineConfig(posts_per_week=default_posts_per_week)
+    elif "posts_per_week" not in content_config.model_fields_set:
+        content_config = content_config.model_copy(update={"posts_per_week": default_posts_per_week})
     content_payload = content_config.model_dump()
     if pipeline_module == "content":
         usage = await resolve_subscription_usage_for_user(
@@ -197,7 +200,6 @@ async def start_pipeline(
         "end": end_step,
         "skip": skip_steps,
         "strategy": strategy_payload,
-        "primary_goal": project.primary_goal,
         "discovery": discovery_payload,
         "content": content_payload,
         "iteration_index": 0,

@@ -94,12 +94,25 @@ Return a strict JSON visual style guide and deterministic prompt contract for bo
 Rules:
 1. Keep rules explicit and testable.
 2. Prioritize visual evidence from homepage/site visual signals and known assets.
-3. Include required placeholder variables for prompt templates.
-4. Avoid vague language (e.g. "nice", "good", "beautiful").
-5. Include clear negative rules to avoid off-brand imagery.
-6. Ensure accessibility (contrast, readability, inclusive visuals).
-7. Do not invent colors, mascots, lighting setups, or platform context that is not present in evidence.
-8. If evidence indicates an illustration/UI-first brand, avoid photographic camera rules.
+3. CRITICAL: Extract specific typography details with numeric precision:
+   - Font families (even if just "sans-serif" or "serif")
+   - Font weights for headings (typically 600-900, extract exact number)
+   - Line heights (tight: 1.0-1.2, normal: 1.4-1.6, loose: 1.8+, extract exact value)
+   - Letter spacing (tight: -0.02 to 0, normal: 0, loose: 0.05+, extract exact value in em)
+   - Text colors (extract exact hex codes when available, e.g., #111827 not just "dark")
+   - Overall typographic style (tight/modern, loose/traditional, etc.)
+4. Include design_tokens with specific numeric values:
+   - colors: {primary, secondary, text, background, accent, ...}
+   - typography: {heading_weight, heading_line_height, heading_letter_spacing, body_weight, body_line_height, ...}
+   - spacing: {margin, padding, gap, ...}
+   - borders: {radius, width, ...}
+   - shadows: {elevation, ...}
+5. Include required placeholder variables for prompt templates.
+6. Avoid vague language (e.g. "nice", "good", "beautiful").
+7. Include clear negative rules to avoid off-brand imagery.
+8. Ensure accessibility (contrast, readability, inclusive visuals).
+9. Do not invent colors, mascots, lighting setups, or platform context that is not present in evidence.
+10. If evidence indicates an illustration/UI-first brand, avoid photographic camera rules.
 
 Template constraints:
 - The prompt contract template MUST include every required variable.
@@ -112,6 +125,7 @@ Output priorities:
 - Capture look-and-feel fidelity over generic design advice.
 - Prefer concrete cues (shape language, line weight, shadow style, CTA tone, spacing rhythm).
 - Use observed hex colors when available for brand_palette.
+- Extract precise typography metrics from visual signals (font-weight: 700, line-height: 1.2, etc.).
 - Keep each rule list concise and practical for image generation.
 - Include component-ready style fields:
   design_tokens, component_style_rules, component_layout_rules, component_recipes, component_negative_rules.
@@ -180,12 +194,32 @@ Output priorities:
 ## Mandatory required_variables
 {_REQUIRED_PROMPT_VARIABLES}
 
+## CRITICAL: Typography Extraction
+From the visual signals provided, extract precise typography details:
+- Font weight used for headings (e.g., 700, 600, 800, 900) - be specific
+- Line height for headings (e.g., 1.1, 1.2, 1.5) - extract exact decimal value
+- Letter spacing for headings (e.g., -0.02em, 0em, -0.01em) - extract exact em value
+- Dominant text colors (near-black like #111827, true black #000000, dark gray #374151, etc.) - use exact hex codes
+- Overall typographic style (tight/modern, loose/traditional, etc.)
+
+Include these in design_tokens.typography with specific numeric values like:
+{{
+  "typography": {{
+    "heading_weight": 700,
+    "heading_line_height": 1.1,
+    "heading_letter_spacing": -0.01,
+    "body_weight": 400,
+    "body_line_height": 1.6
+  }}
+}}
+
 ## Non-negotiable fidelity requirements
 - Reflect the actual landing-page vibe and interaction style inferred from evidence.
 - Avoid boilerplate defaults like "rule of thirds" unless evidence clearly supports it.
 - If visual evidence is sparse, return conservative neutral rules and lower extraction confidence.
 - Mention specific visual mechanics when evidence exists: rounded/pill controls, heavy outlines,
   playful vs formal typography, pastel vs high-contrast palette, dense vs airy layout.
+- For typography, provide exact numeric values not ranges or descriptions.
 
 ## Component-render compatibility requirements
 - Provide design_tokens for colors, typography, spacing, radii, borders, and shadows.

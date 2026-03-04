@@ -16,6 +16,7 @@ from app.services.steps.content.step_12_brief import (
     Step12BriefService,
 )
 from app.services.discovery.topic_overlap import normalize_text_tokens
+from app.services.run_strategy import resolve_run_strategy
 
 
 def test_resolve_brief_serp_profile_prefers_validated_values() -> None:
@@ -158,6 +159,36 @@ def test_build_publication_slots_supports_multi_post_weekly_cadence() -> None:
     ]
 
 
+def test_build_publication_slots_respects_reserved_weekly_limit() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    config = PublicationScheduleConfig(
+        posts_per_week=2,
+        weekdays=[0, 2],  # Mon + Wed
+        min_lead_days=1,
+        start_date=None,
+        use_llm_timing_hints=True,
+        llm_timing_flex_days=14,
+    )
+
+    slots = service._build_publication_slots(
+        topic_count=3,
+        today=date(2026, 2, 17),  # Tuesday
+        config=config,
+        reserved_date_counts=Counter(
+            {
+                date(2026, 2, 18): 1,  # current week already has two reserved posts
+                date(2026, 2, 20): 1,
+            }
+        ),
+    )
+
+    assert slots == [
+        date(2026, 2, 23),
+        date(2026, 2, 25),
+        date(2026, 3, 2),
+    ]
+
+
 def test_select_proposed_publication_date_uses_close_llm_hint_slot() -> None:
     service = Step12BriefService.__new__(Step12BriefService)
     config = PublicationScheduleConfig(
@@ -232,6 +263,25 @@ def test_resolve_unique_publication_date_shifts_existing_duplicate() -> None:
     )
 
     assert selected == date(2026, 3, 3)
+
+
+def test_resolve_unique_publication_date_respects_weekly_capacity() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    reserved_dates = Counter(
+        {
+            date(2026, 2, 23): 1,
+            date(2026, 2, 25): 1,
+        }
+    )
+
+    selected = service._resolve_unique_publication_date(
+        desired_date=date(2026, 2, 26),
+        existing_date=None,
+        reserved_date_counts=reserved_dates,
+        posts_per_week_limit=2,
+    )
+
+    assert selected == date(2026, 3, 2)
 
 
 def test_select_topics_for_briefs_reserves_zero_data_slots() -> None:
@@ -329,6 +379,65 @@ def test_select_topics_for_briefs_skips_zero_data_when_disabled() -> None:
     selected_ids = [topic.id for topic in selected]
 
     assert selected_ids == ["t1", "t2"]
+
+
+def test_soft_balance_topic_order_boosts_underrepresented_transactional_topics() -> None:
+    service = Step12BriefService.__new__(Step12BriefService)
+    strategy = resolve_run_strategy(
+        strategy_payload={
+            "intent_mix": {
+                "informational": 0.2,
+                "commercial": 0.1,
+                "transactional": 0.7,
+                "influence": 1.0,
+            },
+            "funnel_mix": {
+                "tofu": 0.2,
+                "mofu": 0.1,
+                "bofu": 0.7,
+                "influence": 1.0,
+            },
+        },
+        brand=None,
+    )
+    topics = [
+        SimpleNamespace(
+            id="info-a",
+            dominant_intent="informational",
+            funnel_stage="tofu",
+            priority_rank=1,
+            priority_score=75.0,
+            final_priority_score=75.0,
+            fit_score=0.72,
+        ),
+        SimpleNamespace(
+            id="info-b",
+            dominant_intent="informational",
+            funnel_stage="tofu",
+            priority_rank=2,
+            priority_score=74.0,
+            final_priority_score=74.0,
+            fit_score=0.71,
+        ),
+        SimpleNamespace(
+            id="trans-a",
+            dominant_intent="transactional",
+            funnel_stage="bofu",
+            priority_rank=3,
+            priority_score=73.4,
+            final_priority_score=73.4,
+            fit_score=0.73,
+        ),
+    ]
+
+    ordered, diagnostics = service._soft_balance_topic_order(  # type: ignore[attr-defined]
+        topics=topics,  # type: ignore[arg-type]
+        strategy=strategy,
+    )
+    ordered_ids = [topic.id for topic in ordered]
+
+    assert diagnostics["target_intent_mix"]["transactional"] > diagnostics["observed_intent_mix"]["transactional"]
+    assert ordered_ids.index("trans-a") < ordered_ids.index("info-b")
 
 
 def test_duplicate_guard_allows_sibling_comparison_pairs() -> None:

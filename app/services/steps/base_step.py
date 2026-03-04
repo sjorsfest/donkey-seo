@@ -15,7 +15,6 @@ from app.models.brand import BrandProfile
 from app.models.discovery_learning import DiscoveryIterationLearning
 from app.models.generated_dtos import PipelineRunPatchDTO
 from app.models.pipeline import PipelineRun, StepExecution
-from app.models.project import Project
 from app.services.discovery_capabilities import (
     capabilities_from_legacy_steps,
     normalize_capability_key,
@@ -301,15 +300,9 @@ class BaseStepService(ABC, Generic[InputT, OutputT]):
         )
         brand = brand_result.scalar_one_or_none()
 
-        project_result = await self.session.execute(
-            select(Project).where(Project.id == self.project_id)
-        )
-        project = project_result.scalar_one_or_none()
-
         self._run_strategy = resolve_run_strategy(
             strategy_payload=run_strategy_payload,
             brand=brand,
-            primary_goal=project.primary_goal if project else None,
         )
         return self._run_strategy
 

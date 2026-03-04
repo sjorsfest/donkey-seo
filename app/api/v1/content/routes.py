@@ -1028,7 +1028,7 @@ async def regenerate_article(
     )
     locked_title = featured_image.title_text
 
-    conversion_intents = [project.primary_goal] if project.primary_goal else []
+    conversion_intents: list[str] = []
     generator = ArticleGenerationService(project.domain)
     artifact = await generator.generate_with_repair(
         brief=_brief_payload(brief, locked_title=locked_title),

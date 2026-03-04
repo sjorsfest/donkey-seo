@@ -1948,9 +1948,9 @@ class ProjectRow:
     primary_language: str
     primary_locale: str
     secondary_locales: list[str] | None
+    posts_per_week: int
     site_maturity: str | None
     maturity_signals: dict | None
-    primary_goal: str | None
     secondary_goals: list[str] | None
     primary_cta: str | None
     topic_boundaries: dict | None
@@ -1980,9 +1980,9 @@ class ProjectRow:
             primary_language=model.primary_language,
             primary_locale=model.primary_locale,
             secondary_locales=model.secondary_locales,
+            posts_per_week=model.posts_per_week,
             site_maturity=model.site_maturity,
             maturity_signals=model.maturity_signals,
-            primary_goal=model.primary_goal,
             secondary_goals=model.secondary_goals,
             primary_cta=model.primary_cta,
             topic_boundaries=model.topic_boundaries,
@@ -2014,9 +2014,9 @@ class ProjectCreateDTO:
     primary_language: str | None = None
     primary_locale: str | None = None
     secondary_locales: list[str] | None = None
+    posts_per_week: int | None = None
     site_maturity: str | None = None
     maturity_signals: dict | None = None
-    primary_goal: str | None = None
     secondary_goals: list[str] | None = None
     primary_cta: str | None = None
     topic_boundaries: dict | None = None
@@ -2036,6 +2036,7 @@ class ProjectCreateDTO:
     _DROP_NONE_FIELDS: ClassVar[set[str]] = {
         "primary_language",
         "primary_locale",
+        "posts_per_week",
         "current_step",
         "status",
     }
@@ -2058,9 +2059,9 @@ class ProjectPatchDTO:
     primary_language: str | None = None
     primary_locale: str | None = None
     secondary_locales: list[str] | None = None
+    posts_per_week: int | None = None
     site_maturity: str | None = None
     maturity_signals: dict | None = None
-    primary_goal: str | None = None
     secondary_goals: list[str] | None = None
     primary_cta: str | None = None
     topic_boundaries: dict | None = None

@@ -348,7 +348,7 @@ async def test_evaluate_topic_decisions_rejects_secondary_when_off_goal() -> Non
     supervisor.project_id = "project-1"
     supervisor.run = SimpleNamespace(
         id="run-1",
-        steps_config={"primary_goal": "revenue_content", "strategy": {}},
+        steps_config={"strategy": {}},
     )
     supervisor.session = _SessionSequence([topic], [keyword])
 
@@ -398,7 +398,7 @@ async def test_evaluate_topic_decisions_accepts_secondary_with_strict_thresholds
     supervisor.project_id = "project-1"
     supervisor.run = SimpleNamespace(
         id="run-1",
-        steps_config={"primary_goal": "revenue_content", "strategy": {}},
+        steps_config={"strategy": {}},
     )
     supervisor.session = _SessionSequence([topic], [keyword])
 
@@ -447,7 +447,7 @@ async def test_evaluate_topic_decisions_accepts_core_goal_intent_despite_mismatc
     supervisor.project_id = "project-1"
     supervisor.run = SimpleNamespace(
         id="run-1",
-        steps_config={"primary_goal": "revenue_content", "strategy": {}},
+        steps_config={"strategy": {}},
     )
     supervisor.session = _SessionSequence([topic], [keyword])
 

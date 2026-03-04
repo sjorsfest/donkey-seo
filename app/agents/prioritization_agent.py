@@ -87,7 +87,6 @@ class PrioritizationAgentInput(BaseModel):
     topics: list[dict]  # Each has name, keywords, metrics, scoring_signals
     brand_context: str = Field(default="", description="Brand profile summary")
     money_pages: list[str] = Field(default_factory=list, description="Known money page URLs")
-    primary_goal: str = Field(default="", description="Project's primary business goal")
     compact_mode: bool = Field(
         default=False,
         description="Use a compact prompt when retrying after failures",
@@ -197,7 +196,6 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
                 "topic_count": len(input_data.topics),
                 "money_pages_count": len(input_data.money_pages),
                 "has_brand_context": bool(input_data.brand_context),
-                "primary_goal": input_data.primary_goal or "not set",
             },
         )
         topics_text = []
@@ -235,8 +233,6 @@ Be practical and actionable. Focus on business impact, not just SEO metrics."""
         context_parts = []
         if input_data.brand_context:
             context_parts.append(f"Brand Context:\n{input_data.brand_context}")
-        if input_data.primary_goal:
-            context_parts.append(f"Primary Goal: {input_data.primary_goal}")
         if input_data.money_pages:
             context_parts.append(f"Money Pages:\n" + "\n".join(f"  - {mp}" for mp in input_data.money_pages[:10]))
 

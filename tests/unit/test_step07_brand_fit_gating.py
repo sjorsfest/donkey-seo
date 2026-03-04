@@ -36,7 +36,6 @@ def test_brand_fit_dominates_over_raw_volume() -> None:
             "fit_threshold_profile": "moderate",
         },
         brand=None,
-        primary_goal="revenue_content",
     )
     base_market_mode = "mixed"
 
@@ -158,7 +157,6 @@ def test_dynamic_threshold_calibration_handles_compressed_fit_distribution() -> 
     strategy = resolve_run_strategy(
         strategy_payload={"fit_threshold_profile": "aggressive", "min_eligible_target": 6},
         brand=None,
-        primary_goal=None,
     )
     scored_topics = [
         {
@@ -224,6 +222,55 @@ def test_deterministic_prefilter_excludes_hard_exclusions() -> None:
     assert candidates[0]["dynamic_fit_score"] == 0.46
 
 
+def test_intent_funnel_mix_bonus_softly_boosts_underrepresented_transactional() -> None:
+    service = Step07PrioritizationService.__new__(Step07PrioritizationService)
+    strategy = resolve_run_strategy(
+        strategy_payload={
+            "intent_mix": {
+                "informational": 0.2,
+                "commercial": 0.1,
+                "transactional": 0.7,
+                "influence": 1.0,
+            },
+            "funnel_mix": {
+                "tofu": 0.2,
+                "mofu": 0.1,
+                "bofu": 0.7,
+                "influence": 1.0,
+            },
+        },
+        brand=None,
+    )
+    scored_topics = [
+        {
+            "topic": SimpleNamespace(dominant_intent="informational", funnel_stage="tofu"),
+            "fit_assessment": {"fit_score": 0.70, "hard_exclusion_reason": None},
+            "scoring_factors": {"opportunity_score": 0.70},
+        },
+        {
+            "topic": SimpleNamespace(dominant_intent="informational", funnel_stage="tofu"),
+            "fit_assessment": {"fit_score": 0.69, "hard_exclusion_reason": None},
+            "scoring_factors": {"opportunity_score": 0.69},
+        },
+        {
+            "topic": SimpleNamespace(dominant_intent="transactional", funnel_stage="bofu"),
+            "fit_assessment": {"fit_score": 0.69, "hard_exclusion_reason": None},
+            "scoring_factors": {"opportunity_score": 0.69},
+        },
+    ]
+
+    service._apply_dynamic_scores(scored_topics)  # type: ignore[attr-defined]
+    diagnostics = service._apply_intent_funnel_mix_bonus(  # type: ignore[attr-defined]
+        scored_topics=scored_topics,
+        strategy=strategy,
+    )
+
+    assert diagnostics["target_intent_mix"]["transactional"] > diagnostics["observed_intent_mix"]["transactional"]
+    transactional_score = scored_topics[2]["deterministic_priority_score"]
+    informational_score = scored_topics[1]["deterministic_priority_score"]
+    assert transactional_score > informational_score
+
+
 @pytest.mark.asyncio
 async def test_llm_retry_then_success() -> None:
     service = Step07PrioritizationService.__new__(Step07PrioritizationService)
@@ -265,7 +312,6 @@ async def test_llm_retry_then_success() -> None:
         batch=batch,
         brand_context="Company: Donkey Support",
         money_pages=[],
-        primary_goal="revenue_content",
     )
 
     assert output is not None

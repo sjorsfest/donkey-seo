@@ -145,3 +145,46 @@ def test_renderer_renders_list_fallback_items_from_table_rows() -> None:
     assert "<h2>Arizer Solo 2</h2>" in html
     assert "<li>Pros: Long battery life</li>" in html
     assert "<li>Cons: No app</li>" in html
+
+
+def test_renderer_appends_json_ld_scripts_after_article_markup() -> None:
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {
+            "h1": "FAQ Article",
+            "meta_title": "FAQ Article",
+            "meta_description": "FAQ Article",
+            "slug": "faq-article",
+            "primary_keyword": "faq article",
+        },
+        "conversion_plan": {},
+        "structured_data": [
+            {
+                "@context": "https://schema.org",
+                "@type": "FAQPage",
+                "mainEntity": [
+                    {
+                        "@type": "Question",
+                        "name": "Can this break script tags?",
+                        "acceptedAnswer": {"@type": "Answer", "text": "No, </script> is escaped."},
+                    }
+                ],
+            }
+        ],
+        "blocks": [
+            {
+                "block_type": "hero",
+                "semantic_tag": "header",
+                "heading": "FAQ Article",
+                "body": "Intro copy.",
+            }
+        ],
+    }
+
+    html = render_modular_document(document)
+
+    article_end_index = html.index("</article>")
+    script_index = html.index("<script type=\"application/ld+json\">")
+    assert script_index > article_end_index
+    assert '"@type":"FAQPage"' in html
+    assert "<\\/script>" in html

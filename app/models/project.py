@@ -58,13 +58,13 @@ class Project(TypedModelMixin[ProjectCreateDTO, ProjectPatchDTO], Base, UUIDMixi
     primary_language: Mapped[str] = mapped_column(String(10), default="en", nullable=False)
     primary_locale: Mapped[str] = mapped_column(String(10), default="en-US", nullable=False)
     secondary_locales: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    posts_per_week: Mapped[int] = mapped_column(default=1, nullable=False)
 
     # Site maturity
     site_maturity: Mapped[str | None] = mapped_column(String(20), nullable=True)
     maturity_signals: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Goals
-    primary_goal: Mapped[str | None] = mapped_column(String(100), nullable=True)
     secondary_goals: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     primary_cta: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

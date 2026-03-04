@@ -18,12 +18,9 @@ from app.models.generated_dtos import (
 )
 from app.models.keyword import Keyword
 from app.models.pipeline import PipelineRun, StepExecution
-from app.models.project import Project
 from app.models.topic import Topic
 from app.schemas.pipeline import ContentPipelineConfig, DiscoveryLoopConfig
 from app.services.run_strategy import (
-    build_goal_intent_profile,
-    classify_intent_alignment,
     resolve_run_strategy,
 )
 from app.services.discovery_learning import DiscoveryLearningService
@@ -246,10 +243,6 @@ class DiscoveryLoopSupervisor:
             "Try broadening topic scope, adding include_topics, or lowering difficulty constraints."
         )
 
-    async def _load_project(self) -> Project:
-        result = await self.session.execute(select(Project).where(Project.id == self.project_id))
-        return result.scalar_one()
-
     async def _load_brand(self) -> BrandProfile | None:
         result = await self.session.execute(
             select(BrandProfile).where(BrandProfile.project_id == self.project_id)
@@ -264,12 +257,10 @@ class DiscoveryLoopSupervisor:
         if discovery.min_eligible_topics is not None:
             return max(1, discovery.min_eligible_topics)
 
-        project = await self._load_project()
         brand = await self._load_brand()
         strategy = resolve_run_strategy(
             strategy_payload=strategy_payload,
             brand=brand,
-            primary_goal=project.primary_goal,
         )
         return strategy.eligible_target()
 
@@ -364,25 +355,6 @@ class DiscoveryLoopSupervisor:
         iteration_index: int,
         discovery: DiscoveryLoopConfig,
     ) -> list[TopicDecision]:
-        steps_config_raw = getattr(self.run, "steps_config", None)
-        steps_config = steps_config_raw if isinstance(steps_config_raw, dict) else {}
-        strategy_payload = (
-            steps_config.get("strategy")
-            if isinstance(steps_config.get("strategy"), dict)
-            else None
-        )
-        primary_goal = (
-            steps_config.get("primary_goal")
-            if isinstance(steps_config.get("primary_goal"), str)
-            else None
-        )
-        run_strategy = resolve_run_strategy(
-            strategy_payload=strategy_payload,
-            brand=None,
-            primary_goal=primary_goal,
-        )
-        goal_intent_profile = build_goal_intent_profile(run_strategy.conversion_intents)
-
         topic_result = await self.session.execute(
             select(Topic).where(Topic.project_id == self.project_id)
         )
@@ -541,23 +513,9 @@ class DiscoveryLoopSupervisor:
                 and keyword
                 and isinstance(keyword.serp_mismatch_flags, list)
             ):
-                observed_intent = keyword.validated_intent or topic.dominant_intent
-                alignment = classify_intent_alignment(observed_intent, goal_intent_profile)
-                fit_score = self._to_float(topic.fit_score) or 0.0
                 intent_mismatch_flag = "intent_mismatch" in keyword.serp_mismatch_flags
-                should_hard_reject = (
-                    alignment == "off_goal"
-                    and fit_tier != "primary"
-                    and fit_score < 0.75
-                )
-                if should_hard_reject:
-                    rejection_reasons.append(
-                        "goal_intent_mismatch:"
-                        f"{(observed_intent or 'unknown').lower()}"
-                        f" not aligned with {goal_intent_profile.profile_name}"
-                    )
-                elif intent_mismatch_flag and alignment == "off_goal" and fit_tier != "primary":
-                    rejection_reasons.append("intent_mismatch_off_goal")
+                if intent_mismatch_flag and fit_tier != "primary":
+                    rejection_reasons.append("intent_mismatch")
 
             if is_secondary_tier and rejection_reasons:
                 rejection_reasons.append("secondary_tier_strict_gate")

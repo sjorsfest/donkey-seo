@@ -28,7 +28,6 @@ def test_prompt_formatting_handles_mixed_factor_types() -> None:
             ],
             brand_context="Company: Donkey Support",
             money_pages=["https://example.com/pricing"],
-            primary_goal="revenue_content",
         )
     )
 
@@ -97,4 +96,4 @@ def test_prompt_includes_keyword_candidate_profiles_and_tiebreaker_guidance() ->
 
     assert "Keyword Candidate Profiles: support automation guide" in prompt
     assert "blog_fit=0.92" in prompt
-    assert "volume only as a tie-breaker" in prompt
+    assert "weak tie-breaker" in prompt

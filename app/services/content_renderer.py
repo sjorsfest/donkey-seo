@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from html import escape
 from typing import Any
 
@@ -33,6 +34,14 @@ def _as_link_list(value: Any) -> list[dict[str, Any]]:
         if isinstance(item, dict):
             links.append(item)
     return links
+
+
+def _as_schema_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
 
 
 def _safe_text(value: Any) -> str:
@@ -181,6 +190,15 @@ def _render_block(block: dict[str, Any], fallback_h1: str, h1_used: bool) -> tup
     )
 
 
+def _render_json_ld_scripts(document: dict[str, Any]) -> str:
+    scripts: list[str] = []
+    for schema_item in _as_schema_list(document.get("structured_data")):
+        payload = json.dumps(schema_item, ensure_ascii=True, separators=(",", ":"))
+        payload = payload.replace("</", "<\\/")
+        scripts.append(f"<script type=\"application/ld+json\">{payload}</script>")
+    return "".join(scripts)
+
+
 def render_modular_document(document: dict[str, Any]) -> str:
     """Render semantic article HTML from the modular JSON contract."""
     seo_meta = _as_dict(document.get("seo_meta"))
@@ -199,4 +217,5 @@ def render_modular_document(document: dict[str, Any]) -> str:
     if not h1_used:
         article_parts.insert(0, f"<header data-block-type=\"hero\"><h1>{_safe_text(fallback_h1)}</h1></header>")
 
-    return "<article>" + "".join(article_parts) + "</article>"
+    article_html = "<article>" + "".join(article_parts) + "</article>"
+    return article_html + _render_json_ld_scripts(document)

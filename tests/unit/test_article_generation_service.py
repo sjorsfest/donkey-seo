@@ -117,6 +117,100 @@ def test_normalize_document_converts_list_table_rows_to_items() -> None:
     ]
 
 
+def test_normalize_document_adds_faqpage_structured_data_from_faq_blocks() -> None:
+    service = ArticleGenerationService("donkey.support")
+
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {
+            "h1": "FAQ Example",
+            "meta_title": "FAQ Example",
+            "meta_description": "FAQ Example",
+            "slug": "faq-example",
+            "primary_keyword": "faq example",
+        },
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "faq",
+                "semantic_tag": "section",
+                "heading": "FAQ",
+                "faq_items": [
+                    {"question": "What is DonkeySEO?", "answer": "An SEO platform."},
+                    {"question": "What is DonkeySEO?", "answer": "Duplicate question."},
+                    {"question": "Incomplete entry", "answer": ""},
+                ],
+            }
+        ],
+    }
+    brief = {
+        "primary_keyword": "faq example",
+        "funnel_stage": "tofu",
+        "money_page_links": [],
+    }
+
+    normalized = service._normalize_document(document, brief, {}, [])
+
+    faq_schema = next(
+        item for item in normalized["structured_data"] if item.get("@type") == "FAQPage"
+    )
+    assert faq_schema["@context"] == "https://schema.org"
+    assert len(faq_schema["mainEntity"]) == 1
+    assert faq_schema["mainEntity"][0]["name"] == "What is DonkeySEO?"
+    assert faq_schema["mainEntity"][0]["acceptedAnswer"]["text"] == "An SEO platform."
+
+
+def test_normalize_document_removes_stale_faqpage_structured_data() -> None:
+    service = ArticleGenerationService("donkey.support")
+
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {
+            "h1": "No FAQ",
+            "meta_title": "No FAQ",
+            "meta_description": "No FAQ",
+            "slug": "no-faq",
+            "primary_keyword": "no faq",
+        },
+        "conversion_plan": {},
+        "structured_data": [
+            {
+                "@context": "https://schema.org",
+                "@type": "FAQPage",
+                "mainEntity": [],
+            },
+            {
+                "@context": "https://schema.org",
+                "@type": "Article",
+                "headline": "No FAQ",
+            },
+        ],
+        "blocks": [
+            {
+                "block_type": "section",
+                "semantic_tag": "section",
+                "heading": "Overview",
+                "body": "Plain section without FAQs.",
+            }
+        ],
+    }
+    brief = {
+        "primary_keyword": "no faq",
+        "funnel_stage": "tofu",
+        "money_page_links": [],
+    }
+
+    normalized = service._normalize_document(document, brief, {}, [])
+
+    assert normalized["structured_data"] == [
+        {
+            "@context": "https://schema.org",
+            "@type": "Article",
+            "headline": "No FAQ",
+        }
+    ]
+
+
 class _FakeWriterAgent:
     documents: list[dict] = []
     instances: list["_FakeWriterAgent"] = []

@@ -241,6 +241,7 @@ class FeaturedImageRenderer:
         template: FeaturedImageTemplateSpec,
         title_text: str,
     ) -> None:
+        """Draw title with dynamic font sizing - no ellipsis."""
         title = template.title_zone
         typography = title.typography
         draw = ImageDraw.Draw(canvas, "RGBA")
@@ -250,8 +251,58 @@ class FeaturedImageRenderer:
         zone_width = max(1, int(title.width * self.width) - (2 * title.padding_px))
         zone_height = max(1, int(title.height * self.height) - (2 * title.padding_px))
 
-        font = self._load_font(font_size_px=typography.font_size_px, font_weight=typography.font_weight)
-        letter_spacing = int(round(typography.letter_spacing_em * typography.font_size_px))
+        # Start with desired font size, reduce until it fits
+        font_size = typography.font_size_px
+        min_font_size = 36
+
+        for attempt_size in range(font_size, min_font_size - 1, -4):
+            font = self._load_font(font_size_px=attempt_size, font_weight=typography.font_weight)
+            letter_spacing = int(round(typography.letter_spacing_em * attempt_size))
+
+            all_lines = self._wrap_lines(
+                draw=draw,
+                text=title_text,
+                font=font,
+                max_width=zone_width,
+                max_lines=typography.max_lines,
+                letter_spacing=letter_spacing,
+            )
+
+            if not all_lines:
+                return
+
+            line_height = max(1, int(round(attempt_size * typography.line_height)))
+            total_height = len(all_lines) * line_height
+
+            # Check if text fits both line count and zone height
+            if len(all_lines) <= typography.max_lines and total_height <= zone_height:
+                # Success! Render at this size
+                text_color = self._rgba(typography.color, alpha=1.0, fallback="#111111")
+                for index, line in enumerate(all_lines):
+                    y = zone_top + index * line_height
+                    line_width = self._measure_text(
+                        draw=draw,
+                        text=line,
+                        font=font,
+                        letter_spacing=letter_spacing,
+                    )
+                    x = zone_left
+                    if typography.align == "center":
+                        x += max(0, int((zone_width - line_width) / 2))
+                    self._draw_text(
+                        draw=draw,
+                        text=line,
+                        x=x,
+                        y=y,
+                        font=font,
+                        fill=text_color,
+                        letter_spacing=letter_spacing,
+                    )
+                return
+
+        # Use minimum size (but still no ellipsis - just render what fits)
+        font = self._load_font(font_size_px=min_font_size, font_weight=typography.font_weight)
+        letter_spacing = int(round(typography.letter_spacing_em * min_font_size))
         all_lines = self._wrap_lines(
             draw=draw,
             text=title_text,
@@ -260,20 +311,12 @@ class FeaturedImageRenderer:
             max_lines=typography.max_lines,
             letter_spacing=letter_spacing,
         )
+
         if not all_lines:
             return
 
-        line_height = max(1, int(round(typography.font_size_px * typography.line_height)))
-        max_visible_lines = max(1, min(len(all_lines), zone_height // line_height))
-        lines = all_lines[:max_visible_lines]
-        if len(all_lines) > max_visible_lines:
-            lines[-1] = self._truncate_with_ellipsis(
-                draw=draw,
-                text=lines[-1],
-                font=font,
-                max_width=zone_width,
-                letter_spacing=letter_spacing,
-            )
+        line_height = max(1, int(round(min_font_size * typography.line_height)))
+        lines = all_lines[:typography.max_lines]
 
         text_color = self._rgba(typography.color, alpha=1.0, fallback="#111111")
         for index, line in enumerate(lines):
@@ -381,6 +424,9 @@ class FeaturedImageRenderer:
         width: {self.width}px;
         height: {self.height}px;
         overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeLegibility;
       }}
       .canvas {{
         position: relative;
@@ -391,9 +437,6 @@ class FeaturedImageRenderer:
       .title-zone {{
         position: absolute;
         box-sizing: border-box;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: {title.typography.max_lines};
         overflow: hidden;
         word-break: break-word;
         z-index: 3;
@@ -424,6 +467,31 @@ class FeaturedImageRenderer:
       <div class="title-zone" style="{title_css}">{safe_title}</div>
       {logo_html}
     </div>
+    <script>
+      window.addEventListener('DOMContentLoaded', function() {{
+        const titleEl = document.querySelector('.title-zone');
+        if (!titleEl) return;
+
+        let fontSize = parseFloat(window.getComputedStyle(titleEl).fontSize);
+        const minSize = 36; // Never go below 36px for readability
+        const maxLines = {title.typography.max_lines};
+
+        // Helper function to count lines
+        function getLineCount() {{
+          const lineHeight = parseFloat(window.getComputedStyle(titleEl).lineHeight);
+          return Math.round(titleEl.scrollHeight / lineHeight);
+        }}
+
+        // Iteratively reduce font size until text fits both height and max lines
+        let iterations = 0;
+        while ((titleEl.scrollHeight > titleEl.clientHeight || getLineCount() > maxLines) && fontSize > minSize && iterations < 25) {{
+          fontSize -= 2;
+          titleEl.style.fontSize = fontSize + 'px';
+          void titleEl.offsetHeight; // Force reflow
+          iterations++;
+        }}
+      }});
+    </script>
   </body>
 </html>
 """
@@ -504,13 +572,46 @@ class FeaturedImageRenderer:
 
     @staticmethod
     def _load_font(*, font_size_px: int, font_weight: int) -> FontType:
-        preferred = ["DejaVuSans-Bold.ttf"] if font_weight >= 600 else ["DejaVuSans.ttf"]
-        preferred.extend(["Arial.ttf", "Helvetica.ttf"])
-        for font_name in preferred:
+        """Load best available system-ui equivalent font for any platform."""
+        font_size = max(12, font_size_px)
+        is_bold = font_weight >= 600
+
+        candidates = []
+
+        # Platform-specific system-ui equivalents
+        if sys.platform == "darwin":  # macOS
+            candidates.extend([
+                "Helvetica Neue Bold" if is_bold else "Helvetica Neue",
+                "Helvetica-Bold" if is_bold else "Helvetica",
+                ".SF NS Text Bold" if is_bold else ".SF NS Text",
+                "/System/Library/Fonts/Helvetica.ttc",
+            ])
+        elif sys.platform == "win32":  # Windows
+            candidates.extend([
+                "Segoe UI Bold" if is_bold else "Segoe UI",
+                "C:\\Windows\\Fonts\\seguisb.ttf" if is_bold else "C:\\Windows\\Fonts\\segoeui.ttf",
+            ])
+        else:  # Linux and others
+            candidates.extend([
+                "Liberation Sans Bold" if is_bold else "Liberation Sans",
+                "Noto Sans Bold" if is_bold else "Noto Sans",
+                "Ubuntu Bold" if is_bold else "Ubuntu",
+            ])
+
+        # Universal fallbacks
+        candidates.extend([
+            "DejaVuSans-Bold.ttf" if is_bold else "DejaVuSans.ttf",
+            "Arial Bold.ttf" if is_bold else "Arial.ttf",
+            "Arial.ttf",
+        ])
+
+        for font_name in candidates:
             try:
-                return ImageFont.truetype(font_name, size=max(12, font_size_px))
-            except OSError:
+                return ImageFont.truetype(font_name, size=font_size)
+            except (OSError, IOError):
                 continue
+
+        logger.warning("All font loading attempts failed; using Pillow default font")
         return ImageFont.load_default()
 
     def _wrap_lines(
@@ -523,6 +624,7 @@ class FeaturedImageRenderer:
         max_lines: int,
         letter_spacing: int,
     ) -> list[str]:
+        """Wrap text into lines without ellipsis - caller handles sizing."""
         words = " ".join(text.split()).split(" ")
         if not words or words == [""]:
             return []
@@ -547,13 +649,6 @@ class FeaturedImageRenderer:
                 lines.append(current)
                 current = ""
                 if len(lines) >= max_lines:
-                    lines[-1] = self._truncate_with_ellipsis(
-                        draw=draw,
-                        text=lines[-1],
-                        font=font,
-                        max_width=max_width,
-                        letter_spacing=letter_spacing,
-                    )
                     return lines
                 continue
 
@@ -573,26 +668,12 @@ class FeaturedImageRenderer:
             else:
                 word_index += 1
             if len(lines) >= max_lines:
-                lines[-1] = self._truncate_with_ellipsis(
-                    draw=draw,
-                    text=lines[-1],
-                    font=font,
-                    max_width=max_width,
-                    letter_spacing=letter_spacing,
-                )
                 return lines
 
         if current:
             lines.append(current)
         if len(lines) > max_lines:
             lines = lines[:max_lines]
-            lines[-1] = self._truncate_with_ellipsis(
-                draw=draw,
-                text=lines[-1],
-                font=font,
-                max_width=max_width,
-                letter_spacing=letter_spacing,
-            )
         return lines
 
     def _truncate_with_ellipsis(

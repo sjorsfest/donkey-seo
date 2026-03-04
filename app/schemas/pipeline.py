@@ -3,11 +3,13 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 ScopeMode = Literal["strict", "balanced_adjacent", "broad_education"]
 BrandedKeywordMode = Literal["comparisons_only", "exclude_all", "allow_all"]
 FitThresholdProfile = Literal["aggressive", "moderate", "lenient"]
+IntentMixMode = Literal["adaptive_auto"]
+FunnelMixMode = Literal["derived_soft_adjust"]
 MarketModeOverride = Literal[
     "auto",
     "established_category",
@@ -17,10 +19,68 @@ MarketModeOverride = Literal[
 PipelineMode = Literal["setup", "discovery", "content"]
 
 
+class IntentMixConfig(BaseModel):
+    """Soft targeting mix for intent balancing."""
+
+    mode: IntentMixMode = "adaptive_auto"
+    informational: float = Field(default=0.40, ge=0.0, le=1.0)
+    commercial: float = Field(default=0.35, ge=0.0, le=1.0)
+    transactional: float = Field(default=0.25, ge=0.0, le=1.0)
+    influence: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="How strongly intent mix should influence ranking/selection.",
+    )
+
+    @field_validator("transactional")
+    @classmethod
+    def validate_sum_positive(
+        cls,
+        value: float,
+        info: ValidationInfo,
+    ) -> float:
+        data = info.data or {}
+        total = float(data.get("informational", 0.0)) + float(data.get("commercial", 0.0)) + float(value)
+        if total <= 0:
+            raise ValueError("Intent mix shares must sum to > 0")
+        return value
+
+
+class FunnelMixConfig(BaseModel):
+    """Soft targeting mix for funnel-stage balancing."""
+
+    mode: FunnelMixMode = "derived_soft_adjust"
+    tofu: float = Field(default=0.40, ge=0.0, le=1.0)
+    mofu: float = Field(default=0.35, ge=0.0, le=1.0)
+    bofu: float = Field(default=0.25, ge=0.0, le=1.0)
+    influence: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description="How strongly funnel mix should influence ranking/selection.",
+    )
+
+    @field_validator("bofu")
+    @classmethod
+    def validate_sum_positive(
+        cls,
+        value: float,
+        info: ValidationInfo,
+    ) -> float:
+        data = info.data or {}
+        total = float(data.get("tofu", 0.0)) + float(data.get("mofu", 0.0)) + float(value)
+        if total <= 0:
+            raise ValueError("Funnel mix shares must sum to > 0")
+        return value
+
+
 class PipelineRunStrategy(BaseModel):
     """Run-scoped strategy overrides for product/ICP fit."""
 
     conversion_intents: list[str] = Field(default_factory=list)
+    intent_mix: IntentMixConfig = Field(default_factory=IntentMixConfig)
+    funnel_mix: FunnelMixConfig = Field(default_factory=FunnelMixConfig)
     scope_mode: ScopeMode = "balanced_adjacent"
     branded_keyword_mode: BrandedKeywordMode = "comparisons_only"
     fit_threshold_profile: FitThresholdProfile = "aggressive"

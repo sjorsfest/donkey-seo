@@ -35,7 +35,6 @@ def test_step03_policy_does_not_reject_for_low_or_zero_volume() -> None:
     strategy = resolve_run_strategy(
         strategy_payload={"branded_keyword_mode": "allow_all"},
         brand=None,
-        primary_goal=None,
     )
 
     include, reason = service._evaluate_keyword_policy(  # type: ignore[attr-defined]
@@ -56,7 +55,6 @@ def test_step03_policy_rejects_low_strategic_relevance_when_terms_are_available(
     strategy = resolve_run_strategy(
         strategy_payload={"branded_keyword_mode": "allow_all"},
         brand=None,
-        primary_goal=None,
     )
 
     include, reason = service._evaluate_keyword_policy(  # type: ignore[attr-defined]
@@ -105,7 +103,6 @@ def test_step03_ingest_rows_respects_seed_cap() -> None:
     strategy = resolve_run_strategy(
         strategy_payload={"branded_keyword_mode": "allow_all"},
         brand=None,
-        primary_goal=None,
     )
     seed = SimpleNamespace(id="seed-1", name="Discord support")
 

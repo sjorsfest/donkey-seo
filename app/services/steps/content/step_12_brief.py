@@ -4,17 +4,25 @@ Generates writer-ready briefs for prioritized topics.
 Includes URL slug generation and cannibalization guardrails.
 """
 
+import asyncio
 import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import or_, select
 
 from app.agents.brief_diversifier import BriefDiversifierAgent, BriefDiversifierInput
 from app.agents.brief_generator import BriefGeneratorAgent, BriefGeneratorInput
+from app.agents.serp_briefing import (
+    SerpBriefingAgent,
+    SerpBriefingInput,
+    SerpPageSnapshot,
+)
+from app.integrations.scraper import WebsiteScraper
 from app.models.brand import BrandProfile
 from app.models.content import ContentBrief
 from app.models.content_pillar import ContentBriefPillarAssignment, ContentPillar
@@ -38,12 +46,33 @@ from app.services.discovery.topic_overlap import (
     jaccard,
     normalize_text_tokens,
 )
+from app.services.run_strategy import (
+    RunStrategy,
+    build_adaptive_target_mix,
+    funnel_from_intent,
+    normalize_funnel_label,
+    normalize_intent_label,
+)
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
 EXISTING_CONTENT_SKIP_THRESHOLD = 0.82
 IN_BATCH_DIVERSIFICATION_OVERLAP_THRESHOLD = 0.82
 BRIEF_DIVERSIFIER_RETRY_ATTEMPTS = 2
+SERP_SNAPSHOT_TOP_RESULTS = 8
+SERP_SNAPSHOT_MAX_FETCHED_BLOG_PAGES = 3
+SERP_SNAPSHOT_MAX_HEADINGS_PER_PAGE = 14
+SERP_SNAPSHOT_FETCH_TIMEOUT_SECONDS = 12.0
+SERP_NON_CONTENT_GUIDANCE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(author|byline|author bio|writer bio|bio box|author profile|avatar)\b"),
+    re.compile(r"\b(published date|publish date|updated date|last updated|read time)\b"),
+    re.compile(r"\b(meta title|meta description|title tag|open graph|schema(?:\.org)?|json-ld)\b"),
+    re.compile(r"\b(slug|permalink|url structure|canonical)\b"),
+    re.compile(r"\b(hero image|featured image|cover image|banner image)\b"),
+    re.compile(r"\b(nav(?:igation)?|sidebar|footer|site layout|page layout|font|color palette)\b"),
+    re.compile(r"\b(call to action|cta button|subscribe|newsletter|popup|pop-up)\b"),
+    re.compile(r"\b(internal linking strategy|anchor text strategy|schema markup)\b"),
+)
 ALLOWED_PILLAR_CONFIG: dict[str, tuple[str, str]] = {
     "blog": (
         "Blog",
@@ -164,6 +193,11 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             select(BrandProfile).where(BrandProfile.project_id == input_data.project_id)
         )
         brand = brand_result.scalar_one_or_none()
+        project_result = await self.session.execute(
+            select(Project).where(Project.id == input_data.project_id)
+        )
+        project = project_result.scalar_one()
+        project_posts_per_week = self._coerce_posts_per_week(project.posts_per_week)
 
         await self._update_progress(5, "Loading prioritized topics...")
 
@@ -188,6 +222,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         all_topics = list(topics_result.scalars())
         eligible_topics_all = [topic for topic in all_topics if self._is_topic_eligible(topic)]
         skipped_ineligible = len(all_topics) - len(eligible_topics_all)
+        mix_diagnostics: dict[str, Any] = {}
+        ordered_topics_all = eligible_topics_all
 
         selected_topics = eligible_topics_all
         zero_data_candidates = 0
@@ -196,12 +232,16 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         if input_data.topic_ids:
             selected_topics = eligible_topics_all[:input_data.max_briefs]
         else:
+            ordered_topics_all, mix_diagnostics = self._soft_balance_topic_order(
+                topics=eligible_topics_all,
+                strategy=strategy,
+            )
             primary_keywords_by_topic_id = await self._load_primary_keywords_for_topics(
-                eligible_topics_all
+                ordered_topics_all
             )
             zero_data_candidates = sum(
                 1
-                for topic in eligible_topics_all
+                for topic in ordered_topics_all
                 if self._is_zero_data_topic_candidate(
                     topic=topic,
                     primary_keyword=primary_keywords_by_topic_id.get(str(topic.id)),
@@ -209,7 +249,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 )
             )
             selected_topics = self._select_topics_for_briefs(
-                topics=eligible_topics_all,
+                topics=ordered_topics_all,
                 primary_keywords_by_topic_id=primary_keywords_by_topic_id,
                 input_data=input_data,
             )
@@ -225,6 +265,18 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         if not primary_keywords_by_topic_id:
             primary_keywords_by_topic_id = await self._load_primary_keywords_for_topics(
                 selected_topics
+            )
+        if mix_diagnostics:
+            logger.info(
+                "Step 12 soft intent/funnel balancing applied",
+                extra={
+                    "project_id": input_data.project_id,
+                    "selected_topics": len(selected_topics),
+                    "target_intent_mix": mix_diagnostics.get("target_intent_mix"),
+                    "observed_intent_mix": mix_diagnostics.get("observed_intent_mix"),
+                    "target_funnel_mix": mix_diagnostics.get("target_funnel_mix"),
+                    "observed_funnel_mix": mix_diagnostics.get("observed_funnel_mix"),
+                },
             )
 
         existing_brief_topic_ids = await self._load_existing_brief_topic_ids(
@@ -310,14 +362,45 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
         # Generate briefs
         agent = BriefGeneratorAgent()
+        serp_briefing_agent = SerpBriefingAgent()
         output_briefs = []
         briefs_with_warnings = 0
         today = date.today()
-        schedule_config = self._build_publication_schedule_config(input_data=input_data)
+        schedule_config = self._build_publication_schedule_config(
+            input_data=input_data,
+            project_posts_per_week=project_posts_per_week,
+        )
+        reserved_dates_result = await self.session.execute(
+            select(ContentBrief.topic_id, ContentBrief.proposed_publication_date).where(
+                ContentBrief.project_id == input_data.project_id,
+                ContentBrief.proposed_publication_date.isnot(None),
+            )
+        )
+        reserved_rows = list(reserved_dates_result.all())
+        reserved_publication_dates = Counter(
+            publication_date
+            for _, publication_date in reserved_rows
+            if publication_date is not None
+        )
+        topic_ids_to_refresh = {
+            str(topic.id)
+            for topic in topics_to_generate
+            if getattr(topic, "id", None) is not None
+        }
+        for topic_id, publication_date in reserved_rows:
+            if publication_date is None:
+                continue
+            if str(topic_id) not in topic_ids_to_refresh:
+                continue
+            self._decrement_reserved_date_count(
+                reserved_publication_dates,
+                publication_date,
+            )
         available_slots = self._build_publication_slots(
             topic_count=len(topics_to_generate),
             today=today,
             config=schedule_config,
+            reserved_date_counts=reserved_publication_dates,
         )
 
         for i, topic in enumerate(topics_to_generate):
@@ -355,6 +438,19 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             serp_features = serp_profile["serp_features"]
             competitors_content_types = serp_profile["competitors_content_types"]
             serp_mismatch_flags = serp_profile["serp_mismatch_flags"]
+            serp_briefing = await self._build_serp_briefing(
+                primary_keyword=primary_kw.keyword,
+                search_intent=resolved_intent,
+                page_type=resolved_page_type,
+                serp_features=serp_features,
+                serp_top_results=primary_kw.serp_top_results,
+                serp_briefing_agent=serp_briefing_agent,
+            )
+            top_ranking_pages = serp_briefing["top_pages"]
+            serp_best_practices = serp_briefing["best_practices"]
+            serp_recommended_sections = serp_briefing["recommended_sections"]
+            serp_outperform_opportunities = serp_briefing["opportunities_to_outperform"]
+            serp_analysis_summary = serp_briefing["summary"]
 
             # Generate URL slug
             url_slug = self._generate_url_slug(
@@ -396,6 +492,11 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     brand_context=brand_context,
                     competitors_content_types=competitors_content_types,
                     serp_features=serp_features,
+                    top_ranking_pages=top_ranking_pages,
+                    serp_best_practices=serp_best_practices,
+                    serp_recommended_sections=serp_recommended_sections,
+                    serp_outperform_opportunities=serp_outperform_opportunities,
+                    serp_analysis_summary=serp_analysis_summary,
                     money_pages=topic.target_money_pages or money_pages[:3],
                     conversion_intents=strategy.conversion_intents,
                     recommended_publish_order=topic.recommended_publish_order,
@@ -403,6 +504,11 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
 
                 output = await agent.run(agent_input)
                 brief_data = output.brief
+                merged_must_include_sections = self._merge_unique_str_items(
+                    brief_data.must_include_sections,
+                    serp_recommended_sections,
+                    limit=12,
+                )
                 proposed_publication_date = self._select_proposed_publication_date(
                     llm_date=brief_data.proposed_publication_date,
                     available_slots=available_slots,
@@ -422,6 +528,11 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "serp_features": serp_features,
                     "competitors_content_types": competitors_content_types,
                     "serp_mismatch_flags": serp_mismatch_flags,
+                    "serp_analysis_summary": serp_analysis_summary,
+                    "serp_best_practices": serp_best_practices,
+                    "serp_recommended_sections": serp_recommended_sections,
+                    "serp_outperform_opportunities": serp_outperform_opportunities,
+                    "top_ranking_pages_snapshot": top_ranking_pages,
                     # URL architecture
                     "proposed_url_slug": url_slug,
                     "url_collision_check": collision_status,
@@ -459,7 +570,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                         "min": brief_data.target_word_count_min,
                         "max": brief_data.target_word_count_max,
                     },
-                    "must_include_sections": brief_data.must_include_sections,
+                    "must_include_sections": merged_must_include_sections,
                     "recommended_schema_type": brief_data.recommended_schema_type,
                     "proposed_publication_date": proposed_publication_date,
                     "pillar_slug": pillar_slug,
@@ -507,6 +618,11 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "serp_features": serp_features,
                     "competitors_content_types": competitors_content_types,
                     "serp_mismatch_flags": serp_mismatch_flags,
+                    "serp_analysis_summary": serp_analysis_summary,
+                    "serp_best_practices": serp_best_practices,
+                    "serp_recommended_sections": serp_recommended_sections,
+                    "serp_outperform_opportunities": serp_outperform_opportunities,
+                    "top_ranking_pages_snapshot": top_ranking_pages,
                     "proposed_url_slug": url_slug,
                     "url_collision_check": collision_status,
                     "do_not_target": do_not_target,
@@ -518,6 +634,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "supporting_keywords": supporting_keyword_texts,
                     "supporting_keyword_ids": supporting_keyword_ids,
                     "target_word_count": {"min": 1500, "max": 2500},
+                    "must_include_sections": serp_recommended_sections[:8],
                     "proposed_publication_date": fallback_publication_date,
                     "pillar_slug": "blog",
                     "pillar_confidence": 0.0,
@@ -658,6 +775,139 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         except (TypeError, ValueError):
             return None
 
+    def _soft_balance_topic_order(
+        self,
+        *,
+        topics: list[Topic],
+        strategy: RunStrategy,
+    ) -> tuple[list[Topic], dict[str, Any]]:
+        """Softly rerank topics to improve intent/funnel distribution without hard quotas."""
+        if len(topics) <= 1:
+            return topics, {}
+
+        observed_intent_mix = self._observed_intent_mix(topics)
+        base_intent_mix = strategy.intent_mix.to_shares()
+        target_intent_mix = build_adaptive_target_mix(
+            base_mix=base_intent_mix,
+            observed_mix=observed_intent_mix,
+            influence=strategy.intent_mix.influence,
+        )
+
+        observed_funnel_mix = self._observed_funnel_mix(topics)
+        configured_funnel_mix = strategy.funnel_mix.to_shares()
+        derived_funnel_mix = {
+            "tofu": target_intent_mix["informational"],
+            "mofu": target_intent_mix["commercial"],
+            "bofu": target_intent_mix["transactional"],
+        }
+        base_funnel_mix = {
+            key: round((derived_funnel_mix[key] * 0.7) + (configured_funnel_mix[key] * 0.3), 6)
+            for key in ("tofu", "mofu", "bofu")
+        }
+        target_funnel_mix = build_adaptive_target_mix(
+            base_mix=base_funnel_mix,
+            observed_mix=observed_funnel_mix,
+            influence=strategy.funnel_mix.influence,
+        )
+
+        scored: list[tuple[float, int, Topic]] = []
+        for topic in topics:
+            rank = topic.priority_rank if topic.priority_rank is not None else 999_999
+            quality_score = float(topic.priority_score or topic.final_priority_score or 0.0)
+            if quality_score <= 0 and rank < 999_999:
+                quality_score = max(0.0, 100.0 - float(rank))
+
+            intent_label = str(topic.dominant_intent or "").strip().lower()
+            funnel_label = str(topic.funnel_stage or "").strip().lower()
+            intent_key = normalize_intent_label(intent_label)
+            funnel_key = normalize_funnel_label(funnel_label) or funnel_from_intent(intent_label)
+
+            intent_bonus = 0.0
+            if intent_key is not None:
+                gap = float(target_intent_mix[intent_key]) - float(observed_intent_mix[intent_key])
+                intent_bonus = max(-1.0, min(1.0, gap)) * strategy.intent_mix.influence
+
+            funnel_bonus = 0.0
+            if funnel_key is not None:
+                gap = float(target_funnel_mix[funnel_key]) - float(observed_funnel_mix[funnel_key])
+                funnel_bonus = max(-1.0, min(1.0, gap)) * strategy.funnel_mix.influence
+
+            nav_penalty = 0.0
+            if intent_label == "navigational":
+                fit_score = self._topic_fit_score(topic) or 0.0
+                if fit_score < 0.82:
+                    nav_penalty = 0.50 * strategy.intent_mix.influence
+
+            soft_bonus = (intent_bonus * 3.0) + (funnel_bonus * 2.5) - nav_penalty
+            sort_score = quality_score + soft_bonus
+            scored.append((sort_score, -rank, topic))
+
+        scored.sort(key=lambda item: (-item[0], -item[1]))
+        ordered_topics = [item[2] for item in scored]
+        diagnostics = {
+            "base_intent_mix": {
+                key: round(float(value), 4)
+                for key, value in base_intent_mix.items()
+            },
+            "observed_intent_mix": {
+                key: round(float(value), 4)
+                for key, value in observed_intent_mix.items()
+            },
+            "target_intent_mix": {
+                key: round(float(value), 4)
+                for key, value in target_intent_mix.items()
+            },
+            "base_funnel_mix": {
+                key: round(float(value), 4)
+                for key, value in base_funnel_mix.items()
+            },
+            "observed_funnel_mix": {
+                key: round(float(value), 4)
+                for key, value in observed_funnel_mix.items()
+            },
+            "target_funnel_mix": {
+                key: round(float(value), 4)
+                for key, value in target_funnel_mix.items()
+            },
+        }
+        return ordered_topics, diagnostics
+
+    def _observed_intent_mix(self, topics: list[Topic]) -> dict[str, float]:
+        weighted: dict[str, float] = {
+            "informational": 0.0,
+            "commercial": 0.0,
+            "transactional": 0.0,
+        }
+        total = 0.0
+        for topic in topics:
+            intent_key = normalize_intent_label(topic.dominant_intent)
+            if intent_key is None:
+                continue
+            fit_score = self._topic_fit_score(topic) or 0.0
+            quality_score = float(topic.priority_score or topic.final_priority_score or 0.0)
+            weight = max(0.05, (fit_score * 0.7) + ((quality_score / 100.0) * 0.3))
+            weighted[intent_key] += weight
+            total += weight
+        if total <= 0:
+            return {key: 0.0 for key in weighted}
+        return {key: weighted[key] / total for key in weighted}
+
+    def _observed_funnel_mix(self, topics: list[Topic]) -> dict[str, float]:
+        weighted: dict[str, float] = {"tofu": 0.0, "mofu": 0.0, "bofu": 0.0}
+        total = 0.0
+        for topic in topics:
+            funnel_key = normalize_funnel_label(topic.funnel_stage) or funnel_from_intent(topic.dominant_intent)
+            if funnel_key is None:
+                continue
+            fit_score = self._topic_fit_score(topic) or 0.0
+            quality_score = float(topic.priority_score or topic.final_priority_score or 0.0)
+            weight = max(0.05, (fit_score * 0.7) + ((quality_score / 100.0) * 0.3))
+            weighted[funnel_key] += weight
+            total += weight
+        if total <= 0:
+            return {key: 0.0 for key in weighted}
+        return {key: weighted[key] / total for key in weighted}
+
     async def _load_primary_keywords_for_topics(
         self,
         topics: list[Topic],
@@ -721,12 +971,499 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             ],
         }
 
+    async def _build_serp_briefing(
+        self,
+        *,
+        primary_keyword: str,
+        search_intent: str,
+        page_type: str,
+        serp_features: list[str],
+        serp_top_results: Any,
+        serp_briefing_agent: SerpBriefingAgent,
+    ) -> dict[str, Any]:
+        """Build SERP best practices from top pages and a focused SERP agent."""
+        top_pages = self._normalize_serp_top_results(serp_top_results)
+        deterministic = self._derive_deterministic_serp_briefing(
+            top_pages=[],
+            search_intent=search_intent,
+            page_type=page_type,
+            serp_features=serp_features,
+        )
+        if not top_pages:
+            return {
+                "top_pages": [],
+                "summary": deterministic["summary"],
+                "best_practices": self._sanitize_serp_guidance_items(
+                    deterministic["best_practices"],
+                    limit=12,
+                ),
+                "recommended_sections": self._sanitize_serp_guidance_items(
+                    deterministic["recommended_sections"],
+                    limit=12,
+                ),
+                "opportunities_to_outperform": self._sanitize_serp_guidance_items(
+                    deterministic["opportunities_to_outperform"],
+                    limit=10,
+                ),
+            }
+
+        fetch_candidates = [
+            page
+            for page in top_pages
+            if self._is_blog_like_snapshot(page)
+        ][:SERP_SNAPSHOT_MAX_FETCHED_BLOG_PAGES]
+        if not fetch_candidates:
+            fetch_candidates = top_pages[:1]
+
+        fetched_headings_by_url = await self._fetch_serp_page_headings(fetch_candidates)
+        enriched_pages: list[dict[str, Any]] = []
+        for page in top_pages:
+            page_url = str(page.get("url") or "")
+            headings = fetched_headings_by_url.get(page_url, [])
+            structural_signals = self._derive_serp_structural_signals(
+                title=str(page.get("title") or ""),
+                snippet=str(page.get("snippet") or ""),
+                headings=headings,
+                serp_features=serp_features,
+            )
+            enriched_pages.append({
+                **page,
+                "headings": headings,
+                "structural_signals": structural_signals,
+            })
+
+        deterministic = self._derive_deterministic_serp_briefing(
+            top_pages=enriched_pages,
+            search_intent=search_intent,
+            page_type=page_type,
+            serp_features=serp_features,
+        )
+
+        snapshots: list[SerpPageSnapshot] = []
+        for page in enriched_pages[:SERP_SNAPSHOT_TOP_RESULTS]:
+            try:
+                snapshots.append(
+                    SerpPageSnapshot(
+                        position=int(page.get("position") or 1),
+                        title=str(page.get("title") or ""),
+                        url=str(page.get("url") or ""),
+                        domain=str(page.get("domain") or ""),
+                        content_type_hint=str(page.get("content_type_hint") or "unknown"),
+                        headings=[
+                            str(item).strip()
+                            for item in page.get("headings", [])
+                            if str(item).strip()
+                        ][:SERP_SNAPSHOT_MAX_HEADINGS_PER_PAGE],
+                        structural_signals=[
+                            str(item).strip()
+                            for item in page.get("structural_signals", [])
+                            if str(item).strip()
+                        ],
+                    )
+                )
+            except Exception:
+                continue
+
+        if not snapshots:
+            return {
+                "top_pages": enriched_pages,
+                "summary": deterministic["summary"],
+                "best_practices": self._sanitize_serp_guidance_items(
+                    deterministic["best_practices"],
+                    limit=12,
+                ),
+                "recommended_sections": self._sanitize_serp_guidance_items(
+                    deterministic["recommended_sections"],
+                    limit=12,
+                ),
+                "opportunities_to_outperform": self._sanitize_serp_guidance_items(
+                    deterministic["opportunities_to_outperform"],
+                    limit=10,
+                ),
+            }
+
+        try:
+            briefing_input = SerpBriefingInput(
+                primary_keyword=primary_keyword,
+                search_intent=search_intent,
+                page_type=page_type,
+                serp_features=serp_features,
+                top_pages=snapshots,
+            )
+            briefing_output = await serp_briefing_agent.run(briefing_input)
+            insight = briefing_output.insight
+        except Exception as exc:
+            logger.warning(
+                "SERP briefing agent failed; using deterministic fallback",
+                extra={
+                    "primary_keyword": primary_keyword,
+                    "error": str(exc),
+                },
+            )
+            return {
+                "top_pages": enriched_pages,
+                "summary": deterministic["summary"],
+                "best_practices": self._sanitize_serp_guidance_items(
+                    deterministic["best_practices"],
+                    limit=12,
+                ),
+                "recommended_sections": self._sanitize_serp_guidance_items(
+                    deterministic["recommended_sections"],
+                    limit=12,
+                ),
+                "opportunities_to_outperform": self._sanitize_serp_guidance_items(
+                    deterministic["opportunities_to_outperform"],
+                    limit=10,
+                ),
+            }
+
+        return {
+            "top_pages": enriched_pages,
+            "summary": self._optional_str(insight.summary) or deterministic["summary"],
+            "best_practices": self._sanitize_serp_guidance_items(
+                self._merge_unique_str_items(
+                    insight.best_practices,
+                    deterministic["best_practices"],
+                    limit=12,
+                ),
+                limit=12,
+            ),
+            "recommended_sections": self._sanitize_serp_guidance_items(
+                self._merge_unique_str_items(
+                    insight.recommended_sections,
+                    deterministic["recommended_sections"],
+                    limit=12,
+                ),
+                limit=12,
+            ),
+            "opportunities_to_outperform": self._sanitize_serp_guidance_items(
+                self._merge_unique_str_items(
+                    insight.opportunities_to_outperform,
+                    deterministic["opportunities_to_outperform"],
+                    limit=10,
+                ),
+                limit=10,
+            ),
+        }
+
+    def _normalize_serp_top_results(self, serp_top_results: Any) -> list[dict[str, Any]]:
+        """Normalize Step 8 SERP rows into deterministic top-page snapshots."""
+        if not isinstance(serp_top_results, list):
+            return []
+
+        normalized: list[dict[str, Any]] = []
+        for index, row in enumerate(serp_top_results[:SERP_SNAPSHOT_TOP_RESULTS], start=1):
+            if not isinstance(row, dict):
+                continue
+
+            url = str(row.get("url") or "").strip()
+            if not self._is_http_url(url):
+                continue
+
+            title = str(row.get("title") or "").strip()
+            snippet = str(row.get("snippet") or "").strip()
+            raw_position = self._optional_int(row.get("position"))
+            position = raw_position if raw_position is not None and raw_position > 0 else index
+            domain = str(row.get("domain") or "").strip().lower()
+            if not domain:
+                domain = self._extract_domain_from_url(url)
+
+            normalized.append({
+                "position": position,
+                "title": title,
+                "url": url,
+                "domain": domain,
+                "snippet": snippet,
+                "content_type_hint": self._infer_serp_content_type_hint(
+                    title=title,
+                    url=url,
+                    snippet=snippet,
+                ),
+            })
+
+        return normalized
+
+    def _infer_serp_content_type_hint(self, *, title: str, url: str, snippet: str) -> str:
+        """Infer a coarse result type from URL/title/snippet tokens."""
+        normalized = f"{title} {snippet} {url}".lower()
+        url_lower = url.lower()
+        if any(token in url_lower for token in ("/docs", "/documentation", "/help", "/kb/")):
+            return "docs"
+        if any(
+            token in url_lower
+            for token in ("/pricing", "/product", "/features", "/solutions", "/platform")
+        ):
+            return "product"
+        if any(token in normalized for token in (" vs ", "versus", "alternatives", "comparison")):
+            return "comparison"
+        if re.search(r"\b(top|best)\s+\d+\b", normalized):
+            return "list"
+        if any(
+            token in url_lower
+            for token in ("/blog/", "/post/", "/posts/", "/article/", "/articles/", "/guides/")
+        ) or any(
+            token in normalized
+            for token in ("how to", "guide", "tutorial", "checklist", "playbook")
+        ):
+            return "blog"
+        return "other"
+
+    def _is_blog_like_snapshot(self, snapshot: dict[str, Any]) -> bool:
+        """Return True if a SERP snapshot is likely a blog/editorial page."""
+        hint = str(snapshot.get("content_type_hint") or "").strip().lower()
+        return hint in {"blog", "comparison", "list"}
+
+    def _is_http_url(self, value: str) -> bool:
+        normalized = value.strip().lower()
+        return normalized.startswith("http://") or normalized.startswith("https://")
+
+    def _extract_domain_from_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        domain = (parsed.netloc or "").lower()
+        if domain.startswith("www."):
+            return domain[4:]
+        return domain
+
+    async def _fetch_serp_page_headings(
+        self,
+        pages: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        """Fetch top pages and return extracted H2/H3 headings by URL."""
+        urls = [
+            str(page.get("url") or "").strip()
+            for page in pages
+            if self._is_http_url(str(page.get("url") or ""))
+        ]
+        if not urls:
+            return {}
+
+        try:
+            async with WebsiteScraper(
+                timeout=SERP_SNAPSHOT_FETCH_TIMEOUT_SECONDS,
+                max_pages=max(1, len(urls)),
+            ) as scraper:
+                results = await asyncio.gather(
+                    *(scraper.scrape_page(url) for url in urls),
+                    return_exceptions=True,
+                )
+        except Exception as exc:
+            logger.warning(
+                "SERP page structure fetch failed",
+                extra={"urls": len(urls), "error": str(exc)},
+            )
+            return {}
+
+        headings_by_url: dict[str, list[str]] = {}
+        for url, result in zip(urls, results):
+            if isinstance(result, Exception):
+                continue
+            if not isinstance(result, dict) or result.get("error"):
+                continue
+
+            headings: list[str] = []
+            for item in result.get("headings", []):
+                if not isinstance(item, dict):
+                    continue
+                level = self._optional_int(item.get("level"))
+                text = str(item.get("text") or "").strip()
+                if level not in {2, 3} or not text:
+                    continue
+                headings.append(text)
+
+            headings_by_url[url] = self._merge_unique_str_items(
+                headings,
+                [],
+                limit=SERP_SNAPSHOT_MAX_HEADINGS_PER_PAGE,
+            )
+
+        return headings_by_url
+
+    def _derive_serp_structural_signals(
+        self,
+        *,
+        title: str,
+        snippet: str,
+        headings: list[str],
+        serp_features: list[str],
+    ) -> list[str]:
+        """Derive structural cues from title/snippet/headings."""
+        corpus = " ".join([title, snippet, " ".join(headings)]).lower()
+        signals: list[str] = []
+
+        if headings:
+            signals.append("explicit_h2_h3_structure")
+        if "featured_snippet" in serp_features:
+            signals.append("snippet_answer_block")
+        if "paa" in serp_features:
+            signals.append("faq_section")
+        if "images" in serp_features or "video" in serp_features:
+            signals.append("visual_examples")
+
+        if re.search(r"\b(step|how to|walkthrough|process)\b", corpus):
+            signals.append("step_by_step_flow")
+        if re.search(r"\b(vs|versus|comparison|alternatives?)\b", corpus):
+            signals.append("comparison_elements")
+        if re.search(r"\b(checklist|template|worksheet)\b", corpus):
+            signals.append("template_or_checklist")
+        if re.search(r"\b(example|case study|real world)\b", corpus):
+            signals.append("examples_or_case_studies")
+        if re.search(r"\b(faq|questions?)\b", corpus):
+            signals.append("faq_section")
+        if re.search(r"\b(price|pricing|cost)\b", corpus):
+            signals.append("pricing_context")
+        if re.search(r"\b(202[0-9]|2030)\b", corpus):
+            signals.append("freshness_year_markers")
+
+        return self._merge_unique_str_items(signals, [], limit=12)
+
+    def _derive_deterministic_serp_briefing(
+        self,
+        *,
+        top_pages: list[dict[str, Any]],
+        search_intent: str,
+        page_type: str,
+        serp_features: list[str],
+    ) -> dict[str, Any]:
+        """Fallback deterministic SERP guidance when live/LLM analysis is incomplete."""
+        signal_counts: Counter[str] = Counter()
+        for page in top_pages:
+            signals = page.get("structural_signals", [])
+            if not isinstance(signals, list):
+                continue
+            for signal in signals:
+                signal_key = str(signal).strip().lower()
+                if signal_key:
+                    signal_counts[signal_key] += 1
+
+        total_pages = len(top_pages)
+        blog_like_count = sum(1 for page in top_pages if self._is_blog_like_snapshot(page))
+        top_signals = ", ".join(name.replace("_", " ") for name, _ in signal_counts.most_common(3))
+
+        best_practices: list[str] = []
+        recommended_sections: list[str] = []
+        opportunities: list[str] = []
+
+        if signal_counts.get("snippet_answer_block", 0) > 0 or "featured_snippet" in serp_features:
+            best_practices.append(
+                "Open with a concise answer block in the first section to match snippet-style SERP behavior."
+            )
+            recommended_sections.append("Quick Answer / TL;DR")
+        if signal_counts.get("step_by_step_flow", 0) > 0 or page_type == "guide":
+            best_practices.append("Use a clear step-by-step flow with explicit sub-steps and outcomes.")
+            recommended_sections.append("Step-by-Step Implementation")
+        if signal_counts.get("comparison_elements", 0) > 0 or page_type in {"comparison", "alternatives"}:
+            best_practices.append(
+                "Include a scannable comparison framework (criteria, trade-offs, and recommendations)."
+            )
+            recommended_sections.append("Comparison Table")
+        if signal_counts.get("examples_or_case_studies", 0) > 0:
+            best_practices.append("Anchor key claims in practical examples or scenario-style evidence.")
+            recommended_sections.append("Practical Examples")
+        if signal_counts.get("template_or_checklist", 0) > 0:
+            best_practices.append("Add reusable checklists or templates that help readers apply the advice.")
+            recommended_sections.append("Checklist / Template")
+        if signal_counts.get("faq_section", 0) > 0 or "paa" in serp_features:
+            best_practices.append("Cover high-intent follow-up questions in a dedicated FAQ block.")
+            recommended_sections.append("FAQ")
+        if signal_counts.get("freshness_year_markers", 0) > 0:
+            best_practices.append("Include freshness cues and up-to-date context for year-sensitive queries.")
+            recommended_sections.append("What's New / Current Context")
+
+        normalized_intent = search_intent.strip().lower()
+        if normalized_intent in {"commercial", "transactional"}:
+            best_practices.append(
+                "Provide explicit decision criteria and bridge sections that support evaluation and conversion."
+            )
+            recommended_sections.append("Decision Criteria")
+        if page_type in {"comparison", "alternatives", "list"}:
+            recommended_sections.append("Top Options Summary")
+
+        if signal_counts.get("examples_or_case_studies", 0) == 0:
+            opportunities.append("Add scenario-based examples competitors do not clearly provide.")
+        if signal_counts.get("template_or_checklist", 0) == 0:
+            opportunities.append("Include a practical checklist/template to increase actionability.")
+        if signal_counts.get("faq_section", 0) == 0 and "paa" in serp_features:
+            opportunities.append("Close PAA-style intent gaps with concise objection-handling FAQs.")
+        opportunities.append(
+            "Differentiate with stronger examples, source-backed claims, and deeper edge-case coverage."
+        )
+
+        if total_pages > 0:
+            summary = (
+                f"{blog_like_count}/{total_pages} top results appear blog/editorial; "
+                f"dominant structural patterns: {top_signals or 'mixed signals'}."
+            )
+        else:
+            summary = (
+                "No fetchable top-page structures; applying intent and page-type based SERP best practices."
+            )
+
+        return {
+            "summary": summary,
+            "best_practices": self._merge_unique_str_items(best_practices, [], limit=12),
+            "recommended_sections": self._merge_unique_str_items(
+                recommended_sections,
+                [],
+                limit=12,
+            ),
+            "opportunities_to_outperform": self._merge_unique_str_items(opportunities, [], limit=10),
+        }
+
+    def _merge_unique_str_items(
+        self,
+        primary: list[str] | None,
+        secondary: list[str] | None,
+        *,
+        limit: int = 20,
+    ) -> list[str]:
+        """Merge two string lists with case-insensitive de-duplication."""
+        merged: list[str] = []
+        seen: set[str] = set()
+        for item in (primary or []) + (secondary or []):
+            text = str(item).strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(text)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def _sanitize_serp_guidance_items(
+        self,
+        items: list[str] | None,
+        *,
+        limit: int,
+    ) -> list[str]:
+        """Drop non-content guidance so SERP advice stays focused on article body content."""
+        sanitized: list[str] = []
+        for item in items or []:
+            text = self._optional_str(item)
+            if text is None:
+                continue
+            normalized = text.casefold()
+            if any(pattern.search(normalized) for pattern in SERP_NON_CONTENT_GUIDANCE_PATTERNS):
+                continue
+            sanitized.append(text)
+            if len(sanitized) >= limit:
+                break
+        return sanitized
+
     def _build_publication_schedule_config(
         self,
         input_data: BriefInput,
+        *,
+        project_posts_per_week: int,
     ) -> PublicationScheduleConfig:
         """Normalize publication scheduling controls from step input."""
-        posts_per_week = max(1, min(input_data.posts_per_week, 7))
+        requested_posts_per_week = self._coerce_posts_per_week(input_data.posts_per_week)
+        posts_per_week = min(
+            requested_posts_per_week,
+            self._coerce_posts_per_week(project_posts_per_week),
+        )
         min_lead_days = max(1, min(input_data.min_lead_days, 60))
         llm_timing_flex_days = max(0, min(input_data.llm_timing_flex_days, 90))
         preferred = self._sanitize_weekdays(input_data.preferred_weekdays or [])
@@ -782,10 +1519,14 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         topic_count: int,
         today: date,
         config: PublicationScheduleConfig,
+        reserved_date_counts: Counter[date] | None = None,
     ) -> list[date]:
         """Generate deterministic future publication slots based on cadence settings."""
         if topic_count <= 0:
             return []
+
+        reserved_counts = Counter(reserved_date_counts or {})
+        weekly_reserved_counts = self._build_weekly_reserved_counts(reserved_counts)
 
         earliest = today + timedelta(days=config.min_lead_days)
         if config.start_date is not None and config.start_date > earliest:
@@ -794,15 +1535,53 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         # Start from Monday of the anchor week, then emit selected weekdays per week.
         week_start = earliest - timedelta(days=earliest.weekday())
         slots: list[date] = []
-        while len(slots) < topic_count:
+        max_weeks_to_scan = max(topic_count * 8, 520)  # 10-year guardrail for sparse calendars.
+        scanned_weeks = 0
+        while len(slots) < topic_count and scanned_weeks < max_weeks_to_scan:
+            week_key = self._iso_week_key(week_start)
+            remaining_capacity = max(
+                0,
+                config.posts_per_week - weekly_reserved_counts.get(week_key, 0),
+            )
+            if remaining_capacity <= 0:
+                week_start += timedelta(days=7)
+                scanned_weeks += 1
+                continue
+
             for weekday in config.weekdays:
+                if remaining_capacity <= 0:
+                    break
                 candidate = week_start + timedelta(days=weekday)
                 if candidate < earliest:
                     continue
+                if reserved_counts.get(candidate, 0) > 0:
+                    continue
                 slots.append(candidate)
+                reserved_counts[candidate] += 1
+                weekly_reserved_counts[week_key] += 1
+                remaining_capacity -= 1
                 if len(slots) >= topic_count:
                     break
             week_start += timedelta(days=7)
+            scanned_weeks += 1
+
+        if len(slots) >= topic_count:
+            return slots
+
+        fallback = earliest
+        max_shift_days = 365 * 10
+        for _ in range(max_shift_days):
+            week_key = self._iso_week_key(fallback)
+            if (
+                reserved_counts.get(fallback, 0) == 0
+                and weekly_reserved_counts.get(week_key, 0) < config.posts_per_week
+            ):
+                slots.append(fallback)
+                reserved_counts[fallback] += 1
+                weekly_reserved_counts[week_key] += 1
+                if len(slots) >= topic_count:
+                    break
+            fallback += timedelta(days=1)
 
         return slots
 
@@ -1380,19 +2159,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         return do_not_target
 
     def _get_conflicting_intent(self, topic: Topic) -> str | None:
-        """Get intent that should NOT be covered by this topic.
-
-        E.g., if topic is informational, don't cover transactional intent.
-        """
-        intent = topic.dominant_intent or ""
-
-        if intent == "informational":
-            return "transactional"
-        elif intent == "transactional":
-            return "informational"
-        elif intent == "commercial":
-            return None  # Commercial can blend
-
+        """Deprecated strict guard; cross-intent coverage is now allowed when relevant."""
         return None
 
     def _build_keyword_section_map(
@@ -1587,6 +2354,11 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             for publication_date in reserved_dates_result.scalars().all()
             if publication_date is not None
         )
+        project_result = await self.session.execute(
+            select(Project).where(Project.id == self.project_id)
+        )
+        project = project_result.scalar_one()
+        project_posts_per_week = self._coerce_posts_per_week(project.posts_per_week)
 
         for brief_data in result.briefs:
             topic_id = self._optional_str(brief_data.get("topic_id"))
@@ -1641,6 +2413,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 desired_date=proposed_publication_date,
                 existing_date=existing_publication_date,
                 reserved_date_counts=reserved_publication_dates,
+                posts_per_week_limit=project_posts_per_week,
             )
             brief_data["proposed_publication_date"] = assigned_publication_date
             if assigned_publication_date is not None:
@@ -1736,16 +2509,42 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             )
 
         # Update project step
-        project_result = await self.session.execute(
-            select(Project).where(Project.id == self.project_id)
-        )
-        project = project_result.scalar_one()
         project.current_step = max(project.current_step, self.step_number)
+        strategy = await self.get_run_strategy()
+
+        intent_counts = Counter(
+            str(brief.get("search_intent") or "").strip().lower()
+            for brief in result.briefs
+            if str(brief.get("search_intent") or "").strip().lower() in {
+                "informational",
+                "commercial",
+                "transactional",
+            }
+        )
+        funnel_counts = Counter(
+            str(brief.get("funnel_stage") or "").strip().lower()
+            for brief in result.briefs
+            if str(brief.get("funnel_stage") or "").strip().lower() in {"tofu", "mofu", "bofu"}
+        )
+        intent_total = sum(intent_counts.values())
+        funnel_total = sum(funnel_counts.values())
+        observed_intent_mix = {
+            key: round(intent_counts.get(key, 0) / max(intent_total, 1), 4)
+            for key in ("informational", "commercial", "transactional")
+        }
+        observed_funnel_mix = {
+            key: round(funnel_counts.get(key, 0) / max(funnel_total, 1), 4)
+            for key in ("tofu", "mofu", "bofu")
+        }
 
         # Set result summary
         self.set_result_summary({
             "briefs_generated": result.briefs_generated,
             "briefs_with_warnings": result.briefs_with_warnings,
+            "target_intent_mix": strategy.intent_mix.to_shares(),
+            "observed_intent_mix": observed_intent_mix,
+            "target_funnel_mix": strategy.funnel_mix.to_shares(),
+            "observed_funnel_mix": observed_funnel_mix,
             "url_conflicts": sum(
                 1 for b in result.briefs if b.get("url_collision_check") == "conflict"
             ),
@@ -1884,12 +2683,37 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             return
         reserved_date_counts[assigned_date] = current_count - 1
 
+    def _coerce_posts_per_week(self, value: Any) -> int:
+        """Clamp posts-per-week values into supported bounds."""
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 1
+        return max(1, min(parsed, 7))
+
+    def _iso_week_key(self, value: date) -> tuple[int, int]:
+        """Return ISO year/week tuple used for weekly publication caps."""
+        iso = value.isocalendar()
+        return (iso.year, iso.week)
+
+    def _build_weekly_reserved_counts(
+        self,
+        reserved_date_counts: Counter[date],
+    ) -> Counter[tuple[int, int]]:
+        weekly_counts: Counter[tuple[int, int]] = Counter()
+        for publication_date, count in reserved_date_counts.items():
+            if publication_date is None or count <= 0:
+                continue
+            weekly_counts[self._iso_week_key(publication_date)] += int(count)
+        return weekly_counts
+
     def _resolve_unique_publication_date(
         self,
         *,
         desired_date: date | None,
         existing_date: date | None,
         reserved_date_counts: Counter[date],
+        posts_per_week_limit: int | None = None,
     ) -> date | None:
         candidate = desired_date or existing_date
         if candidate is None:
@@ -1897,6 +2721,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         return self._next_available_publication_date(
             candidate,
             reserved_date_counts=reserved_date_counts,
+            posts_per_week_limit=posts_per_week_limit,
         )
 
     def _next_available_publication_date(
@@ -1904,11 +2729,20 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         candidate: date,
         *,
         reserved_date_counts: Counter[date],
+        posts_per_week_limit: int | None = None,
     ) -> date:
         max_shift_days = 365 * 3
         current = candidate
+        weekly_limit = 7 if posts_per_week_limit is None else self._coerce_posts_per_week(
+            posts_per_week_limit
+        )
+        weekly_counts = self._build_weekly_reserved_counts(reserved_date_counts)
         for _ in range(max_shift_days):
-            if reserved_date_counts.get(current, 0) == 0:
+            week_key = self._iso_week_key(current)
+            if (
+                reserved_date_counts.get(current, 0) == 0
+                and weekly_counts.get(week_key, 0) < weekly_limit
+            ):
                 return current
             current += timedelta(days=1)
         return current

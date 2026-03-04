@@ -31,7 +31,13 @@ from app.services.discovery.topic_overlap import (
     normalize_text_tokens,
 )
 from app.services.discovery_capabilities import CAPABILITY_PRIORITIZATION
-from app.services.run_strategy import RunStrategy
+from app.services.run_strategy import (
+    RunStrategy,
+    build_adaptive_target_mix,
+    funnel_from_intent,
+    normalize_funnel_label,
+    normalize_intent_label,
+)
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -99,6 +105,9 @@ DYNAMIC_OPPORTUNITY_ALPHA = 0.85
 DYNAMIC_OPPORTUNITY_BETA = 0.15
 FINAL_DYNAMIC_FIT_WEIGHT = 0.70
 FINAL_DYNAMIC_OPPORTUNITY_WEIGHT = 0.30
+INTENT_MIX_MAX_BONUS = 4.0
+FUNNEL_MIX_MAX_BONUS = 3.0
+NAVIGATIONAL_SOFT_PENALTY = 1.1
 
 PROFILE_CALIBRATION: dict[str, dict[str, float]] = {
     "aggressive": {
@@ -152,10 +161,6 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
 
     async def _execute(self, input_data: PrioritizationInput) -> PrioritizationOutput:
         """Execute topic prioritization with hybrid scoring and fit gating."""
-        result = await self.session.execute(
-            select(Project).where(Project.id == input_data.project_id)
-        )
-        project = result.scalar_one()
         strategy = await self.get_run_strategy()
 
         brand_result = await self.session.execute(
@@ -212,7 +217,6 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             )
         offer_terms = self._collect_offer_terms(brand, strategy)
         money_pages = self._extract_money_pages(brand)
-        primary_goal = project.primary_goal or ""
         raw_volume_reference = self._calculate_volume_reference(all_topics)
         adjusted_volume_reference = self._calculate_adjusted_volume_reference(all_topics)
 
@@ -283,6 +287,12 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             })
 
         self._apply_dynamic_scores(scored_topics)
+        mix_diagnostics = self._apply_intent_funnel_mix_bonus(
+            scored_topics=scored_topics,
+            strategy=strategy,
+        )
+        if mix_diagnostics:
+            weights_used["intent_mix_diagnostics"] = mix_diagnostics
         primary_threshold, secondary_threshold = self._calibrate_dynamic_thresholds(
             scored_topics,
             strategy,
@@ -335,7 +345,6 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 batch=batch,
                 brand_context=brand_context,
                 money_pages=money_pages,
-                primary_goal=primary_goal,
                 offer_terms=offer_terms,
             )
             if output is None:
@@ -491,6 +500,9 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 "fit_components": fit_assessment.get("components", {}),
                 "fit_percentile_rank": st.get("fit_percentile_rank"),
                 "opportunity_percentile_rank": st.get("opportunity_percentile_rank"),
+                "intent_mix_bonus": st.get("intent_mix_bonus"),
+                "funnel_mix_bonus": st.get("funnel_mix_bonus"),
+                "mix_bonus": st.get("mix_bonus"),
                 "calibrated_primary_threshold": primary_threshold,
                 "calibrated_secondary_threshold": secondary_threshold,
                 "final_cut_pool_rank": st.get("final_cut_pool_rank"),
@@ -506,6 +518,10 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 ),
                 "score_explanation": st["explanation"],
                 "diversification": st.get("diversification", {}),
+                "intent_mix_target": mix_diagnostics.get("target_intent_mix", {}),
+                "intent_mix_observed": mix_diagnostics.get("observed_intent_mix", {}),
+                "funnel_mix_target": mix_diagnostics.get("target_funnel_mix", {}),
+                "funnel_mix_observed": mix_diagnostics.get("observed_funnel_mix", {}),
             }
 
             output_topics.append({
@@ -1212,6 +1228,153 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             st["scoring_factors"]["dynamic_opportunity_score"] = round(dynamic_opportunity_score, 4)
             st["scoring_factors"]["deterministic_priority_score"] = deterministic_priority_score
 
+    def _apply_intent_funnel_mix_bonus(
+        self,
+        *,
+        scored_topics: list[dict[str, Any]],
+        strategy: RunStrategy,
+    ) -> dict[str, Any]:
+        """Apply bounded intent/funnel soft-balancing bonuses to deterministic scores."""
+        if not scored_topics:
+            return {}
+
+        observed_intent_mix = self._observed_intent_mix(scored_topics)
+        base_intent_mix = strategy.intent_mix.to_shares()
+        target_intent_mix = build_adaptive_target_mix(
+            base_mix=base_intent_mix,
+            observed_mix=observed_intent_mix,
+            influence=strategy.intent_mix.influence,
+        )
+
+        observed_funnel_mix = self._observed_funnel_mix(scored_topics)
+        configured_funnel_mix = strategy.funnel_mix.to_shares()
+        derived_funnel_mix = {
+            "tofu": target_intent_mix["informational"],
+            "mofu": target_intent_mix["commercial"],
+            "bofu": target_intent_mix["transactional"],
+        }
+        base_funnel_mix = {
+            key: round((derived_funnel_mix[key] * 0.7) + (configured_funnel_mix[key] * 0.3), 6)
+            for key in ("tofu", "mofu", "bofu")
+        }
+        target_funnel_mix = build_adaptive_target_mix(
+            base_mix=base_funnel_mix,
+            observed_mix=observed_funnel_mix,
+            influence=strategy.funnel_mix.influence,
+        )
+
+        total_mix_bonus = 0.0
+        for st in scored_topics:
+            topic = st["topic"]
+            fit_score = float(st["fit_assessment"].get("fit_score") or 0.0)
+            intent_label = str(getattr(topic, "dominant_intent", "") or "").strip().lower()
+            funnel_label = str(getattr(topic, "funnel_stage", "") or "").strip().lower()
+
+            intent_key = normalize_intent_label(intent_label)
+            funnel_key = normalize_funnel_label(funnel_label) or funnel_from_intent(intent_label)
+
+            intent_bonus = 0.0
+            if intent_key is not None:
+                gap = float(target_intent_mix[intent_key]) - float(observed_intent_mix[intent_key])
+                intent_bonus = max(-1.0, min(1.0, gap)) * INTENT_MIX_MAX_BONUS * strategy.intent_mix.influence
+
+            funnel_bonus = 0.0
+            if funnel_key is not None:
+                gap = float(target_funnel_mix[funnel_key]) - float(observed_funnel_mix[funnel_key])
+                funnel_bonus = max(-1.0, min(1.0, gap)) * FUNNEL_MIX_MAX_BONUS * strategy.funnel_mix.influence
+
+            navigational_penalty = 0.0
+            if intent_label == "navigational" and fit_score < 0.82:
+                navigational_penalty = NAVIGATIONAL_SOFT_PENALTY * strategy.intent_mix.influence
+
+            mix_bonus = round(intent_bonus + funnel_bonus - navigational_penalty, 2)
+            total_mix_bonus += mix_bonus
+
+            deterministic_priority_score = round(
+                float(st.get("deterministic_priority_score") or 0.0) + mix_bonus,
+                2,
+            )
+            st["deterministic_priority_score"] = deterministic_priority_score
+            st["priority_score"] = deterministic_priority_score
+            st["mix_bonus"] = mix_bonus
+            st["intent_mix_bonus"] = round(intent_bonus, 2)
+            st["funnel_mix_bonus"] = round(funnel_bonus, 2)
+            st["navigational_soft_penalty"] = round(navigational_penalty, 2)
+            st["scoring_factors"]["intent_mix_bonus"] = round(intent_bonus, 2)
+            st["scoring_factors"]["funnel_mix_bonus"] = round(funnel_bonus, 2)
+            st["scoring_factors"]["navigational_soft_penalty"] = round(navigational_penalty, 2)
+            st["scoring_factors"]["mix_bonus"] = mix_bonus
+            st["scoring_factors"]["deterministic_priority_score"] = deterministic_priority_score
+
+        avg_bonus = total_mix_bonus / max(len(scored_topics), 1)
+        return {
+            "base_intent_mix": {
+                key: round(float(value), 4)
+                for key, value in base_intent_mix.items()
+            },
+            "observed_intent_mix": {
+                key: round(float(value), 4)
+                for key, value in observed_intent_mix.items()
+            },
+            "target_intent_mix": {
+                key: round(float(value), 4)
+                for key, value in target_intent_mix.items()
+            },
+            "base_funnel_mix": {
+                key: round(float(value), 4)
+                for key, value in base_funnel_mix.items()
+            },
+            "observed_funnel_mix": {
+                key: round(float(value), 4)
+                for key, value in observed_funnel_mix.items()
+            },
+            "target_funnel_mix": {
+                key: round(float(value), 4)
+                for key, value in target_funnel_mix.items()
+            },
+            "average_mix_bonus": round(avg_bonus, 4),
+        }
+
+    def _observed_intent_mix(self, scored_topics: list[dict[str, Any]]) -> dict[str, float]:
+        weighted: dict[str, float] = {
+            "informational": 0.0,
+            "commercial": 0.0,
+            "transactional": 0.0,
+        }
+        total = 0.0
+        for st in scored_topics:
+            topic = st["topic"]
+            intent_key = normalize_intent_label(getattr(topic, "dominant_intent", None))
+            if intent_key is None:
+                continue
+            fit_score = float(st["fit_assessment"].get("fit_score") or 0.0)
+            opportunity = float(st["scoring_factors"].get("opportunity_score") or 0.0)
+            weight = max(0.05, fit_score * 0.7 + opportunity * 0.3)
+            weighted[intent_key] += weight
+            total += weight
+        if total <= 0:
+            return {key: 0.0 for key in weighted}
+        return {key: weighted[key] / total for key in weighted}
+
+    def _observed_funnel_mix(self, scored_topics: list[dict[str, Any]]) -> dict[str, float]:
+        weighted: dict[str, float] = {"tofu": 0.0, "mofu": 0.0, "bofu": 0.0}
+        total = 0.0
+        for st in scored_topics:
+            topic = st["topic"]
+            funnel_key = normalize_funnel_label(getattr(topic, "funnel_stage", None))
+            if funnel_key is None:
+                funnel_key = funnel_from_intent(getattr(topic, "dominant_intent", None))
+            if funnel_key is None:
+                continue
+            fit_score = float(st["fit_assessment"].get("fit_score") or 0.0)
+            opportunity = float(st["scoring_factors"].get("opportunity_score") or 0.0)
+            weight = max(0.05, fit_score * 0.7 + opportunity * 0.3)
+            weighted[funnel_key] += weight
+            total += weight
+        if total <= 0:
+            return {key: 0.0 for key in weighted}
+        return {key: weighted[key] / total for key in weighted}
+
     def _calibrate_dynamic_thresholds(
         self,
         scored_topics: list[dict[str, Any]],
@@ -1881,7 +2044,6 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         batch: list[dict[str, Any]],
         brand_context: str,
         money_pages: list[str],
-        primary_goal: str,
         offer_terms: set[str] | None = None,
     ) -> Any | None:
         """Run prioritization agent with compact-mode retry."""
@@ -1901,7 +2063,6 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                             else self._compact_brand_context(brand_context)
                         ),
                         money_pages=money_pages,
-                        primary_goal=primary_goal,
                         compact_mode=compact_mode,
                     )
                 )
@@ -2183,6 +2344,11 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         summary: dict[str, Any] = {
             "topics_ranked": result.topics_ranked,
             "weights_used": result.weights_used,
+            "intent_mix_diagnostics": (
+                result.weights_used.get("intent_mix_diagnostics", {})
+                if isinstance(result.weights_used, dict)
+                else {}
+            ),
             "primary_topics": sum(1 for t in result.topics if t.get("fit_tier") == "primary"),
             "secondary_topics": sum(1 for t in result.topics if t.get("fit_tier") == "secondary"),
             "excluded_topics": sum(1 for t in result.topics if t.get("fit_tier") == "excluded"),

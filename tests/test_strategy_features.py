@@ -6,8 +6,7 @@ import pytest
 
 from app.schemas.pipeline import PipelineStartRequest
 from app.services.run_strategy import (
-    build_goal_intent_profile,
-    classify_intent_alignment,
+    build_adaptive_target_mix,
     resolve_run_strategy,
 )
 from app.services.steps.discovery.step_03_expansion import Step03ExpansionService
@@ -31,6 +30,18 @@ def test_pipeline_start_request_accepts_strategy_payload() -> None:
                 "icp_industries": ["saas"],
                 "icp_pains": ["slow response times"],
                 "market_mode_override": "mixed",
+                "intent_mix": {
+                    "informational": 0.5,
+                    "commercial": 0.3,
+                    "transactional": 0.2,
+                    "influence": 0.4,
+                },
+                "funnel_mix": {
+                    "tofu": 0.45,
+                    "mofu": 0.35,
+                    "bofu": 0.2,
+                    "influence": 0.3,
+                },
             },
         }
     )
@@ -40,6 +51,8 @@ def test_pipeline_start_request_accepts_strategy_payload() -> None:
     assert req.strategy.scope_mode == "balanced_adjacent"
     assert req.strategy.branded_keyword_mode == "comparisons_only"
     assert req.strategy.market_mode_override == "mixed"
+    assert req.strategy.intent_mix.informational == 0.5
+    assert req.strategy.funnel_mix.tofu == 0.45
 
 
 def test_pipeline_start_request_accepts_mode_and_configs() -> None:
@@ -128,7 +141,6 @@ def test_resolve_run_strategy_merges_brand_defaults_and_overrides() -> None:
             "conversion_intents": ["demo"],
         },
         brand=brand,  # type: ignore[arg-type]
-        primary_goal="lead_generation",
     )
 
     assert "knowledge base" in strategy.include_topics
@@ -145,7 +157,6 @@ def test_step03_branded_keyword_policy_comparisons_only() -> None:
     strategy = resolve_run_strategy(
         strategy_payload={"branded_keyword_mode": "comparisons_only"},
         brand=None,
-        primary_goal=None,
     )
 
     blocked, reason = service._evaluate_keyword_policy(  # type: ignore[attr-defined]
@@ -176,7 +187,6 @@ def test_step07_dynamic_calibration_outputs_ordered_thresholds() -> None:
     strategy = resolve_run_strategy(
         strategy_payload={"fit_threshold_profile": "aggressive", "min_eligible_target": 1},
         brand=None,
-        primary_goal=None,
     )
 
     scored_topics = [
@@ -301,25 +311,32 @@ def test_step07_prefilter_excludes_hard_excluded_topics() -> None:
     assert candidates[0]["dynamic_fit_score"] == 0.58
 
 
-def test_resolve_run_strategy_maps_goal_preset_to_multiple_conversion_intents() -> None:
+def test_resolve_run_strategy_defaults_to_balanced_mix_config() -> None:
     strategy = resolve_run_strategy(
         strategy_payload=None,
         brand=None,
-        primary_goal="revenue_content",
     )
 
-    assert "revenue_content" in strategy.conversion_intents
-    assert "transactional" in strategy.conversion_intents
-    assert "commercial" in strategy.conversion_intents
-    assert "pricing" in strategy.conversion_intents
+    assert strategy.conversion_intents == []
+    assert strategy.intent_mix.to_shares() == {
+        "informational": 0.4,
+        "commercial": 0.35,
+        "transactional": 0.25,
+    }
+    assert strategy.funnel_mix.to_shares() == {
+        "tofu": 0.4,
+        "mofu": 0.35,
+        "bofu": 0.25,
+    }
 
 
-def test_goal_intent_profile_mixed_goals_allows_multiple_intent_paths() -> None:
-    profile = build_goal_intent_profile(
-        ["traffic_growth", "lead_generation", "demo", "trial"]
+def test_build_adaptive_target_mix_boosts_underrepresented_bucket() -> None:
+    target = build_adaptive_target_mix(
+        base_mix={"informational": 0.4, "commercial": 0.35, "transactional": 0.25},
+        observed_mix={"informational": 0.2, "commercial": 0.6, "transactional": 0.2},
+        influence=0.5,
     )
 
-    assert profile.profile_name == "mixed_goals"
-    assert classify_intent_alignment("informational", profile) == "core"
-    assert classify_intent_alignment("commercial", profile) == "core"
-    assert classify_intent_alignment("transactional", profile) == "core"
+    assert abs(sum(target.values()) - 1.0) < 0.0001
+    assert target["informational"] > 0.4
+    assert target["commercial"] < 0.35

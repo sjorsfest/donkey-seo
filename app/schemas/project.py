@@ -61,7 +61,6 @@ def _normalize_and_validate_domain(value: str) -> str:
 class ProjectGoals(BaseModel):
     """Business goals for the keyword research project."""
 
-    primary_objective: str = "traffic"
     secondary_goals: list[str] | None = None
     target_monthly_traffic: int | None = None
     target_conversion_rate: float | None = None
@@ -99,6 +98,7 @@ class ProjectCreate(BaseModel):
     primary_language: str = "en"
     primary_locale: str = "en-US"
     secondary_locales: list[str] | None = None
+    posts_per_week: int = Field(default=1, ge=1, le=7)
     goals: ProjectGoals | None = None
     constraints: ProjectConstraints | None = None
     settings: ProjectSettings | None = None
@@ -118,6 +118,7 @@ class ProjectUpdate(BaseModel):
     primary_language: str | None = None
     primary_locale: str | None = None
     secondary_locales: list[str] | None = None
+    posts_per_week: int | None = Field(default=None, ge=1, le=7)
     goals: ProjectGoals | None = None
     constraints: ProjectConstraints | None = None
     settings: ProjectSettings | None = None
@@ -133,8 +134,8 @@ class ProjectResponse(BaseModel):
     primary_language: str
     primary_locale: str
     secondary_locales: list[str] | None
+    posts_per_week: int
     site_maturity: str | None
-    primary_goal: str | None
     current_step: int
     status: str
     created_at: datetime
@@ -178,6 +179,7 @@ class ProjectOnboardingBootstrapRequest(BaseModel):
     primary_language: str = "en"
     primary_locale: str = "en-US"
     secondary_locales: list[str] | None = None
+    posts_per_week: int = Field(default=1, ge=1, le=7)
     goals: ProjectGoals | None = None
     constraints: ProjectConstraints | None = None
     settings: ProjectSettings | None = None

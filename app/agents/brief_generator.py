@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -90,6 +90,26 @@ class BriefGeneratorInput(BaseModel):
     serp_features: list[str] = Field(
         default_factory=list,
         description="SERP features present (PAA, featured snippet, etc.)",
+    )
+    top_ranking_pages: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Top ranking page snapshots with optional structure signals",
+    )
+    serp_best_practices: list[str] = Field(
+        default_factory=list,
+        description="SERP-derived practices that should influence the brief",
+    )
+    serp_recommended_sections: list[str] = Field(
+        default_factory=list,
+        description="Sections inferred from ranking-page structures",
+    )
+    serp_outperform_opportunities: list[str] = Field(
+        default_factory=list,
+        description="Ways to beat current ranking pages with better coverage/value",
+    )
+    serp_analysis_summary: str = Field(
+        default="",
+        description="Concise SERP strategy summary from competitive analysis",
     )
     money_pages: list[str] = Field(
         default_factory=list,
@@ -195,6 +215,13 @@ Recommend appropriate schema:
 - `tools`: comparisons, alternatives, software/tooling, pricing and evaluation content
 - `guides`: how-to content, implementation walkthroughs, tactical playbooks
 
+### 8. Competitive SERP Coverage (Required)
+- Treat `SERP Best Practices` and `SERP Recommended Sections` as high-priority guidance.
+- If competitors are mostly blog/editorial pages, mirror their winning structural patterns and improve depth/clarity.
+- If `SERP Outperform Opportunities` are provided, incorporate those in outline, examples, and must-include sections.
+- Add at least one meaningful differentiator when competitors miss depth, recency, or practical examples.
+- Ignore non-content shell cues (author/byline, metadata/schema, URL or layout advice) and stay focused on article-body content.
+
 Be specific and actionable. The writer should know exactly what to create."""
 
     @property
@@ -221,6 +248,45 @@ Be specific and actionable. The writer should know exactly what to create."""
 
         # Format competitor content types
         comp_types = ", ".join(input_data.competitors_content_types) if input_data.competitors_content_types else "Not analyzed"
+
+        ranking_page_lines: list[str] = []
+        for page in input_data.top_ranking_pages[:6]:
+            if not isinstance(page, dict):
+                continue
+            position = page.get("position")
+            title = str(page.get("title") or "Untitled result")
+            url = str(page.get("url") or "")
+            content_type = str(page.get("content_type_hint") or "unknown")
+            headings = page.get("headings")
+            heading_list = (
+                [str(item).strip() for item in headings if str(item).strip()]
+                if isinstance(headings, list)
+                else []
+            )
+            heading_text = "; ".join(heading_list[:6]) if heading_list else "No heading data"
+            ranking_page_lines.append(
+                f"  - #{position if position is not None else '?'} [{content_type}] {title}\n"
+                f"    URL: {url}\n"
+                f"    Headings: {heading_text}"
+            )
+
+        top_ranking_pages = (
+            "\n".join(ranking_page_lines)
+            if ranking_page_lines else "  No detailed ranking-page snapshots"
+        )
+        serp_best_practices = (
+            "\n".join(f"  - {item}" for item in input_data.serp_best_practices[:10])
+            if input_data.serp_best_practices else "  None provided"
+        )
+        serp_recommended_sections = (
+            "\n".join(f"  - {item}" for item in input_data.serp_recommended_sections[:10])
+            if input_data.serp_recommended_sections else "  None provided"
+        )
+        serp_outperform_opportunities = (
+            "\n".join(f"  - {item}" for item in input_data.serp_outperform_opportunities[:8])
+            if input_data.serp_outperform_opportunities else "  None provided"
+        )
+        serp_analysis_summary = input_data.serp_analysis_summary or "No summary provided"
 
         # Format money pages
         money_pages = "\n".join(f"  - {mp}" for mp in input_data.money_pages[:5]) if input_data.money_pages else "  None specified"
@@ -251,6 +317,19 @@ Be specific and actionable. The writer should know exactly what to create."""
 ## SERP Analysis
 - **SERP Features**: {serp_features}
 - **Competitor Content Types**: {comp_types}
+- **SERP Summary**: {serp_analysis_summary}
+
+### Top Ranking Pages (Snapshot)
+{top_ranking_pages}
+
+### SERP Best Practices
+{serp_best_practices}
+
+### SERP Recommended Sections
+{serp_recommended_sections}
+
+### SERP Opportunities To Outperform
+{serp_outperform_opportunities}
 
 ## Brand Context
 {input_data.brand_context if input_data.brand_context else "No brand context provided"}
@@ -276,4 +355,5 @@ Create a detailed brief with:
 6. Appropriate word count range
 7. Recommended schema type
 8. Proposed publication date (YYYY-MM-DD, near future)
-9. Primary pillar slug (`blog`, `tools`, or `guides`)"""
+9. Primary pillar slug (`blog`, `tools`, or `guides`)
+10. Include SERP best practices and recommended sections when they improve completeness"""
