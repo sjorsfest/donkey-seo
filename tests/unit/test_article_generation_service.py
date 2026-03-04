@@ -450,7 +450,7 @@ def test_apply_brief_internal_link_plan_injects_batch_brief_link() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_with_repair_revises_once_and_returns_draft(
+async def test_generate_with_repair_audits_once_and_returns_draft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeWriterAgent.instances = []
@@ -543,8 +543,8 @@ async def test_generate_with_repair_revises_once_and_returns_draft(
     assert artifact.qa_report["seo_audit"]["overall_score"] >= 0
     assert artifact.qa_report["seo_audit"]["content_type_module"] == "A"
     writer_instance = _FakeWriterAgent.instances[0]
-    assert len(writer_instance.calls) == 2
-    assert writer_instance.calls[1].existing_document is not None
+    assert len(writer_instance.calls) == 1
+    assert writer_instance.calls[0].existing_document is None
 
 
 @pytest.mark.asyncio
@@ -608,7 +608,7 @@ async def test_generate_with_repair_soft_warnings_still_draft(
 
 
 @pytest.mark.asyncio
-async def test_generate_with_repair_persistent_hard_failures_need_review(
+async def test_generate_with_repair_persistent_hard_failures_still_return_draft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeWriterAgent.instances = []
@@ -662,7 +662,7 @@ async def test_generate_with_repair_persistent_hard_failures_need_review(
         conversion_intents=[],
     )
 
-    assert artifact.status == "needs_review"
+    assert artifact.status == "draft"
     assert artifact.qa_report["seo_audit"]["hard_failures"]
     writer_instance = _FakeWriterAgent.instances[0]
-    assert len(writer_instance.calls) == 2
+    assert len(writer_instance.calls) == 1

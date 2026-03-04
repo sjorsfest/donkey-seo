@@ -11,6 +11,7 @@ import pytest
 from app.core.exceptions import PipelineAlreadyRunningError, PipelineDelayedResumeRequested
 from app.services.pipeline_task_manager import PipelineTaskJob, PipelineTaskWorker
 from app.workers.pipeline_worker import (
+    _recover_stale_pipeline_runs_on_startup,
     _run_discovery_auto_halt_reconciliation_loop,
     resolve_modules,
 )
@@ -57,6 +58,22 @@ class _FlakyDequeueManager(_FakeManager):
             self._raised = True
             raise RuntimeError("temporary dequeue failure")
         return await super().pop_next(timeout_seconds=timeout_seconds)
+
+
+class _RowsResult:
+    def __init__(self, rows: list[tuple[object, ...]]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[tuple[object, ...]]:
+        return self._rows
+
+
+class _RowsSession:
+    def __init__(self, rows: list[tuple[object, ...]]) -> None:
+        self._rows = rows
+
+    async def execute(self, _query: object) -> _RowsResult:
+        return _RowsResult(self._rows)
 
 
 @pytest.mark.asyncio
@@ -293,3 +310,98 @@ async def test_discovery_auto_halt_reconciliation_loop_runs_sweep_once(
     await _run_discovery_auto_halt_reconciliation_loop(stop_event)
     assert calls["count"] == 1
     metrics_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_runs_enqueues_missing_pending_and_running_jobs(
+    monkeypatch: Any,
+) -> None:
+    rows = [
+        ("run-pending", "project-1", "content", "pending", None, None),
+        ("run-running", "project-1", "content", "running", 5, "topic-1"),
+    ]
+    session = _RowsSession(rows)
+
+    async def _fake_lrange(_self: object, _key: str, _start: int, _end: int) -> list[str]:
+        return []
+
+    class _FakeRedis:
+        lrange = _fake_lrange
+
+    queue = type(
+        "_Queue",
+        (),
+        {
+            "enqueue_start": AsyncMock(),
+            "enqueue_resume": AsyncMock(),
+        },
+    )()
+    task_manager = type("_TaskManager", (), {"set_task_state": AsyncMock()})()
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_session_context(*, commit_on_exit: bool = True):
+        _ = commit_on_exit
+        yield session
+
+    monkeypatch.setattr("app.workers.pipeline_worker.get_session_context", _fake_session_context)
+    monkeypatch.setattr("app.workers.pipeline_worker.get_redis_client", lambda: _FakeRedis())
+    monkeypatch.setattr("app.workers.pipeline_worker.get_pipeline_task_manager", lambda _module: queue)
+    monkeypatch.setattr("app.workers.pipeline_worker.TaskManager", lambda: task_manager)
+
+    recovered = await _recover_stale_pipeline_runs_on_startup(modules=["content"])
+
+    assert recovered == 2
+    queue.enqueue_start.assert_awaited_once_with(
+        project_id="project-1",
+        run_id="run-pending",
+    )
+    queue.enqueue_resume.assert_awaited_once_with(
+        project_id="project-1",
+        run_id="run-running",
+    )
+    assert task_manager.set_task_state.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_runs_skips_runs_already_present_in_queue(
+    monkeypatch: Any,
+) -> None:
+    rows = [("run-queued", "project-1", "content", "pending", None, None)]
+    session = _RowsSession(rows)
+
+    async def _fake_lrange(_self: object, _key: str, _start: int, _end: int) -> list[str]:
+        return ['{"kind":"start","project_id":"project-1","run_id":"run-queued"}']
+
+    class _FakeRedis:
+        lrange = _fake_lrange
+
+    queue = type(
+        "_Queue",
+        (),
+        {
+            "enqueue_start": AsyncMock(),
+            "enqueue_resume": AsyncMock(),
+        },
+    )()
+    task_manager = type("_TaskManager", (), {"set_task_state": AsyncMock()})()
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_session_context(*, commit_on_exit: bool = True):
+        _ = commit_on_exit
+        yield session
+
+    monkeypatch.setattr("app.workers.pipeline_worker.get_session_context", _fake_session_context)
+    monkeypatch.setattr("app.workers.pipeline_worker.get_redis_client", lambda: _FakeRedis())
+    monkeypatch.setattr("app.workers.pipeline_worker.get_pipeline_task_manager", lambda _module: queue)
+    monkeypatch.setattr("app.workers.pipeline_worker.TaskManager", lambda: task_manager)
+
+    recovered = await _recover_stale_pipeline_runs_on_startup(modules=["content"])
+
+    assert recovered == 0
+    queue.enqueue_start.assert_not_awaited()
+    queue.enqueue_resume.assert_not_awaited()
+    task_manager.set_task_state.assert_not_awaited()

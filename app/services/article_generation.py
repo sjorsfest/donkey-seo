@@ -89,7 +89,7 @@ class GeneratedArticleArtifact:
 
 
 class ArticleGenerationService:
-    """Generate article blocks, render HTML, run QA, and apply one SEO revision."""
+    """Generate article blocks, render HTML, and run a single SEO audit pass."""
 
     def __init__(self, target_domain: str) -> None:
         self.target_domain = target_domain
@@ -103,19 +103,12 @@ class ArticleGenerationService:
         brand_context: str,
         conversion_intents: list[str],
     ) -> GeneratedArticleArtifact:
-        """Generate article and run hybrid QA/revision workflow."""
-        qa_feedback: list[str] = []
-        previous_document: dict[str, Any] | None = None
+        """Generate article and run one hybrid QA audit pass."""
         writer_agent = ArticleWriterAgent()
         seo_auditor = ArticleSEOAuditorAgent()
 
         pass_fail_thresholds = _as_dict(writer_instructions.get("pass_fail_thresholds"))
         seo_score_target = self._int_threshold(pass_fail_thresholds, "seo_score_target", default=75)
-        max_auto_revisions = self._int_threshold(
-            pass_fail_thresholds,
-            "max_auto_revisions",
-            default=1,
-        )
         density_soft_min = self._float_threshold(
             pass_fail_thresholds,
             "keyword_density_soft_min",
@@ -126,7 +119,6 @@ class ArticleGenerationService:
             "keyword_density_soft_max",
             default=2.5,
         )
-        total_attempts = max(1, max_auto_revisions + 1)
 
         required_sections = self._required_sections(brief, brief_delta)
         forbidden_claims = writer_instructions.get("forbidden_claims") or []
@@ -140,123 +132,108 @@ class ArticleGenerationService:
             timeout=_LINK_VALIDATION_TIMEOUT_SECONDS,
             follow_redirects=True,
         ) as link_client:
-            for attempt in range(total_attempts):
-                output = await writer_agent.run(
-                    input_data=ArticleWriterInput(
-                        brief=brief,
-                        writer_instructions=writer_instructions,
-                        brief_delta=brief_delta,
-                        brand_context=brand_context,
-                        conversion_intents=conversion_intents,
-                        target_domain=self.target_domain,
-                        qa_feedback=qa_feedback,
-                        existing_document=previous_document,
-                    )
-                )
-                document = self._normalize_document(
-                    output.document.model_dump(),
-                    brief,
-                    writer_instructions,
-                    conversion_intents,
-                )
-                document = self._apply_brief_internal_link_plan(document=document, brief=brief)
-                document = await self._filter_invalid_document_links(
-                    document=document,
-                    link_cache=link_validation_cache,
-                    client=link_client,
-                )
-                rendered_html = render_modular_document(document)
-                base_qa_report = evaluate_article_quality(
-                    document,
-                    rendered_html,
-                    required_sections=required_sections,
-                    forbidden_claims=forbidden_claims,
-                    target_word_count_min=brief.get("target_word_count_min"),
-                    target_word_count_max=brief.get("target_word_count_max"),
-                    min_internal_links=min_internal_links,
-                    min_external_links=min_external_links,
-                    require_cta=require_cta,
-                    first_party_domain=first_party_domain,
-                )
-                deterministic_report = run_deterministic_checklist(
-                    document,
-                    rendered_html,
-                    primary_keyword=str(brief.get("primary_keyword") or ""),
-                    topic_anchor=self._topic_anchor(brief=brief, document=document),
-                    page_type=brief.get("page_type"),
-                    search_intent=brief.get("search_intent"),
-                    required_sections=required_sections,
-                    forbidden_claims=forbidden_claims,
-                    target_word_count_min=brief.get("target_word_count_min"),
-                    target_word_count_max=brief.get("target_word_count_max"),
-                    min_internal_links=min_internal_links,
-                    min_external_links=min_external_links,
-                    require_cta=require_cta,
-                    first_party_domain=first_party_domain,
-                    compliance_notes=writer_instructions.get("compliance_notes") or [],
-                    brief_text_fields=[
-                        str(brief.get("primary_keyword") or ""),
-                        str(brief.get("search_intent") or ""),
-                        str(brief.get("page_type") or ""),
-                        str(brief.get("target_audience") or ""),
-                        str(brief.get("reader_job_to_be_done") or ""),
-                        str(brand_context or ""),
-                        str(_as_dict(document.get("seo_meta")).get("h1") or ""),
-                    ],
-                    keyword_density_soft_min=density_soft_min,
-                    keyword_density_soft_max=density_soft_max,
-                )
-                llm_audit = await self._run_llm_seo_audit(
-                    auditor=seo_auditor,
+            output = await writer_agent.run(
+                input_data=ArticleWriterInput(
                     brief=brief,
                     writer_instructions=writer_instructions,
-                    document=document,
-                    deterministic_report=deterministic_report,
+                    brief_delta=brief_delta,
+                    brand_context=brand_context,
+                    conversion_intents=conversion_intents,
+                    target_domain=self.target_domain,
+                    qa_feedback=[],
+                    existing_document=None,
                 )
-                qa_report = self._merge_qa_reports(
-                    base_qa_report=base_qa_report,
-                    deterministic_report=deterministic_report,
-                    llm_audit=llm_audit,
-                    seo_score_target=seo_score_target,
-                )
-                revision_feedback = self._build_revision_feedback(qa_report, brief)
-                seo_audit = _as_dict(qa_report.get("seo_audit"))
-                seo_audit["revision_feedback"] = revision_feedback
-                qa_report["seo_audit"] = seo_audit
+            )
+            document = self._normalize_document(
+                output.document.model_dump(),
+                brief,
+                writer_instructions,
+                conversion_intents,
+            )
+            document = self._apply_brief_internal_link_plan(document=document, brief=brief)
+            document = await self._filter_invalid_document_links(
+                document=document,
+                link_cache=link_validation_cache,
+                client=link_client,
+            )
+            rendered_html = render_modular_document(document)
+            base_qa_report = evaluate_article_quality(
+                document,
+                rendered_html,
+                required_sections=required_sections,
+                forbidden_claims=forbidden_claims,
+                target_word_count_min=brief.get("target_word_count_min"),
+                target_word_count_max=brief.get("target_word_count_max"),
+                min_internal_links=min_internal_links,
+                min_external_links=min_external_links,
+                require_cta=require_cta,
+                first_party_domain=first_party_domain,
+            )
+            deterministic_report = run_deterministic_checklist(
+                document,
+                rendered_html,
+                primary_keyword=str(brief.get("primary_keyword") or ""),
+                topic_anchor=self._topic_anchor(brief=brief, document=document),
+                page_type=brief.get("page_type"),
+                search_intent=brief.get("search_intent"),
+                required_sections=required_sections,
+                forbidden_claims=forbidden_claims,
+                target_word_count_min=brief.get("target_word_count_min"),
+                target_word_count_max=brief.get("target_word_count_max"),
+                min_internal_links=min_internal_links,
+                min_external_links=min_external_links,
+                require_cta=require_cta,
+                first_party_domain=first_party_domain,
+                compliance_notes=writer_instructions.get("compliance_notes") or [],
+                brief_text_fields=[
+                    str(brief.get("primary_keyword") or ""),
+                    str(brief.get("search_intent") or ""),
+                    str(brief.get("page_type") or ""),
+                    str(brief.get("target_audience") or ""),
+                    str(brief.get("reader_job_to_be_done") or ""),
+                    str(brand_context or ""),
+                    str(_as_dict(document.get("seo_meta")).get("h1") or ""),
+                ],
+                keyword_density_soft_min=density_soft_min,
+                keyword_density_soft_max=density_soft_max,
+            )
+            llm_audit = await self._run_llm_seo_audit(
+                auditor=seo_auditor,
+                brief=brief,
+                writer_instructions=writer_instructions,
+                document=document,
+                deterministic_report=deterministic_report,
+            )
+            qa_report = self._merge_qa_reports(
+                base_qa_report=base_qa_report,
+                deterministic_report=deterministic_report,
+                llm_audit=llm_audit,
+                seo_score_target=seo_score_target,
+            )
+            revision_feedback = self._build_revision_feedback(qa_report, brief)
+            seo_audit = _as_dict(qa_report.get("seo_audit"))
+            seo_audit["revision_feedback"] = revision_feedback
+            qa_report["seo_audit"] = seo_audit
 
-                hard_failures = _as_list(seo_audit.get("hard_failures"))
-                overall_score = int(seo_audit.get("overall_score") or 0)
-                should_retry = (
-                    attempt < total_attempts - 1
-                    and (len(hard_failures) > 0 or overall_score < seo_score_target)
-                )
-
-                if not should_retry:
-                    status = "needs_review" if hard_failures else "draft"
-                    seo_meta = _as_dict(document.get("seo_meta"))
-                    return GeneratedArticleArtifact(
-                        title=str(seo_meta.get("h1") or brief.get("primary_keyword") or "Untitled"),
-                        slug=str(
-                            seo_meta.get("slug")
-                            or self._slugify(str(brief.get("primary_keyword") or "article"))
-                        ),
-                        primary_keyword=str(
-                            seo_meta.get("primary_keyword")
-                            or brief.get("primary_keyword")
-                            or ""
-                        ),
-                        modular_document=document,
-                        rendered_html=rendered_html,
-                        qa_report=qa_report,
-                        status=status,
-                        generation_model=getattr(writer_agent, "_model", None),
-                        generation_temperature=writer_agent.temperature,
-                    )
-
-                qa_feedback = revision_feedback
-                previous_document = document
-
-        raise RuntimeError("Unreachable article generation state")
+            seo_meta = _as_dict(document.get("seo_meta"))
+            return GeneratedArticleArtifact(
+                title=str(seo_meta.get("h1") or brief.get("primary_keyword") or "Untitled"),
+                slug=str(
+                    seo_meta.get("slug")
+                    or self._slugify(str(brief.get("primary_keyword") or "article"))
+                ),
+                primary_keyword=str(
+                    seo_meta.get("primary_keyword")
+                    or brief.get("primary_keyword")
+                    or ""
+                ),
+                modular_document=document,
+                rendered_html=rendered_html,
+                qa_report=qa_report,
+                status="draft",
+                generation_model=getattr(writer_agent, "_model", None),
+                generation_temperature=writer_agent.temperature,
+            )
 
     async def _run_llm_seo_audit(
         self,
