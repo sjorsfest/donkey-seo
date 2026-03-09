@@ -114,23 +114,23 @@ async def should_run_missed_reconciliation(*, run_hour_utc: int) -> bool:
 
 
 async def run_reconciliation_sweep(*, max_projects: int) -> int:
-    """Execute one reconciliation sweep and return count of resumed runs."""
+    """Execute one reconciliation sweep and return count of started/resumed runs."""
     sweep_started_at = _utc_now()
     try:
-        resumed = await reconcile_discovery_auto_halted_runs(max_projects=max_projects)
+        started_or_resumed = await reconcile_discovery_auto_halted_runs(max_projects=max_projects)
         logger.info(
             "Discovery reconciliation sweep completed",
-            extra={"resumed_runs": resumed, "max_projects": max_projects},
+            extra={"started_or_resumed_runs": started_or_resumed, "max_projects": max_projects},
         )
         await write_discovery_reconciliation_metrics(
             started_at=sweep_started_at,
             finished_at=_utc_now(),
             status="ok",
-            resumed_runs=resumed,
+            resumed_runs=started_or_resumed,
             error_message=None,
         )
         await set_last_run_timestamp(sweep_started_at)
-        return resumed
+        return started_or_resumed
     except Exception as exc:
         logger.exception("Discovery reconciliation sweep failed")
         await write_discovery_reconciliation_metrics(

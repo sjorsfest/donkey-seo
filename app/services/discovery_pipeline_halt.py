@@ -133,40 +133,45 @@ async def reconcile_discovery_auto_halted_runs(
     *,
     max_projects: int = DISCOVERY_AUTO_HALT_MAX_PROJECTS_PER_SWEEP,
 ) -> int:
-    """Daily reconciliation: resume paused discovery runs once backlog is below threshold."""
+    """Daily reconciliation: start/resume discovery when future scheduled articles are low.
+
+    Checks all paid projects for low scheduled article counts. For projects needing discovery:
+    - If a paused auto-halted run exists, resume it
+    - Otherwise, start a NEW discovery run
+    - Skip projects with already-running discovery
+
+    The content pipeline has built-in deduplication, so restarting discovery runs is safe.
+    """
+    from app.models.generated_dtos import PipelineRunCreateDTO
+    from app.services.task_manager import TaskManager
+
     project_limit = max(1, int(max_projects))
-    resumed_count = 0
+    started_or_resumed_count = 0
     queue = get_discovery_pipeline_task_manager()
 
     async with get_session_context() as session:
-        paused_result = await session.execute(
-            select(PipelineRun.id, PipelineRun.project_id)
-            .where(
-                PipelineRun.pipeline_module == "discovery",
-                PipelineRun.status == "paused",
-                PipelineRun.error_message.like(f"{DISCOVERY_AUTO_HALT_REASON_CODE}:%"),
-            )
-            .order_by(PipelineRun.project_id.asc(), PipelineRun.created_at.desc())
+        # Find all paid user projects (up to limit)
+        projects_result = await session.execute(
+            select(Project.id)
+            .select_from(Project)
+            .join(User, Project.user_id == User.id)
+            .where(User.subscription_plan.is_not(None))
+            .order_by(Project.id.asc())
+            .limit(project_limit)
         )
-        paused_rows = list(paused_result.all())
+        project_ids = [str(project_id) for project_id in projects_result.scalars().all()]
 
-        latest_by_project: dict[str, str] = {}
-        for run_id, project_id in paused_rows:
-            project_id_str = str(project_id)
-            if project_id_str in latest_by_project:
-                continue
-            latest_by_project[project_id_str] = str(run_id)
-            if len(latest_by_project) >= project_limit:
-                break
-
-        for project_id, run_id in latest_by_project.items():
+        for project_id in project_ids:
+            # Check if this project needs more scheduled articles
             halt_state = await resolve_discovery_pipeline_halt_state(
                 session=session,
                 project_id=project_id,
             )
             if not halt_state.should_resume:
+                # Has enough scheduled articles, skip
                 continue
 
+            # Skip if there's already a running discovery pipeline
             running_result = await session.execute(
                 select(PipelineRun.id)
                 .where(
@@ -177,24 +182,110 @@ async def reconcile_discovery_auto_halted_runs(
                 .limit(1)
             )
             if running_result.scalar_one_or_none() is not None:
+                logger.info(
+                    "Skipping discovery reconciliation: already running",
+                    extra={"project_id": project_id},
+                )
                 continue
 
-            try:
-                await queue.enqueue_resume(
-                    project_id=project_id,
-                    run_id=run_id,
+            # Check if there's a paused auto-halted run we can resume
+            paused_result = await session.execute(
+                select(PipelineRun.id)
+                .where(
+                    PipelineRun.project_id == project_id,
+                    PipelineRun.pipeline_module == "discovery",
+                    PipelineRun.status == "paused",
+                    PipelineRun.error_message.like(f"{DISCOVERY_AUTO_HALT_REASON_CODE}:%"),
                 )
-                resumed_count += 1
+                .order_by(PipelineRun.created_at.desc())
+                .limit(1)
+            )
+            paused_run_id = paused_result.scalar_one_or_none()
+
+            try:
+                if paused_run_id is not None:
+                    # Resume the paused run
+                    await queue.enqueue_resume(
+                        project_id=project_id,
+                        run_id=str(paused_run_id),
+                    )
+                    logger.info(
+                        "Discovery reconciliation: resumed paused run",
+                        extra={
+                            "project_id": project_id,
+                            "run_id": str(paused_run_id),
+                            "scheduled_items": halt_state.upcoming_scheduled_items,
+                            "threshold": halt_state.halt_threshold,
+                        },
+                    )
+                else:
+                    # No paused run, start a NEW discovery run
+                    pipeline_run = PipelineRun.create(
+                        session,
+                        PipelineRunCreateDTO(
+                            project_id=project_id,
+                            pipeline_module="discovery",
+                            status="pending",
+                            start_step=1,
+                            end_step=7,
+                            skip_steps=[],
+                            steps_config={
+                                "pipeline_module": "discovery",
+                                "start": 1,
+                                "end": 7,
+                                "skip": [],
+                                "strategy": None,
+                                "discovery": None,
+                                "content": None,
+                                "iteration_index": 0,
+                                "selected_topic_ids": [],
+                                "step_inputs": {},
+                            },
+                        ),
+                    )
+                    await session.flush()
+                    await session.refresh(pipeline_run, ["step_executions"])
+                    await session.commit()
+
+                    task_id = str(pipeline_run.id)
+                    task_manager = TaskManager()
+                    await task_manager.set_task_state(
+                        task_id=task_id,
+                        status="queued",
+                        stage="Queued pipeline execution",
+                        project_id=project_id,
+                        pipeline_module="discovery",
+                        source_topic_id=None,
+                        current_step=1,
+                        current_step_name=None,
+                        completed_steps=0,
+                        total_steps=7,
+                        progress_percent=0.0,
+                        error_message=None,
+                    )
+
+                    await queue.enqueue_start(
+                        project_id=project_id,
+                        run_id=task_id,
+                    )
+                    logger.info(
+                        "Discovery reconciliation: started new run",
+                        extra={
+                            "project_id": project_id,
+                            "run_id": task_id,
+                            "scheduled_items": halt_state.upcoming_scheduled_items,
+                            "threshold": halt_state.halt_threshold,
+                        },
+                    )
+
+                started_or_resumed_count += 1
             except PipelineQueueFullError:
                 logger.warning(
-                    "Skipping discovery auto-resume sweep enqueue because queue is full",
-                    extra={
-                        "project_id": project_id,
-                        "run_id": run_id,
-                    },
+                    "Skipping discovery reconciliation enqueue: queue is full",
+                    extra={"project_id": project_id},
                 )
 
-    return resumed_count
+    return started_or_resumed_count
 
 
 async def write_discovery_reconciliation_metrics(
@@ -210,7 +301,7 @@ async def write_discovery_reconciliation_metrics(
         "started_at": started_at.astimezone(timezone.utc).isoformat(),
         "finished_at": finished_at.astimezone(timezone.utc).isoformat(),
         "status": status,
-        "resumed_runs": max(0, int(resumed_runs)),
+        "started_or_resumed_runs": max(0, int(resumed_runs)),  # Count includes both started and resumed
         "error_message": error_message,
     }
     ttl_seconds = max(300, int(settings.discovery_pipeline_halt_reconcile_interval_seconds) * 7)

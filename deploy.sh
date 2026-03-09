@@ -17,9 +17,9 @@ unit_exists() {
   unit_type="$2"
   # Check if the unit file exists (add .service if not present)
   if [ "$unit_type" = "service" ]; then
-    systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "${unit}.service"
+    sudo systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "${unit}.service"
   else
-    systemctl list-unit-files --type="$unit_type" --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"
+    sudo systemctl list-unit-files --type="$unit_type" --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"
   fi
 }
 
