@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.agents.base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
+
+_SOURCE_REQUIRED_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"[$€£]\s?\d", re.IGNORECASE),
+    re.compile(r"\b(?:usd|eur|gbp)\s?\d", re.IGNORECASE),
+    re.compile(r"\b\d+(?:\.\d+)?\s?%", re.IGNORECASE),
+    re.compile(r"\b(?:according to|study|research|survey|report|benchmark|dataset|data)\b", re.IGNORECASE),
+)
 
 BlockType = Literal[
     "hero",
@@ -64,6 +72,16 @@ class ArticleBlockResult(BaseModel):
     cta: CTAData | None = None
     links: list[BlockLink] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _require_summary_body(self) -> "ArticleBlockResult":
+        if self.block_type != "summary":
+            return self
+        if not (self.body or "").strip():
+            raise ValueError(
+                "summary blocks must include a short non-empty body so it can be reused as an excerpt"
+            )
+        return self
+
 
 class ArticleSEOMeta(BaseModel):
     """Top-level SEO metadata for the generated article."""
@@ -89,6 +107,55 @@ class ArticleDocumentResult(BaseModel):
     seo_meta: ArticleSEOMeta
     conversion_plan: ConversionPlan
     blocks: list[ArticleBlockResult] = Field(default_factory=list)
+
+    @staticmethod
+    def _block_text(block: ArticleBlockResult) -> str:
+        values: list[str] = []
+        if block.heading:
+            values.append(block.heading)
+        if block.body:
+            values.append(block.body)
+        values.extend(str(item) for item in block.items)
+        values.extend(str(item) for item in block.table_columns)
+        for row in block.table_rows:
+            values.extend(str(cell) for cell in row)
+        for item in block.faq_items:
+            values.append(item.question)
+            values.append(item.answer)
+        return "\n".join(values)
+
+    @staticmethod
+    def _needs_sources(text: str) -> bool:
+        return any(pattern.search(text) for pattern in _SOURCE_REQUIRED_PATTERNS)
+
+    @staticmethod
+    def _has_source_entries(block: ArticleBlockResult) -> bool:
+        if (block.body or "").strip():
+            return True
+        if any(str(item).strip() for item in block.items):
+            return True
+        if any((link.href or "").strip() for link in block.links):
+            return True
+        return False
+
+    @model_validator(mode="after")
+    def _require_sources_for_data_claims(self) -> "ArticleDocumentResult":
+        sources_blocks = [block for block in self.blocks if block.block_type == "sources"]
+        needs_sources = any(
+            self._needs_sources(self._block_text(block))
+            for block in self.blocks
+            if block.block_type != "sources"
+        )
+
+        if needs_sources and not sources_blocks:
+            raise ValueError(
+                "include a sources block when using source-dependent claims (for example prices, percentages, or attributed data claims)"
+            )
+        if needs_sources and not any(self._has_source_entries(block) for block in sources_blocks):
+            raise ValueError(
+                "sources block cannot be empty when source-dependent claims are present"
+            )
+        return self
 
 
 class ArticleWriterInput(BaseModel):
@@ -127,17 +194,19 @@ Hard requirements:
 1. Use block types from the allowed enum only.
 2. Use semantic_tag values that match the block intent.
 3. Include exactly one hero block and one H1.
-4. Respect forbidden claims and compliance notes.
-5. Follow must-include sections from brief and delta, and cover the outline headings with substantive content.
-6. Keep the output conversion-oriented for funnel stage and conversion intents.
-7. Add meaningful internal/external links inside block.links where appropriate.
-8. Never output raw HTML in body text.
-9. If QA feedback is provided, revise the draft to specifically fix those failures.
-10. If an existing document is provided, apply minimal targeted edits
+4. Include exactly one summary block with a short, non-empty body (1-2 sentences) that can be reused as an excerpt.
+5. Respect forbidden claims and compliance notes.
+6. Follow must-include sections from brief and delta, and cover the outline headings with substantive content.
+7. Keep the output conversion-oriented for funnel stage and conversion intents.
+8. Add meaningful internal/external links inside block.links where appropriate.
+9. Never output raw HTML in body text.
+10. If QA feedback is provided, revise the draft to specifically fix those failures.
+11. If an existing document is provided, apply minimal targeted edits
     instead of rewriting from scratch.
-11. Preserve topic, search intent, primary keyword strategy, and ICP hook.
-12. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
-13. Never use em dashes (—); use commas, periods, or parentheses instead.
+12. Preserve topic, search intent, primary keyword strategy, and ICP hook.
+13. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
+14. Never use em dashes (—); use commas, periods, or parentheses instead.
+15. If you include source-dependent claims (for example prices, percentages, statistics, or "according to" statements), add a non-empty sources block that lists the supporting sources.
 
 Writing quality:
 - Clear, practical, and audience-aligned.

@@ -91,7 +91,15 @@ python -m app.workers.pipeline_worker
 The API process only enqueues jobs; this worker process executes setup/discovery/content pipeline runs.
 Each worker pop executes one pipeline step slice, then requeues unfinished runs for fair sharing.
 
-### 7. Tune Worker Parallelism
+### 7. Start the Discovery Reconciliation Worker (Optional)
+
+```bash
+python -m app.workers.discovery_reconciliation_worker
+```
+
+This dedicated worker runs daily (at 00:00 UTC by default) to automatically resume paused discovery pipelines when projects fall below their article threshold. See [docs/DISCOVERY_RECONCILIATION_WORKER.md](docs/DISCOVERY_RECONCILIATION_WORKER.md) for details.
+
+### 8. Tune Worker Parallelism
 
 Default parallelism per worker process:
 - setup: `2`

@@ -4,6 +4,8 @@ set -eu
 BRANCH="${DEPLOY_BRANCH:-main}"
 API_SERVICE="${API_SERVICE:-donkeyseo-api}"
 WORKER_SERVICE="${WORKER_SERVICE:-donkeyseo-worker}"
+WEBHOOK_WORKER_SERVICE="${WEBHOOK_WORKER_SERVICE:-donkeyseo-webhook-worker}"
+RECONCILIATION_WORKER_SERVICE="${RECONCILIATION_WORKER_SERVICE:-donkeyseo-reconciliation-worker}"
 TUNNEL_SERVICE="${TUNNEL_SERVICE:-cloudflared-donkeyseo}"
 FOLLOW_LOGS="${FOLLOW_LOGS:-0}"
 
@@ -89,6 +91,20 @@ sudo systemctl daemon-reload
 echo "Restarting services..."
 sudo systemctl restart "${API_SERVICE}" "${WORKER_SERVICE}"
 
+if unit_exists "${WEBHOOK_WORKER_SERVICE}" service; then
+  sudo systemctl restart "${WEBHOOK_WORKER_SERVICE}"
+else
+  echo "Webhook worker service not found, skipping restart (${WEBHOOK_WORKER_SERVICE})"
+fi
+
+if unit_exists "${RECONCILIATION_WORKER_SERVICE}" service; then
+  sudo systemctl restart "${RECONCILIATION_WORKER_SERVICE}"
+  # Ensure it's enabled to start on boot
+  sudo systemctl is-enabled "${RECONCILIATION_WORKER_SERVICE}" >/dev/null 2>&1 || sudo systemctl enable "${RECONCILIATION_WORKER_SERVICE}"
+else
+  echo "Reconciliation worker service not found, skipping restart (${RECONCILIATION_WORKER_SERVICE})"
+fi
+
 if unit_exists "${TUNNEL_SERVICE}" service; then
   sudo systemctl restart "${TUNNEL_SERVICE}"
 else
@@ -98,6 +114,12 @@ fi
 echo "Service states:"
 sudo systemctl is-active "${API_SERVICE}"
 sudo systemctl is-active "${WORKER_SERVICE}"
+if unit_exists "${WEBHOOK_WORKER_SERVICE}" service; then
+  sudo systemctl is-active "${WEBHOOK_WORKER_SERVICE}"
+fi
+if unit_exists "${RECONCILIATION_WORKER_SERVICE}" service; then
+  sudo systemctl is-active "${RECONCILIATION_WORKER_SERVICE}"
+fi
 if unit_exists "${TUNNEL_SERVICE}" service; then
   sudo systemctl is-active "${TUNNEL_SERVICE}"
 fi
@@ -113,11 +135,17 @@ fi
 
 if [ "${FOLLOW_LOGS}" = "1" ]; then
   echo "Following logs (Ctrl+C to stop)..."
-  if unit_exists "${TUNNEL_SERVICE}" service; then
-    sudo journalctl -u "${API_SERVICE}" -u "${WORKER_SERVICE}" -u "${TUNNEL_SERVICE}" -f
-  else
-    sudo journalctl -u "${API_SERVICE}" -u "${WORKER_SERVICE}" -f
+  services_to_follow="${API_SERVICE} ${WORKER_SERVICE}"
+  if unit_exists "${WEBHOOK_WORKER_SERVICE}" service; then
+    services_to_follow="${services_to_follow} ${WEBHOOK_WORKER_SERVICE}"
   fi
+  if unit_exists "${RECONCILIATION_WORKER_SERVICE}" service; then
+    services_to_follow="${services_to_follow} ${RECONCILIATION_WORKER_SERVICE}"
+  fi
+  if unit_exists "${TUNNEL_SERVICE}" service; then
+    services_to_follow="${services_to_follow} ${TUNNEL_SERVICE}"
+  fi
+  sudo journalctl -u ${services_to_follow} -f
 fi
 
 echo "Deploy finished successfully."

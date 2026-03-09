@@ -194,7 +194,8 @@ class Settings(BaseSettings):
     publication_webhook_auto_start: bool = True
     discovery_pipeline_halt_threshold: int = 10
     discovery_pipeline_halt_window_days: int = 60
-    discovery_pipeline_halt_reconcile_interval_seconds: int = 86_400
+    discovery_pipeline_halt_reconcile_interval_seconds: int = 86_400  # Deprecated: use discovery_reconciliation_worker instead
+    discovery_reconciliation_run_hour_utc: int = 0  # Hour (0-23 UTC) to run daily reconciliation
 
     @property
     def stripe_enabled(self) -> bool:
