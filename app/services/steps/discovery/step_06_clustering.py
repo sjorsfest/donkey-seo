@@ -108,10 +108,11 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
 
         await self._update_progress(5, "Loading keywords with intent...")
 
-        # Load all active keywords with intent
+        # Load all active keywords from THIS RUN
         keywords_result = await self.session.execute(
             select(Keyword).where(
                 Keyword.project_id == input_data.project_id,
+                Keyword.pipeline_run_id == str(self.execution.pipeline_run_id),
                 Keyword.status == "active",
             )
         )
@@ -995,12 +996,8 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
 
     async def _persist_results(self, result: ClusteringOutput) -> None:
         """Save clusters to database as Topics."""
-        # Delete existing topics for this project
-        existing = await self.session.execute(
-            select(Topic).where(Topic.project_id == self.project_id)
-        )
-        for topic in existing.scalars():
-            await topic.delete(self.session)
+        # NOTE: We do NOT delete existing topics - preserve historical data
+        # Each discovery run creates new topics without removing old ones
 
         # Create new topics
         for cluster in result.clusters:
@@ -1018,6 +1015,7 @@ class Step06ClusteringService(BaseStepService[ClusteringInput, ClusteringOutput]
 
             topic_data = TopicCreateDTO(
                 project_id=self.project_id,
+                pipeline_run_id=str(self.execution.pipeline_run_id),
                 name=cluster["name"],
                 description=cluster.get("description"),
                 primary_keyword_id=primary_kw.id if primary_kw else None,

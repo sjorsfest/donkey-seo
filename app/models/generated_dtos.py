@@ -1538,6 +1538,7 @@ class KeywordRow:
     """Read DTO for `Keyword`."""
 
     project_id: str
+    pipeline_run_id: str | None
     seed_topic_id: str | None
     topic_id: str | None
     parent_keyword_id: str | None
@@ -1586,6 +1587,7 @@ class KeywordRow:
     def from_model(cls, model: Any) -> "KeywordRow":
         return cls(
             project_id=model.project_id,
+            pipeline_run_id=model.pipeline_run_id,
             seed_topic_id=model.seed_topic_id,
             topic_id=model.topic_id,
             parent_keyword_id=model.parent_keyword_id,
@@ -1638,6 +1640,7 @@ class KeywordCreateDTO:
     project_id: str
     keyword: str
     keyword_normalized: str
+    pipeline_run_id: str | None = None
     seed_topic_id: str | None = None
     topic_id: str | None = None
     parent_keyword_id: str | None = None
@@ -1696,6 +1699,7 @@ class KeywordPatchDTO:
     """Sparse patch DTO for `Keyword`."""
 
     project_id: str | None = None
+    pipeline_run_id: str | None = None
     seed_topic_id: str | None = None
     topic_id: str | None = None
     parent_keyword_id: str | None = None
@@ -2308,6 +2312,7 @@ class SeedTopicRow:
     """Read DTO for `SeedTopic`."""
 
     project_id: str
+    pipeline_run_id: str | None
     name: str
     description: str | None
     pillar_type: str
@@ -2324,6 +2329,7 @@ class SeedTopicRow:
     def from_model(cls, model: Any) -> "SeedTopicRow":
         return cls(
             project_id=model.project_id,
+            pipeline_run_id=model.pipeline_run_id,
             name=model.name,
             description=model.description,
             pillar_type=model.pillar_type,
@@ -2343,6 +2349,7 @@ class SeedTopicCreateDTO:
 
     project_id: str
     name: str
+    pipeline_run_id: str | None = None
     description: str | None = None
     pillar_type: str | None = None
     icp_relevance: str | None = None
@@ -2367,6 +2374,7 @@ class SeedTopicPatchDTO:
     """Sparse patch DTO for `SeedTopic`."""
 
     project_id: str | None = None
+    pipeline_run_id: str | None = None
     name: str | None = None
     description: str | None = None
     pillar_type: str | None = None
@@ -2516,6 +2524,7 @@ class TopicRow:
     """Read DTO for `Topic`."""
 
     project_id: str
+    pipeline_run_id: str | None
     parent_topic_id: str | None
     pillar_seed_topic_id: str | None
     name: str
@@ -2572,6 +2581,7 @@ class TopicRow:
     def from_model(cls, model: Any) -> "TopicRow":
         return cls(
             project_id=model.project_id,
+            pipeline_run_id=model.pipeline_run_id,
             parent_topic_id=model.parent_topic_id,
             pillar_seed_topic_id=model.pillar_seed_topic_id,
             name=model.name,
@@ -2631,6 +2641,7 @@ class TopicCreateDTO:
 
     project_id: str
     name: str
+    pipeline_run_id: str | None = None
     parent_topic_id: str | None = None
     pillar_seed_topic_id: str | None = None
     description: str | None = None
@@ -2695,6 +2706,7 @@ class TopicPatchDTO:
     """Sparse patch DTO for `Topic`."""
 
     project_id: str | None = None
+    pipeline_run_id: str | None = None
     parent_topic_id: str | None = None
     pillar_seed_topic_id: str | None = None
     name: str | None = None

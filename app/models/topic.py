@@ -28,6 +28,12 @@ class Topic(TypedModelMixin[TopicCreateDTO, TopicPatchDTO], Base, UUIDMixin, Tim
         nullable=False,
         index=True,
     )
+    pipeline_run_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     parent_topic_id: Mapped[str | None] = mapped_column(
         StringUUID(),
         ForeignKey("topics.id", ondelete="SET NULL"),
@@ -123,6 +129,7 @@ class Topic(TypedModelMixin[TopicCreateDTO, TopicPatchDTO], Base, UUIDMixin, Tim
     content_briefs: Mapped[list[ContentBrief]] = relationship(
         "ContentBrief",
         back_populates="topic",
+        passive_deletes=True,
     )
 
     def __repr__(self) -> str:

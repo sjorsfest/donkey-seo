@@ -121,9 +121,12 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
         if not project:
             raise ValueError(f"Project not found: {input_data.project_id}")
 
-        # Check seed topics exist
+        # Check seed topics exist (from current run)
         seeds_result = await self.session.execute(
-            select(SeedTopic).where(SeedTopic.project_id == input_data.project_id)
+            select(SeedTopic).where(
+                SeedTopic.project_id == input_data.project_id,
+                SeedTopic.pipeline_run_id == str(self.execution.pipeline_run_id),
+            )
         )
         if not seeds_result.scalars().first():
             raise ValueError("No seed topics found. Run Step 1 first.")
@@ -157,9 +160,12 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
 
         await self._update_progress(5, "Loading seed topics...")
 
-        # Load seed topics, grouped by pillar
+        # Load seed topics from THIS RUN, grouped by pillar
         seeds_result = await self.session.execute(
-            select(SeedTopic).where(SeedTopic.project_id == input_data.project_id)
+            select(SeedTopic).where(
+                SeedTopic.project_id == input_data.project_id,
+                SeedTopic.pipeline_run_id == str(self.execution.pipeline_run_id),
+            )
         )
         all_seeds = list(seeds_result.scalars())
 
@@ -672,24 +678,9 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
 
     async def _persist_results(self, result: ExpansionOutput) -> None:
         """Save expanded keywords to database."""
-        # Clear stale topics before rebuilding keyword universe. In looped discovery
-        # runs, old topics can otherwise point at deleted keyword IDs between
-        # iterations until Step 6 reclusters.
-        existing_topics = await self.session.execute(
-            select(Topic).where(Topic.project_id == self.project_id)
-        )
-        for topic in existing_topics.scalars():
-            await topic.delete(self.session)
-
-        # Delete existing expansion keywords for this project
-        existing = await self.session.execute(
-            select(Keyword).where(
-                Keyword.project_id == self.project_id,
-                Keyword.source == "expansion",
-            )
-        )
-        for keyword in existing.scalars():
-            await keyword.delete(self.session)
+        # NOTE: We do NOT delete existing Topics or Keywords - preserve historical data
+        # Each discovery run creates new data without removing old data from previous runs
+        # This preserves production data across multiple discovery runs
 
         # Create new keywords
         for kw_data in result.keywords:
@@ -697,6 +688,7 @@ class Step03ExpansionService(BaseStepService[ExpansionInput, ExpansionOutput]):
                 self.session,
                 KeywordCreateDTO(
                     project_id=self.project_id,
+                    pipeline_run_id=str(self.execution.pipeline_run_id),
                     keyword=kw_data["keyword_text"],
                     keyword_normalized=kw_data["keyword_normalized"],
                     source="expansion",

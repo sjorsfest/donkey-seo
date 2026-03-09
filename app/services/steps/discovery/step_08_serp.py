@@ -116,6 +116,7 @@ class Step08SerpValidationService(
         topics_result = await self.session.execute(
             select(Topic).where(
                 Topic.project_id == input_data.project_id,
+                Topic.pipeline_run_id == str(self.execution.pipeline_run_id),
                 Topic.priority_rank.isnot(None),
             )
         )

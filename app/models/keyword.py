@@ -46,6 +46,12 @@ class SeedTopic(
         nullable=False,
         index=True,
     )
+    pipeline_run_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
 
     # Basic info
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -84,6 +90,12 @@ class Keyword(TypedModelMixin[KeywordCreateDTO, KeywordPatchDTO], Base, UUIDMixi
         StringUUID(),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    pipeline_run_id: Mapped[str | None] = mapped_column(
+        StringUUID(),
+        ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     seed_topic_id: Mapped[str | None] = mapped_column(

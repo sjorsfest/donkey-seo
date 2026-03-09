@@ -193,6 +193,7 @@ class Step05IntentService(BaseStepService[IntentInput, IntentOutput]):
         keywords_result = await self.session.execute(
             select(Keyword).where(
                 Keyword.project_id == input_data.project_id,
+                Keyword.pipeline_run_id == str(self.execution.pipeline_run_id),
                 Keyword.status == "active",
             )
         )

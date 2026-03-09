@@ -154,7 +154,10 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
             raise ValueError(f"Project not found: {input_data.project_id}")
 
         topics_result = await self.session.execute(
-            select(Topic).where(Topic.project_id == input_data.project_id).limit(1)
+            select(Topic).where(
+                Topic.project_id == input_data.project_id,
+                Topic.pipeline_run_id == str(self.execution.pipeline_run_id),
+            ).limit(1)
         )
         if not topics_result.scalars().first():
             raise ValueError("No topics found. Run Step 5 first.")
@@ -172,7 +175,10 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
 
         topics_result = await self.session.execute(
             select(Topic)
-            .where(Topic.project_id == input_data.project_id)
+            .where(
+                Topic.project_id == input_data.project_id,
+                Topic.pipeline_run_id == str(self.execution.pipeline_run_id),
+            )
             .options(selectinload(Topic.keywords))
         )
         all_topics = list(topics_result.scalars())

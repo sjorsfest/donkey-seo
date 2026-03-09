@@ -249,12 +249,8 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
 
     async def _persist_results(self, result: SeedsOutput) -> None:
         """Save seed keywords to database."""
-        # Delete existing seed topics for this project
-        existing = await self.session.execute(
-            select(SeedTopic).where(SeedTopic.project_id == self.project_id)
-        )
-        for topic in existing.scalars():
-            await topic.delete(self.session)
+        # NOTE: We do NOT delete existing seed topics - preserve historical data
+        # Each discovery run creates new seeds without removing old ones
 
         # Create bucket name to info map
         bucket_map = {b["name"]: b for b in result.buckets}
@@ -267,6 +263,7 @@ class Step02SeedsService(BaseStepService[SeedsInput, SeedsOutput]):
                 self.session,
                 SeedTopicCreateDTO(
                     project_id=self.project_id,
+                    pipeline_run_id=str(self.execution.pipeline_run_id),
                     name=seed_data["keyword"],
                     description=bucket_info.get("description"),
                     pillar_type=seed_data["bucket_name"],
