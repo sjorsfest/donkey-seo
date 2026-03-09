@@ -205,8 +205,9 @@ Hard requirements:
     instead of rewriting from scratch.
 12. Preserve topic, search intent, primary keyword strategy, and ICP hook.
 13. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
-14. Never use em dashes (—); use commas, periods, or parentheses instead.
-15. If you include source-dependent claims (for example prices, percentages, statistics, or "according to" statements), add a non-empty sources block that lists the supporting sources.
+14. CRITICAL: Naturally incorporate supporting keywords from the brief throughout the article. Use multiple supporting keywords where contextually relevant - they should appear organically in headings, body text, lists, and tables. Do not force them, but ensure several supporting keywords are used across different sections.
+15. Never use em dashes (—); use commas, periods, or parentheses instead.
+16. If you include source-dependent claims (for example prices, percentages, statistics, or "according to" statements), add a non-empty sources block that lists the supporting sources.
 
 Writing quality:
 - Clear, practical, and audience-aligned.
@@ -232,10 +233,22 @@ Writing quality:
         conversion_intents = ", ".join(input_data.conversion_intents)
         conversion_intents_text = conversion_intents if conversion_intents else "Not specified"
 
+        supporting_keywords = input_data.brief.get("supporting_keywords", [])
+        supporting_keywords_text = (
+            "\n".join(f"  - {kw}" for kw in supporting_keywords[:30])
+            if supporting_keywords
+            else "None provided"
+        )
+
         return (
             "Generate a complete modular article document from these inputs.\n\n"
             "## Content Brief\n"
             f"{json.dumps(input_data.brief, indent=2, ensure_ascii=True)}\n\n"
+            "## Supporting Keywords To Incorporate\n"
+            "IMPORTANT: Naturally weave these supporting keywords throughout the article content.\n"
+            "Use them in headings, body paragraphs, list items, and table content where contextually appropriate.\n"
+            "Aim to use multiple different supporting keywords across various sections.\n\n"
+            f"{supporting_keywords_text}\n\n"
             "## Writer Instructions\n"
             f"{json.dumps(input_data.writer_instructions, indent=2, ensure_ascii=True)}\n\n"
             "## Brief Delta\n"
