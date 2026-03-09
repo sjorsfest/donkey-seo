@@ -148,6 +148,10 @@ async def run_worker(*, run_hour_utc: int, max_projects: int) -> None:
     setup_logging()
 
     hour = max(0, min(23, int(run_hour_utc)))
+
+    # Debug: Force output to confirm code is executing
+    print(f"[DEBUG] Worker starting: run_hour_utc={hour}, max_projects={max_projects}")
+
     logger.info(
         "Discovery reconciliation worker started",
         extra={
@@ -155,6 +159,8 @@ async def run_worker(*, run_hour_utc: int, max_projects: int) -> None:
             "max_projects": max_projects,
         },
     )
+
+    print("[DEBUG] Logger.info called for worker started")
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -170,10 +176,13 @@ async def run_worker(*, run_hour_utc: int, max_projects: int) -> None:
 
     try:
         # Always run reconciliation sweep on startup (ensures fresh deployments trigger immediately)
+        print("[DEBUG] About to run initial reconciliation sweep")
         logger.info("Running initial reconciliation sweep on startup")
         try:
             await run_reconciliation_sweep(max_projects=max_projects)
+            print("[DEBUG] Initial reconciliation sweep completed successfully")
         except Exception:
+            print("[DEBUG] Initial reconciliation sweep failed with exception")
             logger.exception("Initial reconciliation sweep failed")
 
         # Main scheduling loop
