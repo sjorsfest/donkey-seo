@@ -4,8 +4,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _normalize_http_url(value: str) -> str:
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError("URL is required")
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL must be a valid http/https URL")
+    return raw
 
 
 class BrandAssetMetadata(BaseModel):
@@ -75,6 +86,23 @@ class BrandAssetIngestRequest(BaseModel):
     source_urls: list[str] = Field(min_length=1)
     role: str = "reference"
 
+    @field_validator("source_urls")
+    @classmethod
+    def validate_source_urls(cls, value: list[str]) -> list[str]:
+        return [_normalize_http_url(item) for item in value]
+
+
+class BrandAssetAddRequest(BaseModel):
+    """Manual single-asset add request."""
+
+    source_url: str = Field(min_length=1)
+    role: str = "reference"
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str) -> str:
+        return _normalize_http_url(value)
+
 
 class BrandAssetIngestResponse(BaseModel):
     """Manual ingestion response payload."""
@@ -98,3 +126,11 @@ class BrandVisualStylePatchRequest(BaseModel):
 
     visual_style_guide: dict[str, Any] | None = None
     visual_prompt_contract: dict[str, Any] | None = None
+
+
+class BrandAssetRemoveResponse(BaseModel):
+    """Manual remove response payload."""
+
+    removed_asset_id: str
+    total_assets: int
+    brand_assets: list[BrandAssetMetadata]

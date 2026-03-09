@@ -76,3 +76,40 @@ def test_create_signed_read_url_uses_s3_presign() -> None:
             90,
         )
     ]
+
+
+def test_delete_object_calls_s3_delete() -> None:
+    store = BrandAssetStore(app_settings=_settings())
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def delete_object(self, **kwargs: str) -> None:
+            self.calls.append(kwargs)
+
+    fake_client = _FakeClient()
+    store._client = fake_client
+
+    store.delete_object(object_key="projects/p1/brand-assets/abc.png")
+
+    assert fake_client.calls == [
+        {"Bucket": "private-bucket", "Key": "projects/p1/brand-assets/abc.png"}
+    ]
+
+
+def test_delete_object_ignores_missing_key_error() -> None:
+    store = BrandAssetStore(app_settings=_settings())
+
+    class _NoSuchKeyError(Exception):
+        def __init__(self) -> None:
+            super().__init__("not found")
+            self.response = {"Error": {"Code": "NoSuchKey"}}
+
+    class _FakeClient:
+        def delete_object(self, **_kwargs: str) -> None:
+            raise _NoSuchKeyError()
+
+    store._client = _FakeClient()
+
+    store.delete_object(object_key="projects/p1/brand-assets/missing.png")

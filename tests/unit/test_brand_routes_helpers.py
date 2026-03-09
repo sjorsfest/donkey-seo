@@ -1,11 +1,15 @@
 """Tests for brand route helper behavior."""
 
+import pytest
+
 from app.api.v1.brand.routes import (
     _asset_models,
+    _find_asset_by_id,
     _icp_niche_models,
     _merge_shallow_dict,
     _product_models,
 )
+from app.schemas.brand import BrandAssetAddRequest, BrandAssetIngestRequest
 
 
 def test_asset_models_filters_incomplete_records() -> None:
@@ -86,3 +90,25 @@ def test_icp_niche_models_filters_invalid_and_maps_expected_fields() -> None:
     assert len(niches) == 1
     assert niches[0].niche_name == "Healthcare Support"
     assert niches[0].target_roles == ["Support Lead"]
+
+
+def test_find_asset_by_id_matches_expected_record() -> None:
+    asset = _find_asset_by_id(
+        raw_assets=[
+            {"asset_id": "a1", "object_key": "projects/p1/brand-assets/a1.png"},
+            {"asset_id": "a2", "object_key": "projects/p1/brand-assets/a2.png"},
+        ],
+        asset_id="a2",
+    )
+    assert asset is not None
+    assert asset["asset_id"] == "a2"
+
+
+def test_brand_asset_add_request_validates_url() -> None:
+    payload = BrandAssetAddRequest(source_url=" https://example.com/logo.png ", role="logo")
+    assert payload.source_url == "https://example.com/logo.png"
+
+
+def test_brand_asset_ingest_request_rejects_non_http_url() -> None:
+    with pytest.raises(ValueError):
+        BrandAssetIngestRequest(source_urls=["ftp://example.com/logo.png"])

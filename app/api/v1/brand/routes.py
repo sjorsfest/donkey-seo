@@ -18,9 +18,11 @@ from app.integrations.asset_store import BrandAssetStore
 from app.models.brand import BrandProfile
 from app.models.generated_dtos import BrandProfilePatchDTO
 from app.schemas.brand import (
+    BrandAssetAddRequest,
     BrandAssetIngestRequest,
     BrandAssetIngestResponse,
     BrandAssetMetadata,
+    BrandAssetRemoveResponse,
     BrandProductServiceMetadata,
     BrandAssetSignedReadUrlResponse,
     BrandSuggestedICPNiche,
@@ -63,34 +65,90 @@ async def ingest_brand_assets(
     """Ingest manually supplied asset URLs into private storage."""
     await get_user_project(project_id, current_user, session)
     brand = await _get_brand_profile_or_404(project_id=project_id, session=session)
-
-    existing_assets = list(brand.brand_assets or [])
-    existing_hashes = {
-        str(item.get("sha256") or "")
-        for item in existing_assets
-        if isinstance(item, dict)
-    }
-
-    store = BrandAssetStore()
-    merged_assets = await store.ingest_source_urls(
-        project_id=str(project_id),
+    return await _ingest_and_persist_brand_assets(
+        project_id=project_id,
+        brand=brand,
+        session=session,
         source_urls=payload.source_urls,
-        existing_assets=existing_assets,
         role=payload.role,
         origin="manual_url",
     )
 
-    new_hashes = {
-        str(item.get("sha256") or "")
-        for item in merged_assets
+
+@router.post(
+    "/{project_id}/assets",
+    response_model=BrandAssetIngestResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a brand asset from URL",
+)
+async def add_brand_asset(
+    project_id: str,
+    payload: BrandAssetAddRequest,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> BrandAssetIngestResponse:
+    """Add a single brand asset URL and persist it in private storage."""
+    await get_user_project(project_id, current_user, session)
+    brand = await _get_brand_profile_or_404(project_id=project_id, session=session)
+
+    return await _ingest_and_persist_brand_assets(
+        project_id=project_id,
+        brand=brand,
+        session=session,
+        source_urls=[payload.source_url],
+        role=payload.role,
+        origin="manual_add",
+    )
+
+
+@router.delete(
+    "/{project_id}/assets/{asset_id}",
+    response_model=BrandAssetRemoveResponse,
+    summary="Remove a brand asset",
+)
+async def remove_brand_asset(
+    project_id: str,
+    asset_id: str,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> BrandAssetRemoveResponse:
+    """Remove a brand asset from metadata and private storage."""
+    await get_user_project(project_id, current_user, session)
+    brand = await _get_brand_profile_or_404(project_id=project_id, session=session)
+
+    existing_assets = [
+        item
+        for item in list(brand.brand_assets or [])
         if isinstance(item, dict)
-    }
+    ]
+    asset = _find_asset_by_id(existing_assets, asset_id)
+    if not asset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=BRAND_ASSET_NOT_FOUND_DETAIL,
+        )
+
+    object_key = str(asset.get("object_key") or "").strip()
+    if object_key:
+        try:
+            BrandAssetStore().delete_object(object_key=object_key)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to remove brand asset from storage: {exc}",
+            ) from exc
+
+    remaining_assets = [
+        item
+        for item in existing_assets
+        if str(item.get("asset_id") or "") != asset_id
+    ]
 
     brand.patch(
         session,
         BrandProfilePatchDTO.from_partial(
             {
-                "brand_assets": merged_assets,
+                "brand_assets": remaining_assets,
                 "visual_last_synced_at": datetime.now(timezone.utc),
             }
         ),
@@ -98,11 +156,10 @@ async def ingest_brand_assets(
     await session.flush()
     await session.refresh(brand)
 
-    ingested_count = len({sha for sha in new_hashes if sha and sha not in existing_hashes})
-    return BrandAssetIngestResponse(
-        ingested_count=ingested_count,
-        total_assets=len(merged_assets),
-        brand_assets=_asset_models(merged_assets),
+    return BrandAssetRemoveResponse(
+        removed_asset_id=asset_id,
+        total_assets=len(remaining_assets),
+        brand_assets=_asset_models(remaining_assets),
     )
 
 
@@ -183,6 +240,57 @@ async def patch_brand_visual_style(
     await session.refresh(brand)
 
     return _to_visual_context_response(project_id=project_id, brand=brand)
+
+
+async def _ingest_and_persist_brand_assets(
+    *,
+    project_id: str,
+    brand: BrandProfile,
+    session: DbSession,
+    source_urls: list[str],
+    role: str,
+    origin: str,
+) -> BrandAssetIngestResponse:
+    existing_assets = list(brand.brand_assets or [])
+    existing_hashes = {
+        str(item.get("sha256") or "")
+        for item in existing_assets
+        if isinstance(item, dict)
+    }
+
+    store = BrandAssetStore()
+    merged_assets = await store.ingest_source_urls(
+        project_id=str(project_id),
+        source_urls=source_urls,
+        existing_assets=existing_assets,
+        role=role,
+        origin=origin,
+    )
+
+    new_hashes = {
+        str(item.get("sha256") or "")
+        for item in merged_assets
+        if isinstance(item, dict)
+    }
+
+    brand.patch(
+        session,
+        BrandProfilePatchDTO.from_partial(
+            {
+                "brand_assets": merged_assets,
+                "visual_last_synced_at": datetime.now(timezone.utc),
+            }
+        ),
+    )
+    await session.flush()
+    await session.refresh(brand)
+
+    ingested_count = len({sha for sha in new_hashes if sha and sha not in existing_hashes})
+    return BrandAssetIngestResponse(
+        ingested_count=ingested_count,
+        total_assets=len(merged_assets),
+        brand_assets=_asset_models(merged_assets),
+    )
 
 
 async def _get_brand_profile_or_404(*, project_id: str, session: DbSession) -> BrandProfile:

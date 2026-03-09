@@ -200,6 +200,20 @@ class BrandAssetStore:
             ExpiresIn=expires_in,
         )
 
+    def delete_object(self, *, object_key: str) -> None:
+        """Delete a stored asset object from private storage."""
+        self._validate_config()
+        client = self._get_client()
+        try:
+            client.delete_object(
+                Bucket=self.settings.cloudflare_r2_bucket,
+                Key=object_key,
+            )
+        except Exception as exc:
+            if self._is_not_found_error(exc):
+                return
+            raise BrandAssetStoreError(f"failed to delete asset object: {exc}") from exc
+
     async def _download_image_bytes(self, source_url: str) -> tuple[bytes, str]:
         timeout = httpx.Timeout(30.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
@@ -352,3 +366,14 @@ class BrandAssetStore:
             raise BrandAssetStoreConfigError(
                 "Missing required R2 config: " + ", ".join(sorted(missing))
             )
+
+    @staticmethod
+    def _is_not_found_error(exc: Exception) -> bool:
+        response = getattr(exc, "response", None)
+        if not isinstance(response, dict):
+            return False
+        error = response.get("Error")
+        if not isinstance(error, dict):
+            return False
+        code = str(error.get("Code") or "").strip()
+        return code in {"NoSuchKey", "404", "NotFound"}
