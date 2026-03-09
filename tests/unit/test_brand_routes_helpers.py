@@ -1,15 +1,23 @@
 """Tests for brand route helper behavior."""
 
 import pytest
+from fastapi import HTTPException, status
 
 from app.api.v1.brand.routes import (
     _asset_models,
+    _build_brand_asset_upload_object_key,
     _find_asset_by_id,
+    _find_asset_by_sha,
     _icp_niche_models,
     _merge_shallow_dict,
     _product_models,
+    _validate_upload_object_key,
 )
-from app.schemas.brand import BrandAssetAddRequest, BrandAssetIngestRequest
+from app.schemas.brand import (
+    BrandAssetAddRequest,
+    BrandAssetIngestRequest,
+    BrandAssetSignedUploadRequest,
+)
 
 
 def test_asset_models_filters_incomplete_records() -> None:
@@ -104,11 +112,55 @@ def test_find_asset_by_id_matches_expected_record() -> None:
     assert asset["asset_id"] == "a2"
 
 
-def test_brand_asset_add_request_validates_url() -> None:
-    payload = BrandAssetAddRequest(source_url=" https://example.com/logo.png ", role="logo")
-    assert payload.source_url == "https://example.com/logo.png"
+def test_brand_asset_add_request_normalizes_and_validates_image_content_type() -> None:
+    payload = BrandAssetAddRequest(
+        asset_id="asset_1",
+        object_key="projects/p1/brand-assets/uploads/asset_1.png",
+        content_type="IMAGE/PNG; charset=utf-8",
+        byte_size=2048,
+        sha256="ABC12345",
+        role="logo",
+    )
+    assert payload.content_type == "image/png"
+    assert payload.sha256 == "abc12345"
 
 
 def test_brand_asset_ingest_request_rejects_non_http_url() -> None:
     with pytest.raises(ValueError):
         BrandAssetIngestRequest(source_urls=["ftp://example.com/logo.png"])
+
+
+def test_brand_asset_signed_upload_request_rejects_non_image_content_type() -> None:
+    with pytest.raises(ValueError):
+        BrandAssetSignedUploadRequest(content_type="application/pdf")
+
+
+def test_find_asset_by_sha_ignores_excluded_asset_id() -> None:
+    asset = _find_asset_by_sha(
+        raw_assets=[
+            {"asset_id": "a1", "sha256": "abc"},
+            {"asset_id": "a2", "sha256": "def"},
+        ],
+        sha256="abc",
+        exclude_asset_id="a1",
+    )
+    assert asset is None
+
+
+def test_build_brand_asset_upload_object_key_uses_uploads_prefix() -> None:
+    key = _build_brand_asset_upload_object_key(
+        project_id="project_1",
+        asset_id="asset_1",
+        content_type="image/png",
+    )
+    assert key == "projects/project_1/brand-assets/uploads/asset_1.png"
+
+
+def test_validate_upload_object_key_rejects_wrong_prefix() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_upload_object_key(
+            project_id="project_1",
+            asset_id="asset_1",
+            object_key="projects/project_2/brand-assets/uploads/asset_1.png",
+        )
+    assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY

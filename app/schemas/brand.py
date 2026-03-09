@@ -93,15 +93,35 @@ class BrandAssetIngestRequest(BaseModel):
 
 
 class BrandAssetAddRequest(BaseModel):
-    """Manual single-asset add request."""
+    """Metadata attach request after direct client upload."""
 
-    source_url: str = Field(min_length=1)
+    asset_id: str = Field(min_length=1, max_length=100)
+    object_key: str = Field(min_length=1, max_length=1024)
+    content_type: str = Field(min_length=1, max_length=100)
+    byte_size: int = Field(ge=1)
+    sha256: str = Field(min_length=8, max_length=128)
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+    dominant_colors: list[str] = Field(default_factory=list)
+    average_luminance: float | None = Field(default=None, ge=0.0, le=1.0)
     role: str = "reference"
+    role_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
-    @field_validator("source_url")
+    @field_validator("content_type")
     @classmethod
-    def validate_source_url(cls, value: str) -> str:
-        return _normalize_http_url(value)
+    def validate_content_type(cls, value: str) -> str:
+        normalized = str(value).split(";")[0].strip().lower()
+        if not normalized.startswith("image/"):
+            raise ValueError("content_type must be an image MIME type")
+        return normalized
+
+    @field_validator("sha256")
+    @classmethod
+    def validate_sha256(cls, value: str) -> str:
+        normalized = str(value).strip().lower()
+        if not normalized:
+            raise ValueError("sha256 is required")
+        return normalized
 
 
 class BrandAssetIngestResponse(BaseModel):
@@ -119,6 +139,31 @@ class BrandAssetSignedReadUrlResponse(BaseModel):
     object_key: str
     expires_in_seconds: int
     signed_url: str
+
+
+class BrandAssetSignedUploadRequest(BaseModel):
+    """Request payload to mint a signed brand-asset upload URL."""
+
+    content_type: str = Field(min_length=1, max_length=100)
+
+    @field_validator("content_type")
+    @classmethod
+    def validate_content_type(cls, value: str) -> str:
+        normalized = str(value).split(";")[0].strip().lower()
+        if not normalized.startswith("image/"):
+            raise ValueError("content_type must be an image MIME type")
+        return normalized
+
+
+class BrandAssetSignedUploadResponse(BaseModel):
+    """Signed upload URL details for direct brand asset uploads."""
+
+    asset_id: str
+    object_key: str
+    upload_method: str = "PUT"
+    upload_url: str
+    expires_in_seconds: int
+    required_headers: dict[str, str] = Field(default_factory=dict)
 
 
 class BrandVisualStylePatchRequest(BaseModel):

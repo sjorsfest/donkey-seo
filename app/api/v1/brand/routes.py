@@ -13,6 +13,7 @@ from app.api.v1.brand.constants import (
     BRAND_PROFILE_NOT_FOUND_DETAIL,
 )
 from app.api.v1.dependencies import get_user_project
+from app.core.ids import generate_cuid
 from app.dependencies import CurrentUser, DbSession
 from app.integrations.asset_store import BrandAssetStore
 from app.models.brand import BrandProfile
@@ -23,6 +24,8 @@ from app.schemas.brand import (
     BrandAssetIngestResponse,
     BrandAssetMetadata,
     BrandAssetRemoveResponse,
+    BrandAssetSignedUploadRequest,
+    BrandAssetSignedUploadResponse,
     BrandProductServiceMetadata,
     BrandAssetSignedReadUrlResponse,
     BrandSuggestedICPNiche,
@@ -62,16 +65,15 @@ async def ingest_brand_assets(
     current_user: CurrentUser,
     session: DbSession,
 ) -> BrandAssetIngestResponse:
-    """Ingest manually supplied asset URLs into private storage."""
+    """Legacy URL ingestion endpoint (disabled in favor of client-side uploads)."""
     await get_user_project(project_id, current_user, session)
-    brand = await _get_brand_profile_or_404(project_id=project_id, session=session)
-    return await _ingest_and_persist_brand_assets(
-        project_id=project_id,
-        brand=brand,
-        session=session,
-        source_urls=payload.source_urls,
-        role=payload.role,
-        origin="manual_url",
+    await _get_brand_profile_or_404(project_id=project_id, session=session)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "Server-side URL ingestion is disabled. "
+            "Use /brand/{project_id}/assets/signed-upload-url and then POST /brand/{project_id}/assets."
+        ),
     )
 
 
@@ -79,7 +81,7 @@ async def ingest_brand_assets(
     "/{project_id}/assets",
     response_model=BrandAssetIngestResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Add a brand asset from URL",
+    summary="Attach an uploaded brand asset",
 )
 async def add_brand_asset(
     project_id: str,
@@ -87,17 +89,132 @@ async def add_brand_asset(
     current_user: CurrentUser,
     session: DbSession,
 ) -> BrandAssetIngestResponse:
-    """Add a single brand asset URL and persist it in private storage."""
+    """Attach metadata for a client-uploaded brand asset object."""
     await get_user_project(project_id, current_user, session)
     brand = await _get_brand_profile_or_404(project_id=project_id, session=session)
+    _validate_upload_object_key(project_id=project_id, asset_id=payload.asset_id, object_key=payload.object_key)
 
-    return await _ingest_and_persist_brand_assets(
+    existing_assets = [
+        item
+        for item in list(brand.brand_assets or [])
+        if isinstance(item, dict)
+    ]
+    existing_hashes = {
+        str(item.get("sha256") or "").strip().lower()
+        for item in existing_assets
+        if isinstance(item, dict)
+    }
+
+    # Keep max-count behavior explicit for manual uploads.
+    is_replacement = any(str(item.get("asset_id") or "") == payload.asset_id for item in existing_assets)
+    store = BrandAssetStore()
+    if not is_replacement and len(existing_assets) >= store.settings.brand_assets_max_count:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Brand asset limit reached. Remove an asset before adding a new one.",
+        )
+
+    duplicate_by_sha = _find_asset_by_sha(
+        raw_assets=existing_assets,
+        sha256=payload.sha256,
+        exclude_asset_id=payload.asset_id,
+    )
+    if duplicate_by_sha:
+        if str(duplicate_by_sha.get("object_key") or "") != payload.object_key:
+            try:
+                store.delete_object(object_key=payload.object_key)
+            except Exception:
+                # Preserve successful metadata response even if duplicate cleanup fails.
+                pass
+        return BrandAssetIngestResponse(
+            ingested_count=0,
+            total_assets=len(existing_assets),
+            brand_assets=_asset_models(existing_assets),
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_asset: dict[str, Any] = {
+        "asset_id": payload.asset_id,
+        "object_key": payload.object_key,
+        "sha256": payload.sha256,
+        "mime_type": payload.content_type,
+        "byte_size": payload.byte_size,
+        "width": payload.width,
+        "height": payload.height,
+        "dominant_colors": payload.dominant_colors,
+        "average_luminance": payload.average_luminance,
+        "role": payload.role,
+        "role_confidence": payload.role_confidence,
+        "source_url": f"client_upload://{payload.asset_id}",
+        "origin": "manual_upload",
+        "ingested_at": now_iso,
+    }
+
+    merged_assets = [
+        item
+        for item in existing_assets
+        if str(item.get("asset_id") or "") != payload.asset_id
+    ]
+    merged_assets.append(new_asset)
+    merged_assets.sort(key=lambda item: float(item.get("role_confidence") or 0.0), reverse=True)
+
+    brand.patch(
+        session,
+        BrandProfilePatchDTO.from_partial(
+            {
+                "brand_assets": merged_assets,
+                "visual_last_synced_at": datetime.now(timezone.utc),
+            }
+        ),
+    )
+    await session.flush()
+    await session.refresh(brand)
+
+    ingested_count = 1 if payload.sha256 not in existing_hashes else 0
+    return BrandAssetIngestResponse(
+        ingested_count=ingested_count,
+        total_assets=len(merged_assets),
+        brand_assets=_asset_models(merged_assets),
+    )
+
+
+@router.post(
+    "/{project_id}/assets/signed-upload-url",
+    response_model=BrandAssetSignedUploadResponse,
+    summary="Get signed upload URL for a brand asset",
+    description="Mint a short-lived signed PUT URL so clients can upload a brand asset directly.",
+)
+async def get_brand_asset_signed_upload_url(
+    project_id: str,
+    payload: BrandAssetSignedUploadRequest,
+    current_user: CurrentUser,
+    session: DbSession,
+    ttl_seconds: int | None = Query(default=None, ge=1, le=3600),
+) -> BrandAssetSignedUploadResponse:
+    """Mint a signed upload URL for direct client-side brand asset uploads."""
+    await get_user_project(project_id, current_user, session)
+    await _get_brand_profile_or_404(project_id=project_id, session=session)
+
+    asset_id = generate_cuid()
+    object_key = _build_brand_asset_upload_object_key(
         project_id=project_id,
-        brand=brand,
-        session=session,
-        source_urls=[payload.source_url],
-        role=payload.role,
-        origin="manual_add",
+        asset_id=asset_id,
+        content_type=payload.content_type,
+    )
+    store = BrandAssetStore()
+    upload_url = store.create_signed_upload_url(
+        object_key=object_key,
+        ttl_seconds=ttl_seconds,
+        content_type=payload.content_type,
+    )
+    expires_in = int(ttl_seconds or store.settings.signed_url_ttl_seconds)
+
+    return BrandAssetSignedUploadResponse(
+        asset_id=asset_id,
+        object_key=object_key,
+        upload_url=upload_url,
+        expires_in_seconds=expires_in,
+        required_headers={"Content-Type": payload.content_type},
     )
 
 
@@ -242,57 +359,6 @@ async def patch_brand_visual_style(
     return _to_visual_context_response(project_id=project_id, brand=brand)
 
 
-async def _ingest_and_persist_brand_assets(
-    *,
-    project_id: str,
-    brand: BrandProfile,
-    session: DbSession,
-    source_urls: list[str],
-    role: str,
-    origin: str,
-) -> BrandAssetIngestResponse:
-    existing_assets = list(brand.brand_assets or [])
-    existing_hashes = {
-        str(item.get("sha256") or "")
-        for item in existing_assets
-        if isinstance(item, dict)
-    }
-
-    store = BrandAssetStore()
-    merged_assets = await store.ingest_source_urls(
-        project_id=str(project_id),
-        source_urls=source_urls,
-        existing_assets=existing_assets,
-        role=role,
-        origin=origin,
-    )
-
-    new_hashes = {
-        str(item.get("sha256") or "")
-        for item in merged_assets
-        if isinstance(item, dict)
-    }
-
-    brand.patch(
-        session,
-        BrandProfilePatchDTO.from_partial(
-            {
-                "brand_assets": merged_assets,
-                "visual_last_synced_at": datetime.now(timezone.utc),
-            }
-        ),
-    )
-    await session.flush()
-    await session.refresh(brand)
-
-    ingested_count = len({sha for sha in new_hashes if sha and sha not in existing_hashes})
-    return BrandAssetIngestResponse(
-        ingested_count=ingested_count,
-        total_assets=len(merged_assets),
-        brand_assets=_asset_models(merged_assets),
-    )
-
-
 async def _get_brand_profile_or_404(*, project_id: str, session: DbSession) -> BrandProfile:
     result = await session.execute(
         select(BrandProfile).where(BrandProfile.project_id == project_id)
@@ -414,6 +480,47 @@ def _find_asset_by_id(raw_assets: list[dict], asset_id: str) -> dict | None:
         if str(asset.get("asset_id") or "") == asset_id:
             return asset
     return None
+
+
+def _find_asset_by_sha(
+    *,
+    raw_assets: list[dict],
+    sha256: str,
+    exclude_asset_id: str | None = None,
+) -> dict | None:
+    normalized_sha = str(sha256 or "").strip().lower()
+    excluded = str(exclude_asset_id or "").strip()
+    if not normalized_sha:
+        return None
+    for asset in raw_assets:
+        if not isinstance(asset, dict):
+            continue
+        if excluded and str(asset.get("asset_id") or "").strip() == excluded:
+            continue
+        if str(asset.get("sha256") or "").strip().lower() == normalized_sha:
+            return asset
+    return None
+
+
+def _build_brand_asset_upload_object_key(*, project_id: str, asset_id: str, content_type: str) -> str:
+    extension = BrandAssetStore.extension_for_mime_type(content_type)
+    return f"projects/{project_id}/brand-assets/uploads/{asset_id}{extension}"
+
+
+def _validate_upload_object_key(*, project_id: str, asset_id: str, object_key: str) -> None:
+    expected_prefix = f"projects/{project_id}/brand-assets/uploads/"
+    normalized_key = str(object_key or "").strip()
+    if not normalized_key.startswith(expected_prefix):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid object_key for project brand asset upload.",
+        )
+    expected_base = f"{expected_prefix}{asset_id}"
+    if not normalized_key.startswith(expected_base):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="object_key does not match asset_id.",
+        )
 
 
 def _merge_shallow_dict(base: dict, updates: dict) -> dict:

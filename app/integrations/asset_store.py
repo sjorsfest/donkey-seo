@@ -290,9 +290,16 @@ class BrandAssetStore:
         )
 
     @classmethod
+    def extension_for_mime_type(cls, mime_type: str) -> str:
+        """Return a best-effort file extension for a MIME type."""
+        normalized = str(mime_type or "").split(";")[0].strip().lower()
+        return cls._MIME_TO_EXTENSION.get(normalized, ".bin")
+
+    @classmethod
     def _resolve_extension(cls, mime_type: str, source_url: str) -> str:
-        if mime_type in cls._MIME_TO_EXTENSION:
-            return cls._MIME_TO_EXTENSION[mime_type]
+        extension = cls.extension_for_mime_type(mime_type)
+        if extension != ".bin":
+            return extension
 
         source_url_lower = source_url.lower()
         for extension in (".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif", ".ico", ".avif"):

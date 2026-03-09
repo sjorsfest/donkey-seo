@@ -113,3 +113,7 @@ def test_delete_object_ignores_missing_key_error() -> None:
     store._client = _FakeClient()
 
     store.delete_object(object_key="projects/p1/brand-assets/missing.png")
+
+
+def test_extension_for_mime_type_returns_expected_extension() -> None:
+    assert BrandAssetStore.extension_for_mime_type("IMAGE/JPEG; charset=utf-8") == ".jpg"
