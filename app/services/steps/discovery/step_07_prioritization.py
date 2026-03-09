@@ -19,6 +19,7 @@ from app.agents.prioritization_agent import (
     PrioritizationAgentInput,
 )
 from app.models.brand import BrandProfile
+from app.models.content import ContentBrief
 from app.models.keyword import Keyword
 from app.models.project import Project
 from app.models.topic import Topic
@@ -183,6 +184,16 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         )
         all_topics = list(topics_result.scalars())
         base_market_mode = await self.get_market_mode(default="mixed")
+
+        # Get already-used primary keywords to avoid duplication
+        used_primary_keyword_ids = await self._get_used_primary_keyword_ids(input_data.project_id)
+        logger.info(
+            "Found already-used primary keywords",
+            extra={
+                "project_id": input_data.project_id,
+                "used_keyword_count": len(used_primary_keyword_ids),
+            },
+        )
 
         weights_used: dict[str, Any] = {
             "fragmented_workflow": WORKFLOW_OPPORTUNITY_WEIGHTS,
@@ -352,6 +363,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 brand_context=brand_context,
                 money_pages=money_pages,
                 offer_terms=offer_terms,
+                excluded_keyword_ids=used_primary_keyword_ids,
             )
             if output is None:
                 logger.warning(
@@ -493,6 +505,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 keywords=keywords,
                 prioritization=prioritization,
                 offer_terms=offer_terms,
+                excluded_keyword_ids=used_primary_keyword_ids,
             )
             resolved_primary_keyword_id = str(resolved_primary_keyword.id) if resolved_primary_keyword else None
             resolved_primary_keyword_text = resolved_primary_keyword.keyword if resolved_primary_keyword else None
@@ -501,6 +514,13 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 next_rank += 1
 
             needs_serp_validation = (topic.cluster_coherence or 1.0) < LOW_COHERENCE_THRESHOLD
+
+            # Track which keywords were already used
+            already_used_keywords = [
+                kw.keyword for kw in keywords
+                if str(kw.id) in used_primary_keyword_ids
+            ]
+
             diagnostics = {
                 "fit_reasons": fit_assessment.get("reasons", []),
                 "fit_components": fit_assessment.get("components", {}),
@@ -522,6 +542,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                     "recommended_primary_keyword_rationale",
                     "",
                 ),
+                "already_used_keywords": already_used_keywords,
                 "score_explanation": st["explanation"],
                 "diversification": st.get("diversification", {}),
                 "intent_mix_target": mix_diagnostics.get("target_intent_mix", {}),
@@ -1944,6 +1965,36 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         except (TypeError, ValueError):
             return 0.0
 
+    async def _get_used_primary_keyword_ids(self, project_id: str) -> set[str]:
+        """Get all primary keyword IDs already used in topics and content briefs."""
+        used_keyword_ids: set[str] = set()
+
+        # Get primary keywords from existing topics (all pipeline runs)
+        topics_result = await self.session.execute(
+            select(Topic.primary_keyword_id)
+            .where(
+                Topic.project_id == project_id,
+                Topic.primary_keyword_id.is_not(None),
+            )
+        )
+        for (keyword_id,) in topics_result:
+            if keyword_id:
+                used_keyword_ids.add(str(keyword_id))
+
+        # Get primary keywords from content briefs
+        briefs_result = await self.session.execute(
+            select(ContentBrief.target_keyword_id)
+            .where(
+                ContentBrief.project_id == project_id,
+                ContentBrief.target_keyword_id.is_not(None),
+            )
+        )
+        for (keyword_id,) in briefs_result:
+            if keyword_id:
+                used_keyword_ids.add(str(keyword_id))
+
+        return used_keyword_ids
+
     def _resolve_post_prioritization_primary_keyword(
         self,
         *,
@@ -1951,17 +2002,52 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         keywords: list[Keyword],
         prioritization: dict[str, Any],
         offer_terms: set[str] | None = None,
+        excluded_keyword_ids: set[str] | None = None,
     ) -> Keyword | None:
         """Resolve primary keyword after topic-level prioritization decisions."""
         if not keywords:
             return None
+
+        # Filter out already-used keywords
+        excluded_ids = excluded_keyword_ids or set()
+        available_keywords = [
+            kw for kw in keywords
+            if str(kw.id) not in excluded_ids
+        ]
+
+        # Log if keywords were filtered out
+        filtered_count = len(keywords) - len(available_keywords)
+        if filtered_count > 0:
+            logger.info(
+                "Filtered out already-used keywords",
+                extra={
+                    "topic_id": str(topic.id),
+                    "topic_name": topic.name,
+                    "total_keywords": len(keywords),
+                    "filtered_count": filtered_count,
+                    "available_count": len(available_keywords),
+                },
+            )
+
+        # If all keywords are already used, fall back to using any keyword
+        # (this shouldn't happen often, but prevents the method from returning None)
+        if not available_keywords:
+            logger.warning(
+                "All keywords already used for topic, using fallback",
+                extra={
+                    "topic_id": str(topic.id),
+                    "topic_name": topic.name,
+                    "keyword_count": len(keywords),
+                },
+            )
+            available_keywords = keywords
 
         suggested_keyword_text = str(
             prioritization.get("recommended_primary_keyword") or ""
         ).strip()
         if suggested_keyword_text:
             matched = self._match_keyword_by_text(
-                keywords=keywords,
+                keywords=available_keywords,
                 candidate_text=suggested_keyword_text,
             )
             if matched is not None:
@@ -1969,17 +2055,17 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
 
         ranked = self._rank_keywords_for_topic_prioritization(
             topic=topic,
-            keywords=keywords,
+            keywords=available_keywords,
             offer_terms=offer_terms,
         )
         if ranked:
             return ranked[0]
 
         if topic.primary_keyword_id:
-            for keyword in keywords:
+            for keyword in available_keywords:
                 if str(keyword.id) == str(topic.primary_keyword_id):
                     return keyword
-        return keywords[0]
+        return available_keywords[0]
 
     def _match_keyword_by_text(
         self,
@@ -2051,6 +2137,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         brand_context: str,
         money_pages: list[str],
         offer_terms: set[str] | None = None,
+        excluded_keyword_ids: set[str] | None = None,
     ) -> Any | None:
         """Run prioritization agent with compact-mode retry."""
         for attempt in range(LLM_RETRY_ATTEMPTS):
@@ -2062,6 +2149,7 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                             batch=batch,
                             compact_mode=compact_mode,
                             offer_terms=offer_terms,
+                            excluded_keyword_ids=excluded_keyword_ids,
                         ),
                         brand_context=(
                             brand_context
@@ -2086,9 +2174,12 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
         batch: list[dict[str, Any]],
         compact_mode: bool,
         offer_terms: set[str] | None = None,
+        excluded_keyword_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Build batch payload for prioritization agent."""
         agent_topics: list[dict[str, Any]] = []
+        excluded_ids = excluded_keyword_ids or set()
+
         for i, st in enumerate(batch):
             topic = st["topic"]
             keywords = st["keywords"]
@@ -2097,11 +2188,29 @@ class Step07PrioritizationService(BaseStepService[PrioritizationInput, Prioritiz
                 keywords=keywords,
                 offer_terms=offer_terms,
             )
-            primary_kw = ranked_keywords[0] if ranked_keywords else None
-            keyword_candidates = [kw.keyword for kw in ranked_keywords[:8]]
+
+            # Filter out already-used keywords from candidates
+            available_ranked_keywords = [
+                kw for kw in ranked_keywords
+                if str(kw.id) not in excluded_ids
+            ]
+
+            # If all keywords are used, fall back to original list (edge case)
+            if not available_ranked_keywords and ranked_keywords:
+                logger.warning(
+                    "All ranked keywords already used for LLM input",
+                    extra={
+                        "topic_id": st["topic_id"],
+                        "topic_name": topic.name,
+                    },
+                )
+                available_ranked_keywords = ranked_keywords
+
+            primary_kw = available_ranked_keywords[0] if available_ranked_keywords else None
+            keyword_candidates = [kw.keyword for kw in available_ranked_keywords[:8]]
             keyword_candidate_profiles = self._build_keyword_candidate_profiles(
                 topic=topic,
-                ranked_keywords=ranked_keywords[:8],
+                ranked_keywords=available_ranked_keywords[:8],
                 offer_terms=offer_terms,
             )
             topic_payload: dict[str, Any] = {

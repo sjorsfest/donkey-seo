@@ -178,6 +178,9 @@ class PrioritizationAgent(BaseAgent[PrioritizationAgentInput, PrioritizationAgen
    - Respect brand boundaries: out-of-scope topics, restricted claims, and audience mismatch are disqualifiers
    - Prefer keywords that map naturally to the brand's products/services, ICP pains, and desired outcomes
    - Prefer informational/commercial intent and blog/guide/comparison style targets
+   - CRITICAL: Avoid selecting keywords that are mere semantic variations (e.g., "slack alternatives" vs "alternatives to slack")
+   - Choose keywords that lead to meaningfully different articles with distinct value, angles, and content structure
+   - Prioritize content diversity over semantic similarity - similar keywords create redundant, low-value content
    - Use keyword_candidate_profiles as supporting signals
    - Treat search volume as a weak tie-breaker only, never the main reason
 
@@ -264,6 +267,8 @@ When selecting recommended_primary_keyword:
 - Brand profile fit is mandatory and dominates the decision
 - Reject candidates that conflict with in/out-of-scope boundaries or restricted claims
 - Prefer keywords aligned to product/service relevance + ICP pain/outcome match
+- CRITICAL: Avoid semantic variations that would produce the same article (e.g., "X alternatives" vs "alternatives to X")
+- Prioritize content diversity - each keyword should lead to a distinct, unique article
 - Use volume only as a weak tie-breaker among otherwise brand-valid options
 
 Also provide overall_strategy_notes for the backlog."""
@@ -293,6 +298,8 @@ When selecting recommended_primary_keyword:
 - Brand profile fit is mandatory and dominates the decision
 - Reject candidates that conflict with in/out-of-scope boundaries or restricted claims
 - Prefer keywords aligned to product/service relevance + ICP pain/outcome match
+- CRITICAL: Avoid semantic variations that would produce the same article (e.g., "X alternatives" vs "alternatives to X")
+- Prioritize content diversity - each keyword should lead to a distinct, unique article
 - Use volume only as a weak tie-breaker among otherwise brand-valid options
 
 Also provide overall_strategy_notes for the content backlog."""

@@ -1459,11 +1459,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         project_posts_per_week: int,
     ) -> PublicationScheduleConfig:
         """Normalize publication scheduling controls from step input."""
-        requested_posts_per_week = self._coerce_posts_per_week(input_data.posts_per_week)
-        posts_per_week = min(
-            requested_posts_per_week,
-            self._coerce_posts_per_week(project_posts_per_week),
-        )
+        posts_per_week = self._coerce_posts_per_week(project_posts_per_week)
         min_lead_days = max(1, min(input_data.min_lead_days, 60))
         llm_timing_flex_days = max(0, min(input_data.llm_timing_flex_days, 90))
         preferred = self._sanitize_weekdays(input_data.preferred_weekdays or [])
