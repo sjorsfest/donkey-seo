@@ -65,6 +65,7 @@ Hard requirements:
 
 Writing quality:
 - Clear, practical, and audience-aligned.
+- This is SEO-optimized content; apply SEO best practices throughout (keyword placement, semantic richness, headings structure, readability, user intent matching) to maximize search visibility and ranking potential.
 - Covers outline and key points from the brief.
 - Uses concise paragraphs and scannable sections.
 - Keeps claims honest and grounded in provided brand context.
