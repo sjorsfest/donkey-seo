@@ -36,7 +36,7 @@ class ContentBlocksAgent(BaseAgent[ContentBlocksInput, ContentBlocksOutput]):
     """Generates structured content blocks for articles."""
 
     model_tier = "reasoning"
-    model = "openrouter:moonshotai/kimi-k2.5"
+    model = "openrouter:google/gemini-3.1-pro-preview"
     temperature = 0.4
 
     @property
