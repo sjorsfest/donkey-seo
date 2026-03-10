@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -81,58 +81,6 @@ def calculate_publication_retry_delay_seconds(attempt_count: int) -> int:
     """Return retry delay for 1-indexed attempt count."""
     normalized_attempt = max(1, int(attempt_count))
     return PUBLICATION_WEBHOOK_BASE_BACKOFF_SECONDS * (2 ** (normalized_attempt - 1))
-
-
-def sign_publication_webhook_payload(
-    *,
-    secret: str,
-    timestamp: str,
-    raw_body: bytes,
-) -> str:
-    """Create HMAC signature for outbound webhook payload."""
-    message = timestamp.encode("utf-8") + b"." + raw_body
-    digest = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
-    return f"sha256={digest}"
-
-
-def build_publication_webhook_payload(
-    *,
-    delivery: PublicationWebhookDelivery,
-    project: Project,
-    article: ContentArticle,
-    article_version: ContentArticleVersion,
-    brief: ContentBrief,
-    occurred_at: datetime,
-) -> dict[str, Any]:
-    """Build webhook payload for publish-request event delivery."""
-    modular_document = _enrich_modular_document_with_signed_featured_image(
-        article_version.modular_document or {}
-    )
-    return {
-        "event_id": str(delivery.id),
-        "event_type": PUBLICATION_WEBHOOK_EVENT_TYPE,
-        "occurred_at": occurred_at.isoformat(),
-        "project": {
-            "id": str(project.id),
-            "domain": project.domain,
-            "locale": project.primary_locale,
-        },
-        "article": {
-            "article_id": str(article.id),
-            "brief_id": str(article.brief_id),
-            "version_number": article_version.version_number,
-            "title": article_version.title,
-            "slug": article_version.slug,
-            "primary_keyword": article_version.primary_keyword,
-            "proposed_publication_date": (
-                brief.proposed_publication_date.isoformat()
-                if brief.proposed_publication_date is not None
-                else None
-            ),
-        },
-        "modular_document": modular_document,
-        "rendered_html": article_version.rendered_html,
-    }
 
 
 def _enrich_modular_document_with_signed_featured_image(
@@ -412,39 +360,13 @@ async def claim_due_publication_webhook_delivery_ids(
     publication_date: date | None = None,
 ) -> list[str]:
     """Claim a small batch of due deliveries with row-level locking."""
-    timing_filter = PublicationWebhookDelivery.next_attempt_at <= now
-    if publication_date is not None:
-        # Nightly sweep should always attempt the first send for today's publications.
-        timing_filter = or_(
-            PublicationWebhookDelivery.attempt_count == 0,
-            PublicationWebhookDelivery.next_attempt_at <= now,
-        )
-
     query = (
         select(PublicationWebhookDelivery)
-        .join(Project, Project.id == PublicationWebhookDelivery.project_id)
-        .join(ContentArticle, ContentArticle.id == PublicationWebhookDelivery.article_id)
-        .join(ContentBrief, ContentBrief.id == ContentArticle.brief_id)
         .where(
             PublicationWebhookDelivery.event_type == PUBLICATION_WEBHOOK_EVENT_TYPE,
             PublicationWebhookDelivery.status.in_(PUBLICATION_WEBHOOK_PENDING_STATUSES),
-            timing_filter,
-            ContentArticle.published_at.is_(None),
-            or_(
-                ContentArticle.publish_status.is_(None),
-                ContentArticle.publish_status != "published",
-            ),
-            Project.notification_webhook.isnot(None),
-            Project.notification_webhook_secret.isnot(None),
-            Project.notification_webhook != "",
-            Project.notification_webhook_secret != "",
+            PublicationWebhookDelivery.next_attempt_at <= now,
         )
-    )
-    if publication_date is not None:
-        query = query.where(ContentBrief.proposed_publication_date == publication_date)
-
-    due_result = await session.execute(
-        query
         .order_by(
             PublicationWebhookDelivery.next_attempt_at.asc(),
             PublicationWebhookDelivery.created_at.asc(),
@@ -452,6 +374,8 @@ async def claim_due_publication_webhook_delivery_ids(
         .limit(max(1, int(batch_size)))
         .with_for_update(skip_locked=True)
     )
+
+    due_result = await session.execute(query)
     deliveries = list(due_result.scalars().all())
     if not deliveries:
         return []
@@ -470,58 +394,103 @@ async def claim_due_publication_webhook_delivery_ids(
     return [str(delivery.id) for delivery in deliveries]
 
 
-async def _load_delivery_context(
-    session: AsyncSession,
-    *,
-    delivery_id: str,
-) -> tuple[
-    PublicationWebhookDelivery,
-    Project,
-    ContentArticle,
-    ContentBrief,
-    ContentArticleVersion,
-] | None:
-    delivery = await PublicationWebhookDelivery.get(session, delivery_id)
-    if delivery is None:
-        return None
+class PublicationWebhookProcessor:
+    """Handles publication webhook delivery processing with a clear step-based flow."""
 
-    project = await Project.get(session, str(delivery.project_id))
-    article = await ContentArticle.get(session, str(delivery.article_id))
-    if project is None or article is None:
-        return None
+    def __init__(
+        self,
+        session: AsyncSession,
+        delivery_id: str,
+        http_client: httpx.AsyncClient | None = None,
+    ):
+        self.session = session
+        self.delivery_id = delivery_id
+        self.http_client = http_client
+        self.own_http_client = http_client is None
 
-    brief = await ContentBrief.get(session, str(article.brief_id))
-    if brief is None:
-        return None
+    async def run(self) -> bool:
+        """Main entry point: execute the complete webhook delivery process."""
+        # Step 1: Load all required data
+        context = await self._load_delivery_context()
+        if context is None:
+            return await self._handle_missing_context()
 
-    version_result = await session.execute(
-        select(ContentArticleVersion).where(
-            ContentArticleVersion.article_id == article.id,
-            ContentArticleVersion.version_number == article.current_version,
+        delivery, project, article, brief, article_version = context
+
+        # Step 2: Validate delivery state
+        if not self._should_process_delivery(delivery):
+            return False
+
+        # Step 3: Prepare webhook request
+        webhook_config = self._extract_webhook_config(project)
+        if not self._is_webhook_configured(webhook_config):
+            return await self._handle_webhook_not_configured(delivery, project, article)
+
+        # Step 4: Build and send webhook
+        occurred_at = _utc_now()
+        send_result = await self._send_webhook(
+            delivery=delivery,
+            project=project,
+            article=article,
+            article_version=article_version,
+            brief=brief,
+            webhook_config=webhook_config,
+            occurred_at=occurred_at,
         )
-    )
-    article_version = version_result.scalar_one_or_none()
-    if article_version is None:
-        return None
 
-    return delivery, project, article, brief, article_version
+        # Step 5: Update delivery and article state
+        await self._update_delivery_state(
+            delivery=delivery,
+            article=article,
+            send_result=send_result,
+            occurred_at=occurred_at,
+        )
 
+        return send_result["success"]
 
-async def dispatch_publication_webhook_delivery(
-    session: AsyncSession,
-    *,
-    delivery_id: str,
-    http_client: httpx.AsyncClient | None = None,
-) -> bool:
-    """Send one publication webhook delivery attempt and persist state transition."""
-    context = await _load_delivery_context(session, delivery_id=delivery_id)
-    if context is None:
-        delivery = await PublicationWebhookDelivery.get(session, delivery_id)
+    async def _load_delivery_context(
+        self,
+    ) -> tuple[
+        PublicationWebhookDelivery,
+        Project,
+        ContentArticle,
+        ContentBrief,
+        ContentArticleVersion,
+    ] | None:
+        """Load all required data for the delivery."""
+        delivery = await PublicationWebhookDelivery.get(self.session, self.delivery_id)
+        if delivery is None:
+            return None
+
+        project = await Project.get(self.session, str(delivery.project_id))
+        article = await ContentArticle.get(self.session, str(delivery.article_id))
+        if project is None or article is None:
+            return None
+
+        brief = await ContentBrief.get(self.session, str(article.brief_id))
+        if brief is None:
+            return None
+
+        version_result = await self.session.execute(
+            select(ContentArticleVersion).where(
+                ContentArticleVersion.article_id == article.id,
+                ContentArticleVersion.version_number == article.current_version,
+            )
+        )
+        article_version = version_result.scalar_one_or_none()
+        if article_version is None:
+            return None
+
+        return delivery, project, article, brief, article_version
+
+    async def _handle_missing_context(self) -> bool:
+        """Handle case where delivery context cannot be loaded."""
+        delivery = await PublicationWebhookDelivery.get(self.session, self.delivery_id)
         if delivery is not None and delivery.status not in PUBLICATION_WEBHOOK_TERMINAL_STATUSES:
             logger.warning(
                 "Publication webhook delivery context missing",
                 extra={
-                    "delivery_id": delivery_id,
+                    "delivery_id": self.delivery_id,
                     "status": delivery.status,
                 },
             )
@@ -533,26 +502,37 @@ async def dispatch_publication_webhook_delivery(
                 error_message="delivery_context_missing",
             )
             delivery.patch(
-                session,
+                self.session,
                 PublicationWebhookDeliveryPatchDTO.from_partial(patch_payload),
             )
-            await session.flush()
+            await self.session.flush()
         return False
 
-    delivery, project, article, brief, article_version = context
-    if delivery.status in PUBLICATION_WEBHOOK_TERMINAL_STATUSES:
-        return False
+    @staticmethod
+    def _should_process_delivery(delivery: PublicationWebhookDelivery) -> bool:
+        """Check if delivery should be processed."""
+        return delivery.status not in PUBLICATION_WEBHOOK_TERMINAL_STATUSES
 
-    attempted_at = _utc_now()
-    endpoint = (project.notification_webhook or "").strip()
-    secret = (project.notification_webhook_secret or "").strip()
+    @staticmethod
+    def _extract_webhook_config(project: Project) -> dict[str, str]:
+        """Extract webhook endpoint and secret from project."""
+        return {
+            "endpoint": (project.notification_webhook or "").strip(),
+            "secret": (project.notification_webhook_secret or "").strip(),
+        }
 
-    success = False
-    http_status: int | None = None
-    error_message: str | None = None
+    @staticmethod
+    def _is_webhook_configured(webhook_config: dict[str, str]) -> bool:
+        """Check if webhook is properly configured."""
+        return bool(webhook_config["endpoint"] and webhook_config["secret"])
 
-    if not endpoint or not secret:
-        error_message = "project_webhook_not_configured"
+    async def _handle_webhook_not_configured(
+        self,
+        delivery: PublicationWebhookDelivery,
+        project: Project,
+        article: ContentArticle,
+    ) -> bool:
+        """Handle case where webhook is not configured."""
         logger.warning(
             "Publication webhook dispatch skipped: project webhook not configured",
             extra={
@@ -561,22 +541,54 @@ async def dispatch_publication_webhook_delivery(
                 "article_id": str(article.id),
             },
         )
-    else:
-        payload = build_publication_webhook_payload(
+        attempted_at = _utc_now()
+        patch_payload = apply_publication_delivery_attempt_result(
+            delivery=delivery,
+            attempted_at=attempted_at,
+            success=False,
+            error_message="project_webhook_not_configured",
+        )
+        delivery.patch(
+            self.session,
+            PublicationWebhookDeliveryPatchDTO.from_partial(patch_payload),
+        )
+        await self.session.flush()
+        return False
+
+    async def _send_webhook(
+        self,
+        *,
+        delivery: PublicationWebhookDelivery,
+        project: Project,
+        article: ContentArticle,
+        article_version: ContentArticleVersion,
+        brief: ContentBrief,
+        webhook_config: dict[str, str],
+        occurred_at: datetime,
+    ) -> dict[str, Any]:
+        """Build and send the webhook HTTP request."""
+        # Build payload
+        payload = self.build_payload(
             delivery=delivery,
             project=project,
             article=article,
             article_version=article_version,
             brief=brief,
-            occurred_at=attempted_at,
+            occurred_at=occurred_at,
         )
-        raw_body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        timestamp = str(int(attempted_at.timestamp()))
-        signature = sign_publication_webhook_payload(
-            secret=secret,
+        raw_body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+        # Sign payload
+        timestamp = str(int(occurred_at.timestamp()))
+        signature = self.sign_payload(
+            secret=webhook_config["secret"],
             timestamp=timestamp,
             raw_body=raw_body,
         )
+
+        # Prepare headers
         headers = {
             "Content-Type": "application/json",
             "X-Donkey-Event": PUBLICATION_WEBHOOK_EVENT_TYPE,
@@ -584,6 +596,7 @@ async def dispatch_publication_webhook_delivery(
             "X-Donkey-Timestamp": timestamp,
             "X-Donkey-Signature": signature,
         }
+
         logger.info(
             "Dispatching publication webhook payload",
             extra={
@@ -592,21 +605,28 @@ async def dispatch_publication_webhook_delivery(
                 "article_id": str(article.id),
                 "event_type": PUBLICATION_WEBHOOK_EVENT_TYPE,
                 "attempt_number": int(delivery.attempt_count or 0) + 1,
-                "endpoint": _sanitize_webhook_endpoint(endpoint),
+                "endpoint": _sanitize_webhook_endpoint(webhook_config["endpoint"]),
                 "payload_bytes": len(raw_body),
             },
         )
 
-        own_client = http_client is None
-        client = http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        # Send HTTP request
+        success = False
+        http_status: int | None = None
+        error_message: str | None = None
+
+        client = self.http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         try:
-            response = await client.post(endpoint, content=raw_body, headers=headers)
+            response = await client.post(
+                webhook_config["endpoint"],
+                content=raw_body,
+                headers=headers,
+            )
             http_status = response.status_code
             success = 200 <= response.status_code < 300
             if not success:
                 error_message = (
-                    f"webhook_http_{response.status_code}: "
-                    f"{response.text[:400]}"
+                    f"webhook_http_{response.status_code}: " f"{response.text[:400]}"
                 )
                 logger.warning(
                     "Publication webhook endpoint returned non-2xx status",
@@ -614,7 +634,7 @@ async def dispatch_publication_webhook_delivery(
                         "delivery_id": str(delivery.id),
                         "project_id": str(project.id),
                         "article_id": str(article.id),
-                        "endpoint": _sanitize_webhook_endpoint(endpoint),
+                        "endpoint": _sanitize_webhook_endpoint(webhook_config["endpoint"]),
                         "http_status": response.status_code,
                     },
                 )
@@ -626,55 +646,145 @@ async def dispatch_publication_webhook_delivery(
                     "delivery_id": str(delivery.id),
                     "project_id": str(project.id),
                     "article_id": str(article.id),
-                    "endpoint": _sanitize_webhook_endpoint(endpoint),
+                    "endpoint": _sanitize_webhook_endpoint(webhook_config["endpoint"]),
                     "error": str(exc),
                 },
             )
         finally:
-            if own_client:
+            if self.own_http_client:
                 await client.aclose()
 
-    patch_payload = apply_publication_delivery_attempt_result(
-        delivery=delivery,
-        attempted_at=attempted_at,
-        success=success,
-        http_status=http_status,
-        error_message=error_message,
-    )
-    delivery.patch(
-        session,
-        PublicationWebhookDeliveryPatchDTO.from_partial(patch_payload),
-    )
-    if success and article.publish_status != "published" and article.published_at is None:
-        article.patch(
-            session,
-            ContentArticlePatchDTO.from_partial(
-                {
-                    "publish_status": PUBLICATION_SENT_STATUS,
-                }
-            ),
+        return {
+            "success": success,
+            "http_status": http_status,
+            "error_message": error_message,
+        }
+
+    async def _update_delivery_state(
+        self,
+        *,
+        delivery: PublicationWebhookDelivery,
+        article: ContentArticle,
+        send_result: dict[str, Any],
+        occurred_at: datetime,
+    ) -> None:
+        """Update delivery and article state after webhook attempt."""
+        patch_payload = apply_publication_delivery_attempt_result(
+            delivery=delivery,
+            attempted_at=occurred_at,
+            success=send_result["success"],
+            http_status=send_result["http_status"],
+            error_message=send_result["error_message"],
         )
-    await session.flush()
-    next_attempt_at_raw = patch_payload.get("next_attempt_at")
-    next_attempt_at_iso = (
-        next_attempt_at_raw.isoformat()
-        if isinstance(next_attempt_at_raw, datetime)
-        else None
+        delivery.patch(
+            self.session,
+            PublicationWebhookDeliveryPatchDTO.from_partial(patch_payload),
+        )
+
+        # Update article status if successfully sent
+        if (
+            send_result["success"]
+            and article.publish_status != "published"
+            and article.published_at is None
+        ):
+            article.patch(
+                self.session,
+                ContentArticlePatchDTO.from_partial(
+                    {
+                        "publish_status": PUBLICATION_SENT_STATUS,
+                    }
+                ),
+            )
+
+        await self.session.flush()
+
+        # Log final state
+        next_attempt_at_raw = patch_payload.get("next_attempt_at")
+        next_attempt_at_iso = (
+            next_attempt_at_raw.isoformat()
+            if isinstance(next_attempt_at_raw, datetime)
+            else None
+        )
+        logger.info(
+            "Publication webhook delivery attempt persisted",
+            extra={
+                "delivery_id": str(delivery.id),
+                "project_id": str(article.project_id),
+                "article_id": str(article.id),
+                "status": patch_payload.get("status"),
+                "attempt_count": patch_payload.get("attempt_count"),
+                "http_status": patch_payload.get("last_http_status"),
+                "next_attempt_at": next_attempt_at_iso,
+                "last_error": patch_payload.get("last_error"),
+            },
+        )
+
+    @staticmethod
+    def sign_payload(
+        *,
+        secret: str,
+        timestamp: str,
+        raw_body: bytes,
+    ) -> str:
+        """Create HMAC signature for outbound webhook payload."""
+        message = timestamp.encode("utf-8") + b"." + raw_body
+        digest = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+        return f"sha256={digest}"
+
+    @staticmethod
+    def build_payload(
+        *,
+        delivery: PublicationWebhookDelivery,
+        project: Project,
+        article: ContentArticle,
+        article_version: ContentArticleVersion,
+        brief: ContentBrief,
+        occurred_at: datetime,
+    ) -> dict[str, Any]:
+        """Build webhook payload for publish-request event delivery."""
+        modular_document = _enrich_modular_document_with_signed_featured_image(
+            article_version.modular_document or {}
+        )
+        return {
+            "event_id": str(delivery.id),
+            "event_type": PUBLICATION_WEBHOOK_EVENT_TYPE,
+            "occurred_at": occurred_at.isoformat(),
+            "project": {
+                "id": str(project.id),
+                "domain": project.domain,
+                "locale": project.primary_locale,
+            },
+            "article": {
+                "article_id": str(article.id),
+                "brief_id": str(article.brief_id),
+                "version_number": article_version.version_number,
+                "title": article_version.title,
+                "slug": article_version.slug,
+                "primary_keyword": article_version.primary_keyword,
+                "proposed_publication_date": (
+                    brief.proposed_publication_date.isoformat()
+                    if brief.proposed_publication_date is not None
+                    else None
+                ),
+            },
+            "modular_document": modular_document,
+            "rendered_html": article_version.rendered_html,
+        }
+
+
+async def dispatch_publication_webhook_delivery(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    http_client: httpx.AsyncClient | None = None,
+) -> bool:
+    """Send one publication webhook delivery attempt and persist state transition."""
+    processor = PublicationWebhookProcessor(
+        session=session,
+        delivery_id=delivery_id,
+        http_client=http_client,
     )
-    logger.info(
-        "Publication webhook delivery attempt persisted",
-        extra={
-            "delivery_id": str(delivery.id),
-            "project_id": str(project.id),
-            "article_id": str(article.id),
-            "status": patch_payload.get("status"),
-            "attempt_count": patch_payload.get("attempt_count"),
-            "http_status": patch_payload.get("last_http_status"),
-            "next_attempt_at": next_attempt_at_iso,
-            "last_error": patch_payload.get("last_error"),
-        },
-    )
-    return success
+    return await processor.run()
 
 
 async def process_due_publication_webhook_deliveries(*, batch_size: int = 20) -> int:

@@ -178,92 +178,105 @@ class ArticleWriterOutput(BaseModel):
 
 
 class ArticleWriterAgent(BaseAgent[ArticleWriterInput, ArticleWriterOutput]):
-    """Generates structured modular article blocks from brief artifacts."""
+    """Orchestrates article generation using ContentBlocksAgent and ArticleMetadataAgent.
+
+    This agent coordinates two specialized agents:
+    1. ContentBlocksAgent - generates article content blocks
+    2. ArticleMetadataAgent - generates SEO metadata and conversion plan
+    """
 
     model_tier = "reasoning"
-    model = "openrouter:anthropic/claude-sonnet-4.6"
     temperature = 0.4
+
+    def __init__(self, model_override: str | None = None) -> None:
+        super().__init__(model_override)
+        # Import here to avoid circular dependencies
+        from app.agents.article_metadata_agent import ArticleMetadataAgent, ArticleMetadataInput
+        from app.agents.content_blocks_agent import ContentBlocksAgent, ContentBlocksInput
+
+        self._content_blocks_agent = ContentBlocksAgent(model_override)
+        self._metadata_agent = ArticleMetadataAgent(model_override)
+        self._ContentBlocksInput = ContentBlocksInput
+        self._ArticleMetadataInput = ArticleMetadataInput
 
     @property
     def system_prompt(self) -> str:
-        return """You are an expert SEO content writer producing CMS-agnostic modular content.
-
-Return ONLY structured JSON matching the schema.
-
-Hard requirements:
-1. Use block types from the allowed enum only.
-2. Use semantic_tag values that match the block intent.
-3. Include exactly one hero block and one H1.
-4. Include exactly one summary block with a short, non-empty body (1-2 sentences) that can be reused as an excerpt.
-5. Respect forbidden claims and compliance notes.
-6. Follow must-include sections from brief and delta, and cover the outline headings with substantive content.
-7. Keep the output conversion-oriented for funnel stage and conversion intents.
-8. Add meaningful internal/external links inside block.links where appropriate.
-9. Never output raw HTML in body text.
-10. If QA feedback is provided, revise the draft to specifically fix those failures.
-11. If an existing document is provided, apply minimal targeted edits
-    instead of rewriting from scratch.
-12. Preserve topic, search intent, primary keyword strategy, and ICP hook.
-13. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
-14. CRITICAL: Naturally incorporate supporting keywords from the brief throughout the article. Use multiple supporting keywords where contextually relevant - they should appear organically in headings, body text, lists, and tables. Do not force them, but ensure several supporting keywords are used across different sections.
-15. Never use em dashes (—); use commas, periods, or parentheses instead.
-16. If you include source-dependent claims (for example prices, percentages, statistics, or "according to" statements), add a non-empty sources block that lists the supporting sources.
-
-Writing quality:
-- Clear, practical, and audience-aligned.
-- Covers outline and key points from the brief.
-- Uses concise paragraphs and scannable sections.
-- Keeps claims honest and grounded in provided brand context.
-- Avoid heading-only placeholder sections; each section should include useful body content, list items, table rows, or FAQ entries.
-"""
+        # Not used since we orchestrate sub-agents, but required by base class
+        return ""
 
     @property
     def output_type(self) -> type[ArticleWriterOutput]:
         return ArticleWriterOutput
 
     def _build_prompt(self, input_data: ArticleWriterInput) -> str:
+        # Not used since we orchestrate sub-agents, but required by base class
+        return ""
+
+    async def run(
+        self,
+        input_data: ArticleWriterInput,
+        context: dict | None = None,
+    ) -> ArticleWriterOutput:
+        """Run the orchestrated article generation.
+
+        Steps:
+        1. Generate content blocks using ContentBlocksAgent
+        2. Generate metadata using ArticleMetadataAgent
+        3. Combine into final ArticleDocumentResult
+        """
         logger.info(
-            "Building article writer prompt",
+            "Starting orchestrated article generation",
             extra={
                 "primary_keyword": input_data.brief.get("primary_keyword"),
                 "funnel_stage": input_data.brief.get("funnel_stage"),
                 "qa_feedback_count": len(input_data.qa_feedback),
             },
         )
-        conversion_intents = ", ".join(input_data.conversion_intents)
-        conversion_intents_text = conversion_intents if conversion_intents else "Not specified"
 
-        supporting_keywords = input_data.brief.get("supporting_keywords", [])
-        supporting_keywords_text = (
-            "\n".join(f"  - {kw}" for kw in supporting_keywords[:30])
-            if supporting_keywords
-            else "None provided"
+        # Step 1: Generate content blocks
+        logger.info("Step 1: Generating content blocks")
+        content_input = self._ContentBlocksInput(
+            brief=input_data.brief,
+            writer_instructions=input_data.writer_instructions,
+            brief_delta=input_data.brief_delta,
+            brand_context=input_data.brand_context,
+            conversion_intents=input_data.conversion_intents,
+            target_domain=input_data.target_domain,
+            qa_feedback=input_data.qa_feedback,
+            existing_document=input_data.existing_document,
+        )
+        content_output = await self._content_blocks_agent.run(content_input, context)
+
+        logger.info(
+            "Content blocks generated",
+            extra={"blocks_count": len(content_output.blocks)},
         )
 
-        return (
-            "Generate a complete modular article document from these inputs.\n\n"
-            "## Content Brief\n"
-            f"{json.dumps(input_data.brief, indent=2, ensure_ascii=True)}\n\n"
-            "## Supporting Keywords To Incorporate\n"
-            "IMPORTANT: Naturally weave these supporting keywords throughout the article content.\n"
-            "Use them in headings, body paragraphs, list items, and table content where contextually appropriate.\n"
-            "Aim to use multiple different supporting keywords across various sections.\n\n"
-            f"{supporting_keywords_text}\n\n"
-            "## Writer Instructions\n"
-            f"{json.dumps(input_data.writer_instructions, indent=2, ensure_ascii=True)}\n\n"
-            "## Brief Delta\n"
-            f"{json.dumps(input_data.brief_delta, indent=2, ensure_ascii=True)}\n\n"
-            "## Brand Context\n"
-            f"{input_data.brand_context or 'Not provided'}\n\n"
-            "## Conversion Intents\n"
-            f"{conversion_intents_text}\n\n"
-            "## Target Domain\n"
-            f"{input_data.target_domain or 'Not specified'}\n\n"
-            "## Non-Negotiable Style Rule\n"
-            "Never use em dashes (—). Use commas, periods, or parentheses instead.\n\n"
-            "## QA Feedback To Fix\n"
-            f"{json.dumps(input_data.qa_feedback, ensure_ascii=True)}\n\n"
-            "## Existing Document (for targeted revision)\n"
-            f"{json.dumps(input_data.existing_document, indent=2, ensure_ascii=True)}\n\n"
-            "Build the final modular article now."
+        # Step 2: Generate metadata from blocks
+        logger.info("Step 2: Generating SEO metadata and conversion plan")
+        metadata_input = self._ArticleMetadataInput(
+            blocks=content_output.blocks,
+            brief=input_data.brief,
+            conversion_intents=input_data.conversion_intents,
+            target_domain=input_data.target_domain,
         )
+        metadata_output = await self._metadata_agent.run(metadata_input, context)
+
+        logger.info(
+            "Metadata generated",
+            extra={
+                "h1": metadata_output.seo_meta.h1,
+                "primary_keyword": metadata_output.seo_meta.primary_keyword,
+            },
+        )
+
+        # Step 3: Combine into final document
+        document = ArticleDocumentResult(
+            schema_version="1.0",
+            seo_meta=metadata_output.seo_meta,
+            conversion_plan=metadata_output.conversion_plan,
+            blocks=content_output.blocks,
+        )
+
+        logger.info("Article generation orchestration complete")
+        return ArticleWriterOutput(document=document)
