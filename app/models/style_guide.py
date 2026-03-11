@@ -154,6 +154,13 @@ class BriefDelta(
         index=True,
     )
 
+    # Blueprint identification
+    blueprint_key: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Page type blueprint key from blueprints registry",
+    )
+
     # Page-type specific rules
     page_type_rules: Mapped[dict | None] = mapped_column(
         JSONB,

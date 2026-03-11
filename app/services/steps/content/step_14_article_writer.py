@@ -550,6 +550,8 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
             "primary_keyword": brief.primary_keyword,
             "search_intent": brief.search_intent,
             "page_type": brief.page_type,
+            "blueprint_key": brief.blueprint_key or "",
+            "content_role": brief.content_role or "",
             "funnel_stage": brief.funnel_stage,
             "working_titles": working_titles,
             "locked_title": locked_title or "",

@@ -291,6 +291,7 @@ class BriefDeltaRow:
 
     style_guide_id: str
     brief_id: str
+    blueprint_key: str | None
     page_type_rules: dict | None
     must_include_sections: list[str] | None
     h1_h2_usage: dict | None
@@ -308,6 +309,7 @@ class BriefDeltaRow:
         return cls(
             style_guide_id=model.style_guide_id,
             brief_id=model.brief_id,
+            blueprint_key=model.blueprint_key,
             page_type_rules=model.page_type_rules,
             must_include_sections=model.must_include_sections,
             h1_h2_usage=model.h1_h2_usage,
@@ -327,6 +329,7 @@ class BriefDeltaCreateDTO:
 
     style_guide_id: str
     brief_id: str
+    blueprint_key: str | None = None
     page_type_rules: dict | None = None
     must_include_sections: list[str] | None = None
     h1_h2_usage: dict | None = None
@@ -351,6 +354,7 @@ class BriefDeltaPatchDTO:
 
     style_guide_id: str | None = None
     brief_id: str | None = None
+    blueprint_key: str | None = None
     page_type_rules: dict | None = None
     must_include_sections: list[str] | None = None
     h1_h2_usage: dict | None = None
@@ -762,6 +766,8 @@ class ContentBriefRow:
     primary_keyword: str
     search_intent: str | None
     page_type: str | None
+    blueprint_key: str | None
+    content_role: str | None
     funnel_stage: str | None
     working_titles: list[str] | None
     target_audience: str | None
@@ -796,6 +802,8 @@ class ContentBriefRow:
             primary_keyword=model.primary_keyword,
             search_intent=model.search_intent,
             page_type=model.page_type,
+            blueprint_key=model.blueprint_key,
+            content_role=model.content_role,
             funnel_stage=model.funnel_stage,
             working_titles=model.working_titles,
             target_audience=model.target_audience,
@@ -832,6 +840,8 @@ class ContentBriefCreateDTO:
     target_keyword_id: str | None = None
     search_intent: str | None = None
     page_type: str | None = None
+    blueprint_key: str | None = None
+    content_role: str | None = None
     funnel_stage: str | None = None
     working_titles: list[str] | None = None
     target_audience: str | None = None
@@ -875,6 +885,8 @@ class ContentBriefPatchDTO:
     primary_keyword: str | None = None
     search_intent: str | None = None
     page_type: str | None = None
+    blueprint_key: str | None = None
+    content_role: str | None = None
     funnel_stage: str | None = None
     working_titles: list[str] | None = None
     target_audience: str | None = None

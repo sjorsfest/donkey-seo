@@ -31,8 +31,8 @@ ABSOLUTE_CLAIM_PATTERNS: tuple[str, ...] = (
     r"\brisk[- ]free\b",
 )
 
-MODULE_A_PAGE_TYPES = {"guide", "how-to", "glossary"}
-MODULE_B_PAGE_TYPES = {"comparison", "alternatives", "list"}
+MODULE_A_PAGE_TYPES = {"guide", "how-to", "glossary", "use-case", "industry", "checklist"}
+MODULE_B_PAGE_TYPES = {"comparison", "alternatives", "list", "best-x-for-y", "statistics"}
 MODULE_C_PAGE_TYPES = {"landing", "tool", "calculator", "template"}
 MODULE_D_PAGE_TYPES = {"opinion", "thought-leadership", "editorial"}
 _TOPIC_TOKEN_STOPWORDS = {
@@ -76,8 +76,23 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def select_content_type_module(page_type: str | None, search_intent: str | None) -> str:
-    """Select content module A/B/C/D based on page type."""
+def select_content_type_module(
+    page_type: str | None,
+    search_intent: str | None,
+    blueprint_key: str | None = None,
+) -> str:
+    """Select content module A/B/C/D based on blueprint key or page type.
+
+    If a blueprint_key is provided and recognized, use its qa_module directly.
+    Otherwise fall back to page_type → module mapping.
+    """
+    if blueprint_key:
+        from app.services.blueprints import BLUEPRINT_REGISTRY
+
+        blueprint = BLUEPRINT_REGISTRY.get(blueprint_key)
+        if blueprint:
+            return blueprint.qa_module
+
     normalized_page_type = (page_type or "").strip().lower()
     if normalized_page_type in MODULE_A_PAGE_TYPES:
         return "A"
@@ -260,6 +275,7 @@ def run_deterministic_checklist(
     topic_anchor: str | None = None,
     page_type: str | None,
     search_intent: str | None,
+    blueprint_key: str | None = None,
     required_sections: list[str] | None,
     forbidden_claims: list[str] | None,
     target_word_count_min: int | None,
@@ -276,7 +292,7 @@ def run_deterministic_checklist(
     """Run deterministic checks aligned to the SEO checklist modules."""
     checks: list[dict[str, Any]] = []
 
-    content_type_module = select_content_type_module(page_type, search_intent)
+    content_type_module = select_content_type_module(page_type, search_intent, blueprint_key)
     risk_module_applied = should_apply_risk_module(compliance_notes, brief_text_fields)
 
     content_text = _collect_text(document)
@@ -322,6 +338,27 @@ def run_deterministic_checklist(
         "passed": len(missing_sections) == 0,
         "details": {"missing": missing_sections},
     })
+
+    # Blueprint section presence check
+    if blueprint_key:
+        from app.services.blueprints import BLUEPRINT_REGISTRY
+
+        blueprint = BLUEPRINT_REGISTRY.get(blueprint_key)
+        if blueprint:
+            missing_blueprint_sections: list[str] = []
+            for section_contract in blueprint.sections:
+                section_name_lower = section_contract.name.strip().lower()
+                if not any(section_name_lower in heading for heading in normalized_headings):
+                    missing_blueprint_sections.append(section_contract.name)
+            checks.append({
+                "name": "blueprint_required_sections",
+                "required": True,
+                "passed": len(missing_blueprint_sections) == 0,
+                "details": {
+                    "blueprint_key": blueprint_key,
+                    "missing": missing_blueprint_sections,
+                },
+            })
 
     normalized_keyword = " ".join(_collect_words(primary_keyword))
     keyword_checks_required = True

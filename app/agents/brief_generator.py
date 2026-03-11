@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -29,10 +29,6 @@ class OutlineSection(BaseModel):
 
 class ContentBriefResult(BaseModel):
     """Complete content brief for a topic."""
-
-    pillar_slug: Literal["blog", "tools", "guides"] = Field(
-        description="Primary content pillar slug. Must be one of: blog, tools, guides."
-    )
 
     working_titles: list[str] = Field(
         min_length=3,
@@ -123,6 +119,27 @@ class BriefGeneratorInput(BaseModel):
         default=None,
         description="Suggested publishing sequence from prioritization (1 = first)",
     )
+    blueprint_key: str = Field(default="", description="Page type blueprint key")
+    blueprint_sections: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Blueprint section contracts with required and flexible fields",
+    )
+    blueprint_quality_rules: list[str] = Field(
+        default_factory=list,
+        description="Quality rules from the selected blueprint",
+    )
+    blueprint_conversion_elements: list[str] = Field(
+        default_factory=list,
+        description="Conversion elements from the selected blueprint",
+    )
+    blueprint_common_mistakes: list[str] = Field(
+        default_factory=list,
+        description="Common mistakes to avoid from the selected blueprint",
+    )
+    content_role: str = Field(
+        default="",
+        description="Content hierarchy role: pillar, supporting, or high_intent",
+    )
 
 
 class BriefGeneratorOutput(BaseModel):
@@ -209,11 +226,14 @@ Recommend appropriate schema:
 - Date must be in the near future (within roughly 1-4 months from today)
 - Align timing with funnel stage and recommended publish order when provided
 
-### 7. Pillar Selection (Required)
-- Assign exactly one `pillar_slug` from: `blog`, `tools`, `guides`
-- `blog`: broad thought leadership, trends, general education
-- `tools`: comparisons, alternatives, software/tooling, pricing and evaluation content
-- `guides`: how-to content, implementation walkthroughs, tactical playbooks
+### 7. Page Type Blueprint (When Provided)
+When a Page Type Blueprint is included in the prompt, its required sections take priority:
+- Every required section MUST appear in the outline as an H2 or H3
+- For sections with required_fields, include those as key_points or sub-headings
+- Flexible fields may be included when they add value for this specific topic
+- Follow the blueprint's quality rules and avoid its listed common mistakes
+- The blueprint's conversion elements should inform CTA placement and internal link suggestions
+- Word count range from the blueprint takes priority over general guidelines
 
 ### 8. Competitive SERP Coverage (Required)
 - Treat `SERP Best Practices` and `SERP Recommended Sections` as high-priority guidance.
@@ -301,6 +321,53 @@ Be specific and actionable. The writer should know exactly what to create."""
         )
         today = date.today().isoformat()
 
+        # Build optional blueprint section
+        blueprint_block = ""
+        if input_data.blueprint_key and input_data.blueprint_sections:
+            section_lines = []
+            for sec in input_data.blueprint_sections:
+                name = sec.get("name", "")
+                purpose = sec.get("purpose", "")
+                required = sec.get("required_fields", [])
+                flexible = sec.get("flexible_fields", [])
+                section_lines.append(f"**{name}** — {purpose}")
+                if required:
+                    section_lines.append(f"  Required fields: {', '.join(required)}")
+                if flexible:
+                    section_lines.append(f"  Optional fields: {', '.join(flexible)}")
+            sections_text = "\n".join(section_lines)
+
+            quality_rules = "\n".join(
+                f"- {rule}" for rule in input_data.blueprint_quality_rules
+            ) if input_data.blueprint_quality_rules else "None specified"
+
+            conversion_elements = "\n".join(
+                f"- {elem}" for elem in input_data.blueprint_conversion_elements
+            ) if input_data.blueprint_conversion_elements else "None specified"
+
+            common_mistakes = "\n".join(
+                f"- {mistake}" for mistake in input_data.blueprint_common_mistakes
+            ) if input_data.blueprint_common_mistakes else "None specified"
+
+            content_role_label = input_data.content_role or "not specified"
+
+            blueprint_block = f"""
+## Page Type Blueprint: {input_data.blueprint_key}
+Content Role: {content_role_label}
+
+### Section Structure (REQUIRED — every required section must appear in your outline)
+{sections_text}
+
+### Quality Rules
+{quality_rules}
+
+### Conversion Elements
+{conversion_elements}
+
+### Common Mistakes to Avoid
+{common_mistakes}
+"""
+
         return f"""Generate a comprehensive content brief for this topic:
 
 ## Topic Details
@@ -345,15 +412,14 @@ Be specific and actionable. The writer should know exactly what to create."""
 - Use this date for year-sensitive framing and publication planning
 
 ---
-
+{blueprint_block}
 Create a detailed brief with:
 1. 3-5 compelling title options
-2. Detailed outline (H2s and H3s with key points)
+2. Detailed outline (H2s and H3s with key points) — if a blueprint is provided, its required sections must all appear
 3. Target audience and reader intent
 4. Required examples and FAQs
 5. Meta title and description templates
-6. Appropriate word count range
+6. Appropriate word count range (blueprint range takes priority if provided)
 7. Recommended schema type
 8. Proposed publication date (YYYY-MM-DD, near future)
-9. Primary pillar slug (`blog`, `tools`, or `guides`)
-10. Include SERP best practices and recommended sections when they improve completeness"""
+9. Include SERP best practices and recommended sections when they improve completeness"""

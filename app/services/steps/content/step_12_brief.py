@@ -15,6 +15,10 @@ from urllib.parse import urlparse
 
 from sqlalchemy import or_, select
 
+from app.agents.blueprint_selector import (
+    BlueprintSelectorAgent,
+    BlueprintSelectorInput,
+)
 from app.agents.brief_diversifier import BriefDiversifierAgent, BriefDiversifierInput
 from app.agents.brief_generator import BriefGeneratorAgent, BriefGeneratorInput
 from app.agents.serp_briefing import (
@@ -53,6 +57,13 @@ from app.services.run_strategy import (
     normalize_funnel_label,
     normalize_intent_label,
 )
+from app.services.blueprints import (
+    ALLOWED_PILLAR_CONFIG,
+    BLUEPRINT_REGISTRY,
+    get_blueprint_summary_for_selector,
+    map_discovery_to_blueprint,
+    serialize_blueprint_sections,
+)
 from app.services.steps.base_step import BaseStepService
 
 logger = logging.getLogger(__name__)
@@ -73,20 +84,7 @@ SERP_NON_CONTENT_GUIDANCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(call to action|cta button|subscribe|newsletter|popup|pop-up)\b"),
     re.compile(r"\b(internal linking strategy|anchor text strategy|schema markup)\b"),
 )
-ALLOWED_PILLAR_CONFIG: dict[str, tuple[str, str]] = {
-    "blog": (
-        "Blog",
-        "General informational and educational content for broad awareness topics.",
-    ),
-    "tools": (
-        "Tools",
-        "Software, templates, calculators, comparisons, alternatives, and product-focused content.",
-    ),
-    "guides": (
-        "Guides",
-        "How-to, implementation walkthroughs, use cases, and educational playbooks.",
-    ),
-}
+# ALLOWED_PILLAR_CONFIG is imported from app.services.blueprints
 
 
 @dataclass
@@ -480,6 +478,50 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             if has_warnings:
                 briefs_with_warnings += 1
 
+            # --- Blueprint selection ---
+            try:
+                selector_input = BlueprintSelectorInput(
+                    topic_name=topic.name,
+                    primary_keyword=primary_kw.keyword,
+                    search_intent=resolved_intent,
+                    discovery_page_type=resolved_page_type,
+                    funnel_stage=topic.funnel_stage or "tofu",
+                    supporting_keywords=supporting_keyword_texts[:5],
+                    available_blueprints=get_blueprint_summary_for_selector(),
+                )
+                selector_agent = BlueprintSelectorAgent()
+                selector_output = await selector_agent.run(selector_input)
+                blueprint_key = selector_output.blueprint_key
+                content_role = selector_output.content_role
+                pillar_slug_from_selector = selector_output.pillar_slug
+                logger.info(
+                    "Blueprint selected",
+                    extra={
+                        "topic": topic.name,
+                        "blueprint_key": blueprint_key,
+                        "content_role": content_role,
+                        "pillar_slug": pillar_slug_from_selector,
+                        "rationale": selector_output.rationale,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Blueprint selector failed, using deterministic fallback",
+                    extra={"topic": topic.name, "keyword": primary_kw.keyword},
+                )
+                blueprint_key = map_discovery_to_blueprint(
+                    resolved_page_type, primary_kw.keyword, resolved_intent,
+                )
+                blueprint = BLUEPRINT_REGISTRY.get(blueprint_key)
+                content_role = blueprint.default_content_role if blueprint else "supporting"
+                pillar_slug_from_selector = blueprint.default_pillar_slug if blueprint else "learn"
+
+            blueprint = BLUEPRINT_REGISTRY.get(blueprint_key)
+            blueprint_sections = serialize_blueprint_sections(blueprint) if blueprint else []
+            blueprint_quality_rules = list(blueprint.quality_rules) if blueprint else []
+            blueprint_conversion_elements = list(blueprint.conversion_elements) if blueprint else []
+            blueprint_common_mistakes = list(blueprint.common_mistakes) if blueprint else []
+
             try:
                 # Generate brief with LLM
                 agent_input = BriefGeneratorInput(
@@ -500,6 +542,12 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     money_pages=topic.target_money_pages or money_pages[:3],
                     conversion_intents=strategy.conversion_intents,
                     recommended_publish_order=topic.recommended_publish_order,
+                    blueprint_key=blueprint_key,
+                    blueprint_sections=blueprint_sections,
+                    blueprint_quality_rules=blueprint_quality_rules,
+                    blueprint_conversion_elements=blueprint_conversion_elements,
+                    blueprint_common_mistakes=blueprint_common_mistakes,
+                    content_role=content_role,
                 )
 
                 output = await agent.run(agent_input)
@@ -515,7 +563,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     today=today,
                     config=schedule_config,
                 )
-                pillar_slug = self._resolve_allowed_pillar_slug(brief_data.pillar_slug)
+                pillar_slug = self._resolve_allowed_pillar_slug(pillar_slug_from_selector)
 
                 output_briefs.append({
                     "topic_id": str(topic.id),
@@ -524,6 +572,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "primary_keyword_id": str(primary_kw.id),
                     "search_intent": resolved_intent,
                     "page_type": resolved_page_type,
+                    "blueprint_key": blueprint_key,
+                    "content_role": content_role,
                     "funnel_stage": topic.funnel_stage,
                     "serp_features": serp_features,
                     "competitors_content_types": competitors_content_types,
@@ -575,7 +625,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "proposed_publication_date": proposed_publication_date,
                     "pillar_slug": pillar_slug,
                     "pillar_confidence": 1.0,
-                    "pillar_assignment_method": "ai_brief",
+                    "pillar_assignment_method": "ai_selector",
                     "has_warnings": has_warnings,
                     "warnings": self._collect_warnings(
                         collision_status,
@@ -614,6 +664,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "primary_keyword_id": str(primary_kw.id),
                     "search_intent": resolved_intent,
                     "page_type": resolved_page_type,
+                    "blueprint_key": blueprint_key,
+                    "content_role": content_role,
                     "funnel_stage": topic.funnel_stage,
                     "serp_features": serp_features,
                     "competitors_content_types": competitors_content_types,
@@ -636,9 +688,9 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                     "target_word_count": {"min": 1500, "max": 2500},
                     "must_include_sections": serp_recommended_sections[:8],
                     "proposed_publication_date": fallback_publication_date,
-                    "pillar_slug": "blog",
-                    "pillar_confidence": 0.0,
-                    "pillar_assignment_method": "fallback_default",
+                    "pillar_slug": self._resolve_allowed_pillar_slug(pillar_slug_from_selector),
+                    "pillar_confidence": 0.5,
+                    "pillar_assignment_method": "ai_selector_brief_fallback",
                     "has_warnings": True,
                     "warnings": fallback_warnings,
                 })
@@ -2382,6 +2434,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
             primary_keyword_id = self._optional_str(brief_data.get("primary_keyword_id"))
             search_intent = self._optional_str(brief_data.get("search_intent"))
             page_type = self._optional_str(brief_data.get("page_type"))
+            blueprint_key = self._optional_str(brief_data.get("blueprint_key"))
+            content_role = self._optional_str(brief_data.get("content_role"))
             funnel_stage = self._optional_str(brief_data.get("funnel_stage"))
             working_titles = self._str_list_or_none(brief_data.get("working_titles"))
             target_audience = self._optional_str(brief_data.get("target_audience"))
@@ -2418,6 +2472,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 "primary_keyword": primary_keyword,
                 "search_intent": search_intent,
                 "page_type": page_type,
+                "blueprint_key": blueprint_key,
+                "content_role": content_role,
                 "funnel_stage": funnel_stage,
                 "working_titles": working_titles,
                 "target_audience": target_audience,
@@ -2464,6 +2520,8 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
                 primary_keyword=primary_keyword,
                 search_intent=search_intent,
                 page_type=page_type,
+                blueprint_key=blueprint_key,
+                content_role=content_role,
                 funnel_stage=funnel_stage,
                 working_titles=working_titles,
                 target_audience=target_audience,
@@ -2604,7 +2662,7 @@ class Step12BriefService(BaseStepService[BriefInput, BriefOutput]):
         slug = str(value or "").strip().lower()
         if slug in ALLOWED_PILLAR_CONFIG:
             return slug
-        return "blog"
+        return "learn"
 
     async def _ensure_allowed_pillars(self) -> dict[str, ContentPillar]:
         slugs = list(ALLOWED_PILLAR_CONFIG.keys())

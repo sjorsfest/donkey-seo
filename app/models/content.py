@@ -101,6 +101,16 @@ class ContentBrief(
     primary_keyword: Mapped[str] = mapped_column(String(500), nullable=False)
     search_intent: Mapped[str | None] = mapped_column(String(50), nullable=True)
     page_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    blueprint_key: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Page type blueprint key from blueprints registry",
+    )
+    content_role: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+        comment="Content hierarchy role: pillar, supporting, or high_intent",
+    )
     funnel_stage: Mapped[str | None] = mapped_column(String(20), nullable=True)
     working_titles: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     target_audience: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -196,11 +196,13 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 page_type=brief.page_type or "guide",
                 search_intent=brief.search_intent or "informational",
                 funnel_stage=brief.funnel_stage or "tofu",
+                blueprint_key=brief.blueprint_key or "",
             )
             delta_output = await delta_agent.run(delta_input)
             delta_result = delta_output.delta
             return {
                 "brief_id": str(brief.id),
+                "blueprint_key": brief.blueprint_key or "",
                 "page_type_rules": delta_result.page_type_rules,
                 "must_include_sections": delta_result.must_include_sections,
                 "h1_h2_usage": delta_result.h1_h2_usage,
@@ -222,10 +224,11 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 )
                 return {
                     "brief_id": str(brief.id),
+                    "blueprint_key": brief.blueprint_key or "",
                     "page_type_rules": {},
-                    "must_include_sections": self._infer_sections(brief.page_type),
+                    "must_include_sections": self._infer_sections(brief.blueprint_key or brief.page_type),
                     "h1_h2_usage": {"h1": "One per page", "h2": "Main sections"},
-                    "schema_type": self._infer_schema(brief.page_type),
+                    "schema_type": self._infer_schema(brief.blueprint_key or brief.page_type),
                     "additional_qa_items": [],
                     "_fallback": True,
                 }
@@ -255,6 +258,7 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
                 BriefDeltaCreateDTO(
                     style_guide_id=style_guide.id,
                     brief_id=brief.id,
+                    blueprint_key=delta_data.get("blueprint_key") or None,
                     page_type_rules=delta_data["page_type_rules"],
                     must_include_sections=delta_data["must_include_sections"],
                     h1_h2_usage=delta_data["h1_h2_usage"],
@@ -406,10 +410,11 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             return style_guide, style_guide_data
 
     def _infer_sections(self, page_type: str | None) -> list[str]:
-        """Infer required sections based on page type."""
+        """Infer required sections based on page type or blueprint key."""
         page_type = page_type or "guide"
 
         section_map = {
+            # Legacy page types
             "guide": ["Introduction", "Main Content", "Conclusion", "FAQ"],
             "how-to": ["Introduction", "Prerequisites", "Steps", "Troubleshooting", "FAQ"],
             "comparison": ["Introduction", "Quick Comparison", "Detailed Analysis", "Verdict"],
@@ -418,15 +423,41 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             "landing": ["Hero", "Benefits", "Features", "CTA"],
             "tool": ["Introduction", "How to Use", "Features", "FAQ"],
             "glossary": ["Definition", "Examples", "Related Terms"],
+            # Blueprint keys
+            "best-x-for-y": [
+                "Introduction", "Top Picks Summary", "Comparison Table",
+                "Detailed Reviews", "Buyer Guide", "FAQ", "Final Recommendation",
+            ],
+            "use-case": [
+                "Introduction", "Problem Context", "Solution Walkthrough",
+                "Real-World Examples", "Implementation Tips", "FAQ",
+            ],
+            "industry": [
+                "Introduction", "Industry Overview", "Key Challenges",
+                "Solutions and Approaches", "Case Studies", "FAQ",
+            ],
+            "template": [
+                "Introduction", "Template Overview", "How to Use",
+                "Customization Tips", "Examples", "Download / Access",
+            ],
+            "statistics": [
+                "Introduction", "Key Statistics", "Trends and Analysis",
+                "Data Visualizations", "Methodology", "Sources",
+            ],
+            "checklist": [
+                "Introduction", "Checklist Items", "How to Use This Checklist",
+                "Common Mistakes", "FAQ", "Download / Print Version",
+            ],
         }
 
         return section_map.get(page_type, section_map["guide"])
 
     def _infer_schema(self, page_type: str | None) -> str:
-        """Infer schema type based on page type."""
+        """Infer schema type based on page type or blueprint key."""
         page_type = page_type or "guide"
 
         schema_map = {
+            # Legacy page types
             "guide": "Article",
             "how-to": "HowTo",
             "comparison": "Article",
@@ -435,6 +466,13 @@ class Step13TemplatesService(BaseStepService[TemplatesInput, TemplatesOutput]):
             "landing": "Product",
             "tool": "SoftwareApplication",
             "glossary": "DefinedTerm",
+            # Blueprint keys
+            "best-x-for-y": "ItemList",
+            "use-case": "Article",
+            "industry": "Article",
+            "template": "HowTo",
+            "statistics": "Article",
+            "checklist": "HowTo",
         }
 
         return schema_map.get(page_type, "Article")

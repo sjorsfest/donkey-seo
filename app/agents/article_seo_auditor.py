@@ -45,6 +45,7 @@ class ArticleSEOAuditorInput(BaseModel):
     deterministic_audit: dict
     content_type_module: str
     risk_module_applied: bool
+    blueprint_key: str = ""
 
 
 class ArticleSEOAuditorOutput(BaseModel):
@@ -95,14 +96,32 @@ Output structured JSON only."""
             extra={
                 "content_type_module": input_data.content_type_module,
                 "risk_module_applied": input_data.risk_module_applied,
+                "blueprint_key": input_data.blueprint_key,
             },
         )
+
+        blueprint_block = ""
+        if input_data.blueprint_key:
+            from app.services.blueprints import BLUEPRINT_REGISTRY
+
+            blueprint = BLUEPRINT_REGISTRY.get(input_data.blueprint_key)
+            if blueprint:
+                quality_rules = "\n".join(f"- {r}" for r in blueprint.quality_rules)
+                common_mistakes = "\n".join(f"- {m}" for m in blueprint.common_mistakes)
+                blueprint_block = (
+                    f"## Blueprint Quality Rules ({input_data.blueprint_key})\n"
+                    f"{quality_rules}\n\n"
+                    f"## Blueprint Common Mistakes to Flag\n"
+                    f"{common_mistakes}\n\n"
+                )
+
         return (
             "Audit this generated article and return structured findings.\n\n"
             "## Content-Type Module\n"
             f"{input_data.content_type_module}\n\n"
             "## Risk Module Applied\n"
             f"{input_data.risk_module_applied}\n\n"
+            f"{blueprint_block}"
             "## Content Brief\n"
             f"{json.dumps(input_data.brief, indent=2, ensure_ascii=True)}\n\n"
             "## Writer Instructions\n"

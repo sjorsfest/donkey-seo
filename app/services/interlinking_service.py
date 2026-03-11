@@ -80,6 +80,26 @@ class InterlinkingService:
         ("navigational", "transactional"): 0.3,
     }
 
+    # Content hierarchy compatibility (source_role -> target_role)
+    HIERARCHY_SCORES: dict[tuple[str, str], float] = {
+        ("pillar", "supporting"): 1.0,
+        ("supporting", "pillar"): 0.9,
+        ("supporting", "high_intent"): 0.85,
+        ("high_intent", "pillar"): 0.7,
+        ("pillar", "high_intent"): 0.65,
+        ("high_intent", "supporting"): 0.6,
+        ("pillar", "pillar"): 0.4,
+        ("supporting", "supporting"): 0.5,
+        ("high_intent", "high_intent"): 0.5,
+    }
+
+    # Weights when hierarchy data is available
+    WEIGHT_COSINE_WITH_HIERARCHY = 0.40
+    WEIGHT_INTENT_WITH_HIERARCHY = 0.15
+    WEIGHT_FUNNEL_WITH_HIERARCHY = 0.15
+    WEIGHT_KEYWORD_WITH_HIERARCHY = 0.15
+    WEIGHT_HIERARCHY = 0.15
+
     # Funnel stage compatibility (source -> target)
     FUNNEL_SCORES = {
         # Natural progression (TOFU -> MOFU -> BOFU)
@@ -567,13 +587,28 @@ class InterlinkingService:
                 target_brief=target_brief,
             )
 
-            # Calculate composite relevance score
-            relevance_score = (
-                self.WEIGHT_COSINE * cosine_score
-                + self.WEIGHT_INTENT * intent_score
-                + self.WEIGHT_FUNNEL * funnel_score
-                + self.WEIGHT_KEYWORD * keyword_score
-            )
+            # Calculate composite relevance score (hierarchy-aware when available)
+            source_role = getattr(source_brief, "content_role", None) or ""
+            target_role = getattr(target_brief, "content_role", None) or ""
+
+            if source_role and target_role:
+                hierarchy_score = self.HIERARCHY_SCORES.get(
+                    (source_role, target_role), 0.5
+                )
+                relevance_score = (
+                    self.WEIGHT_COSINE_WITH_HIERARCHY * cosine_score
+                    + self.WEIGHT_INTENT_WITH_HIERARCHY * intent_score
+                    + self.WEIGHT_FUNNEL_WITH_HIERARCHY * funnel_score
+                    + self.WEIGHT_KEYWORD_WITH_HIERARCHY * keyword_score
+                    + self.WEIGHT_HIERARCHY * hierarchy_score
+                )
+            else:
+                relevance_score = (
+                    self.WEIGHT_COSINE * cosine_score
+                    + self.WEIGHT_INTENT * intent_score
+                    + self.WEIGHT_FUNNEL * funnel_score
+                    + self.WEIGHT_KEYWORD * keyword_score
+                )
 
             # Generate anchor text
             anchor_text = self._generate_anchor_text(

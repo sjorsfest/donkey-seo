@@ -176,6 +176,7 @@ class ArticleGenerationService:
                 topic_anchor=self._topic_anchor(brief=brief, document=document),
                 page_type=brief.get("page_type"),
                 search_intent=brief.get("search_intent"),
+                blueprint_key=brief.get("blueprint_key"),
                 required_sections=required_sections,
                 forbidden_claims=forbidden_claims,
                 target_word_count_min=brief.get("target_word_count_min"),
@@ -259,6 +260,7 @@ class ArticleGenerationService:
                     },
                     content_type_module=deterministic_report.content_type_module,
                     risk_module_applied=deterministic_report.risk_module_applied,
+                    blueprint_key=str(brief.get("blueprint_key") or ""),
                 )
             )
             return audit_output.model_dump()

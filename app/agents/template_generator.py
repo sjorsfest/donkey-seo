@@ -241,6 +241,7 @@ class BriefDeltaGeneratorInput(BaseModel):
     page_type: str = Field(description="Page type (guide, comparison, list, etc.)")
     search_intent: str = Field(description="Search intent")
     funnel_stage: str = Field(description="TOFU, MOFU, or BOFU")
+    blueprint_key: str = Field(default="", description="Page type blueprint key from registry")
 
 
 class BriefDeltaGeneratorOutput(BaseModel):
@@ -302,23 +303,50 @@ Be concise - only include what's DIFFERENT from a standard article."""
                 "page_type": input_data.page_type,
                 "search_intent": input_data.search_intent,
                 "funnel_stage": input_data.funnel_stage,
+                "blueprint_key": input_data.blueprint_key,
             },
         )
         brief = input_data.brief_summary
+
+        blueprint_block = ""
+        if input_data.blueprint_key:
+            from app.services.blueprints import BLUEPRINT_REGISTRY, serialize_blueprint_sections
+
+            blueprint = BLUEPRINT_REGISTRY.get(input_data.blueprint_key)
+            if blueprint:
+                sections_text = "\n".join(
+                    f"- **{s['name']}**: {s['purpose']}"
+                    for s in serialize_blueprint_sections(blueprint)
+                )
+                quality_rules = "\n".join(f"- {r}" for r in blueprint.quality_rules)
+                blueprint_block = f"""
+## Blueprint: {blueprint.label}
+{blueprint.description}
+
+### Required Sections
+{sections_text}
+
+### Quality Rules
+{quality_rules}
+
+### Schema Type
+{blueprint.schema_type}
+"""
 
         return f"""Generate page-type specific instructions for this brief:
 
 ## Brief Details
 - **Primary Keyword**: {brief.get('primary_keyword', 'Unknown')}
 - **Page Type**: {input_data.page_type}
+- **Blueprint**: {input_data.blueprint_key or 'None'}
 - **Search Intent**: {input_data.search_intent}
 - **Funnel Stage**: {input_data.funnel_stage}
 - **Topic Name**: {brief.get('topic_name', 'Unknown')}
-
+{blueprint_block}
 ---
 
 Provide ONLY the delta (additions to base style guide):
-1. Page-type specific rules
+1. Page-type specific rules (informed by blueprint if available)
 2. Required sections for this content type
 3. Heading structure requirements
 4. Appropriate schema type
