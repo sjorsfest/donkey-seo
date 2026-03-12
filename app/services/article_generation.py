@@ -965,6 +965,8 @@ class ArticleGenerationService:
                 block["items"] = self._items_from_table_rows(block["table_rows"])
             if block_type == "faq" and not block["faq_items"]:
                 block["faq_items"] = self._faq_items_from_table_rows(block["table_rows"])
+            if block_type == "sources":
+                self._normalize_sources_block(block)
             normalized.append(block)
 
         if hero_count == 0:
@@ -987,6 +989,59 @@ class ArticleGenerationService:
             )
 
         return normalized
+
+    def _normalize_sources_block(self, block: dict[str, Any]) -> None:
+        links = self._normalize_source_links(raw_links=_as_list(block.get("links")))
+        block["links"] = links
+        block["items"] = []
+        if not str(block.get("heading") or "").strip():
+            block["heading"] = "Sources and Further Reading"
+
+    def _normalize_source_links(
+        self,
+        *,
+        raw_links: list[Any],
+    ) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def _add(anchor: str, href: str) -> None:
+            normalized_href = self._normalize_source_href(href)
+            if not normalized_href:
+                return
+            normalized_anchor = anchor.strip() or self._fallback_anchor_from_href(normalized_href)
+            key = self._link_key(href=normalized_href, anchor=normalized_anchor)
+            if key in seen:
+                return
+            seen.add(key)
+            normalized.append({"anchor": normalized_anchor, "href": normalized_href})
+
+        for raw_link in raw_links:
+            if not isinstance(raw_link, dict):
+                continue
+            _add(
+                anchor=str(raw_link.get("anchor") or raw_link.get("label") or ""),
+                href=str(raw_link.get("href") or ""),
+            )
+
+        return normalized
+
+    def _normalize_source_href(self, href: str) -> str:
+        candidate = href.strip().strip("()[]{}<>,.;:\"'")
+        if not candidate:
+            return ""
+
+        lowered = candidate.lower()
+        if lowered.startswith(("#", "mailto:", "tel:", "javascript:")):
+            return ""
+
+        with_scheme = candidate if "://" in candidate else f"https://{candidate.lstrip('/')}"
+        parsed = urlparse(with_scheme)
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+        if not parsed.netloc:
+            return ""
+        return with_scheme
 
     def _required_sections(self, brief: dict[str, Any], brief_delta: dict[str, Any]) -> list[str]:
         required: list[str] = []

@@ -160,6 +160,63 @@ def test_normalize_document_adds_faqpage_structured_data_from_faq_blocks() -> No
     assert faq_schema["mainEntity"][0]["acceptedAnswer"]["text"] == "An SEO platform."
 
 
+def test_normalize_document_sources_uses_links_only_and_clears_items() -> None:
+    service = ArticleGenerationService("donkey.support")
+
+    document = {
+        "schema_version": "1.0",
+        "seo_meta": {
+            "h1": "Helpdesk Pricing",
+            "meta_title": "Helpdesk Pricing",
+            "meta_description": "Helpdesk pricing overview",
+            "slug": "helpdesk-pricing",
+            "primary_keyword": "helpdesk pricing",
+        },
+        "conversion_plan": {},
+        "blocks": [
+            {
+                "block_type": "sources",
+                "semantic_tag": "section",
+                "heading": "Sources",
+                "items": [
+                    (
+                        "Intercom pricing page (intercom.com/pricing) "
+                        "– referenced for entry-level plan costs"
+                    ),
+                    (
+                        "Freshdesk pricing overview "
+                        "(https://www.freshworks.com/freshdesk/pricing/)"
+                    ),
+                ],
+                "links": [
+                    {
+                        "anchor": "Chatwoot open-source repository",
+                        "href": "github.com/chatwoot/chatwoot",
+                    }
+                ],
+            }
+        ],
+    }
+    brief = {
+        "primary_keyword": "helpdesk pricing",
+        "funnel_stage": "tofu",
+        "money_page_links": [],
+    }
+
+    normalized = service._normalize_document(document, brief, {}, [])
+    sources_block = next(
+        block for block in normalized["blocks"] if block.get("block_type") == "sources"
+    )
+
+    assert sources_block["items"] == []
+    assert sources_block["links"] == [
+        {
+            "anchor": "Chatwoot open-source repository",
+            "href": "https://github.com/chatwoot/chatwoot",
+        },
+    ]
+
+
 def test_normalize_document_removes_stale_faqpage_structured_data() -> None:
     service = ArticleGenerationService("donkey.support")
 

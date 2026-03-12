@@ -61,7 +61,8 @@ Hard requirements:
 13. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
 14. CRITICAL: Naturally incorporate supporting keywords from the brief throughout the article. Use multiple supporting keywords where contextually relevant - they should appear organically in headings, body text, lists, and tables. Do not force them, but ensure several supporting keywords are used across different sections.
 15. Never use em dashes (—); use commas, periods, or parentheses instead.
-16. If you include source-dependent claims (prices, percentages, statistics, or "according to" statements), add a non-empty sources block that lists the supporting sources with proper links.
+16. If you include source-dependent claims (prices, percentages, statistics, or "according to" statements), add a non-empty sources block that stores citations only in block.links.
+17. In sources blocks, every link object MUST include both non-empty "anchor" and "href" values, and source entries must not be placed in items/body text.
 
 Writing quality:
 - Clear, practical, and audience-aligned.
