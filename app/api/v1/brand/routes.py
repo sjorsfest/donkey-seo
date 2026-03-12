@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
+from app.agents.brand_extractor import (
+    BrandExtractorAgent,
+    BrandExtractorInput,
+    BrandProfile as ExtractedBrandProfile,
+)
 from app.api.v1.brand.constants import (
     BRAND_ASSET_NOT_FOUND_DETAIL,
     BRAND_PROFILE_NOT_FOUND_DETAIL,
@@ -16,8 +22,9 @@ from app.api.v1.dependencies import get_user_project
 from app.core.ids import generate_cuid
 from app.dependencies import CurrentUser, DbSession
 from app.integrations.asset_store import BrandAssetStore
+from app.integrations.scraper import scrape_website
 from app.models.brand import BrandProfile
-from app.models.generated_dtos import BrandProfilePatchDTO
+from app.models.generated_dtos import BrandProfileCreateDTO, BrandProfilePatchDTO
 from app.schemas.brand import (
     BrandAssetAddRequest,
     BrandAssetIngestRequest,
@@ -29,12 +36,20 @@ from app.schemas.brand import (
     BrandProductServiceMetadata,
     BrandAssetSignedReadUrlResponse,
     BrandSuggestedICPNiche,
+    BrandScrapeRefreshRequest,
+    BrandScrapeRefreshResponse,
     BrandVisualContextResponse,
     BrandVisualStylePatchRequest,
 )
-from app.services.steps.setup.brand_shared import normalize_prompt_contract
+from app.services.steps.setup.brand_shared import (
+    build_extracted_target_audience,
+    normalize_prompt_contract,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_MAX_BRAND_REFRESH_EXTRACTION_ATTEMPTS = 3
 
 
 @router.get(
@@ -52,6 +67,149 @@ async def get_brand_visual_context(
     brand = await _get_brand_profile_or_404(project_id=project_id, session=session)
 
     return _to_visual_context_response(project_id=project_id, brand=brand)
+
+
+@router.post(
+    "/{project_id}/refresh-scrape",
+    response_model=BrandScrapeRefreshResponse,
+    summary="Refresh brand profile from live scrape",
+)
+async def refresh_brand_scrape(
+    project_id: str,
+    payload: BrandScrapeRefreshRequest,
+    current_user: CurrentUser,
+    session: DbSession,
+) -> BrandScrapeRefreshResponse:
+    """Re-scrape project domain and refresh extractor-driven brand fields."""
+    project = await get_user_project(project_id, current_user, session)
+    domain = str(project.domain or "").strip()
+    if not domain:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Project domain is required to refresh brand scrape.",
+        )
+
+    scraped_data = await scrape_website(domain, max_pages=payload.max_pages)
+    scrape_error = str(scraped_data.get("error") or "").strip()
+    if scrape_error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to scrape website: {scrape_error}",
+        )
+
+    scraped_content = str(scraped_data.get("combined_content") or "").strip()
+    if not scraped_content:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Scrape returned no website content to extract.",
+        )
+
+    extracted_profile, extraction_attempts, extraction_warnings = await _run_brand_extractor_with_retries(
+        domain=domain,
+        scraped_content=scraped_content,
+        additional_context=payload.additional_context,
+    )
+    extracted_target_audience = build_extracted_target_audience(extracted_profile.target_audience)
+    source_pages = _to_str_list(scraped_data.get("source_urls"))
+    products_services = [
+        {
+            "name": str(product.name or "").strip(),
+            "description": _to_optional_str(product.description),
+            "category": _to_optional_str(product.category),
+            "target_audience": _to_optional_str(product.target_audience),
+            "core_benefits": _to_str_list(product.core_benefits),
+        }
+        for product in list(extracted_profile.products_services or [])
+        if str(product.name or "").strip()
+    ]
+    money_pages = [
+        {"url": url, "purpose": "conversion"}
+        for url in _to_str_list(extracted_profile.money_pages)
+    ]
+
+    existing_result = await session.execute(
+        select(BrandProfile).where(BrandProfile.project_id == project_id)
+    )
+    brand = existing_result.scalar_one_or_none()
+    preserved_icp_niches = [
+        item
+        for item in list((brand.suggested_icp_niches if brand else []) or [])
+        if isinstance(item, dict)
+    ]
+    refresh_payload: dict[str, Any] = {
+        "raw_content": scraped_content,
+        "source_pages": source_pages,
+        "company_name": extracted_profile.company_name,
+        "tagline": extracted_profile.tagline,
+        "products_services": products_services,
+        "money_pages": money_pages,
+        "unique_value_props": _to_str_list(extracted_profile.unique_value_props),
+        "differentiators": _to_str_list(extracted_profile.differentiators),
+        "target_roles": extracted_target_audience.get("target_roles", []),
+        "target_industries": extracted_target_audience.get("target_industries", []),
+        "company_sizes": extracted_target_audience.get("company_sizes", []),
+        "primary_pains": extracted_target_audience.get("primary_pains", []),
+        "desired_outcomes": extracted_target_audience.get("desired_outcomes", []),
+        "objections": extracted_target_audience.get("objections", []),
+        "tone_attributes": _to_str_list(extracted_profile.tone_attributes),
+        "allowed_claims": _to_str_list(extracted_profile.allowed_claims),
+        "restricted_claims": _to_str_list(extracted_profile.restricted_claims),
+        "in_scope_topics": _to_str_list(extracted_profile.in_scope_topics),
+        "out_of_scope_topics": _to_str_list(extracted_profile.out_of_scope_topics),
+        "suggested_icp_niches": (
+            []
+            if payload.clear_suggested_icp_niches
+            else preserved_icp_niches
+        ),
+        "extraction_model": "BrandExtractorAgent",
+        "extraction_confidence": float(extracted_profile.extraction_confidence),
+    }
+
+    if brand:
+        brand.patch(
+            session,
+            BrandProfilePatchDTO.from_partial(refresh_payload),
+        )
+    else:
+        brand = BrandProfile.create(
+            session,
+            BrandProfileCreateDTO(
+                project_id=str(project_id),
+                raw_content=scraped_content,
+                source_pages=source_pages,
+                products_services=products_services,
+                money_pages=money_pages,
+                company_name=extracted_profile.company_name,
+                tagline=extracted_profile.tagline,
+                unique_value_props=_to_str_list(extracted_profile.unique_value_props),
+                differentiators=_to_str_list(extracted_profile.differentiators),
+                target_roles=extracted_target_audience.get("target_roles", []),
+                target_industries=extracted_target_audience.get("target_industries", []),
+                company_sizes=extracted_target_audience.get("company_sizes", []),
+                primary_pains=extracted_target_audience.get("primary_pains", []),
+                desired_outcomes=extracted_target_audience.get("desired_outcomes", []),
+                objections=extracted_target_audience.get("objections", []),
+                suggested_icp_niches=[],
+                tone_attributes=_to_str_list(extracted_profile.tone_attributes),
+                allowed_claims=_to_str_list(extracted_profile.allowed_claims),
+                restricted_claims=_to_str_list(extracted_profile.restricted_claims),
+                in_scope_topics=_to_str_list(extracted_profile.in_scope_topics),
+                out_of_scope_topics=_to_str_list(extracted_profile.out_of_scope_topics),
+                extraction_model="BrandExtractorAgent",
+                extraction_confidence=float(extracted_profile.extraction_confidence),
+            ),
+        )
+
+    await session.flush()
+    await session.refresh(brand)
+
+    visual_context = _to_visual_context_response(project_id=project_id, brand=brand)
+    return BrandScrapeRefreshResponse(
+        **visual_context.model_dump(),
+        extraction_attempts=extraction_attempts,
+        extraction_warnings=extraction_warnings,
+        refreshed_at=datetime.now(timezone.utc),
+    )
 
 
 @router.post(
@@ -393,6 +551,126 @@ def _asset_models(raw_assets: list[dict] | None) -> list[BrandAssetMetadata]:
             continue
         models.append(BrandAssetMetadata.model_validate(asset))
     return models
+
+
+def _has_non_empty_strings(values: list[str]) -> bool:
+    return any(str(value).strip() for value in values)
+
+
+def _has_product_signals(products_services: list[Any]) -> bool:
+    for product in products_services:
+        name = str(getattr(product, "name", "") or "").strip()
+        description = str(getattr(product, "description", "") or "").strip()
+        if name or description:
+            return True
+    return False
+
+
+def _has_icp_signals(extracted_target_audience: dict[str, list[str]]) -> bool:
+    return any(
+        _has_non_empty_strings(extracted_target_audience.get(key, []))
+        for key in (
+            "target_roles",
+            "target_industries",
+            "company_sizes",
+            "primary_pains",
+            "desired_outcomes",
+            "objections",
+        )
+    )
+
+
+def _brand_quality_issues(
+    *,
+    unique_value_props: list[str],
+    differentiators: list[str],
+    products_services: list[Any],
+    extracted_target_audience: dict[str, list[str]],
+) -> list[str]:
+    issues: list[str] = []
+    has_positioning = (
+        _has_non_empty_strings(unique_value_props)
+        or _has_non_empty_strings(differentiators)
+    )
+    if not has_positioning:
+        issues.append("missing_positioning")
+
+    has_products = _has_product_signals(products_services)
+    has_icp_signals = _has_icp_signals(extracted_target_audience)
+    if not has_products and not has_icp_signals:
+        issues.append("missing_product_and_icp_signals")
+
+    return issues
+
+
+async def _run_brand_extractor_with_retries(
+    *,
+    domain: str,
+    scraped_content: str,
+    additional_context: str | None,
+) -> tuple[ExtractedBrandProfile, int, list[str]]:
+    agent = BrandExtractorAgent()
+    extraction_attempts = 0
+    extraction_warnings: list[str] = []
+    extracted_profile: ExtractedBrandProfile | None = None
+
+    for attempt in range(1, _MAX_BRAND_REFRESH_EXTRACTION_ATTEMPTS + 1):
+        extraction_attempts = attempt
+        try:
+            candidate = await agent.run(
+                BrandExtractorInput(
+                    domain=domain,
+                    scraped_content=scraped_content,
+                    additional_context=additional_context,
+                )
+            )
+        except Exception as exc:
+            extraction_warnings.append(
+                f"attempt_{attempt}:agent_error:{exc.__class__.__name__}"
+            )
+            if attempt < _MAX_BRAND_REFRESH_EXTRACTION_ATTEMPTS:
+                logger.warning(
+                    "Brand scrape refresh extraction attempt failed; retrying",
+                    extra={
+                        "domain": domain,
+                        "attempt": attempt,
+                        "max_attempts": _MAX_BRAND_REFRESH_EXTRACTION_ATTEMPTS,
+                    },
+                )
+                continue
+            break
+
+        candidate_target_audience = build_extracted_target_audience(candidate.target_audience)
+        quality_issues = _brand_quality_issues(
+            unique_value_props=list(candidate.unique_value_props or []),
+            differentiators=list(candidate.differentiators or []),
+            products_services=list(candidate.products_services or []),
+            extracted_target_audience=candidate_target_audience,
+        )
+        extracted_profile = candidate
+        if not quality_issues:
+            break
+
+        issue_text = ",".join(quality_issues)
+        extraction_warnings.append(f"attempt_{attempt}:low_signal:{issue_text}")
+        if attempt < _MAX_BRAND_REFRESH_EXTRACTION_ATTEMPTS:
+            logger.warning(
+                "Brand scrape refresh extraction quality below threshold; retrying",
+                extra={
+                    "domain": domain,
+                    "attempt": attempt,
+                    "max_attempts": _MAX_BRAND_REFRESH_EXTRACTION_ATTEMPTS,
+                    "issues": quality_issues,
+                },
+            )
+
+    if extracted_profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Brand extraction failed after retries.",
+        )
+
+    return extracted_profile, extraction_attempts, extraction_warnings
 
 
 def _product_models(raw_products: list[dict] | None) -> list[BrandProductServiceMetadata]:

@@ -16,6 +16,7 @@ from app.api.v1.brand.routes import (
 from app.schemas.brand import (
     BrandAssetAddRequest,
     BrandAssetIngestRequest,
+    BrandScrapeRefreshRequest,
     BrandAssetSignedUploadRequest,
 )
 
@@ -133,6 +134,17 @@ def test_brand_asset_ingest_request_rejects_non_http_url() -> None:
 def test_brand_asset_signed_upload_request_rejects_non_image_content_type() -> None:
     with pytest.raises(ValueError):
         BrandAssetSignedUploadRequest(content_type="application/pdf")
+
+
+def test_brand_scrape_refresh_request_validates_max_pages_bounds() -> None:
+    payload = BrandScrapeRefreshRequest()
+    assert payload.max_pages == 10
+
+    with pytest.raises(ValueError):
+        BrandScrapeRefreshRequest(max_pages=0)
+
+    with pytest.raises(ValueError):
+        BrandScrapeRefreshRequest(max_pages=51)
 
 
 def test_find_asset_by_sha_ignores_excluded_asset_id() -> None:

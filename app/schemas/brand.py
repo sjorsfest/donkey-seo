@@ -80,6 +80,34 @@ class BrandVisualContextResponse(BaseModel):
     visual_last_synced_at: datetime | None = None
 
 
+class BrandScrapeRefreshRequest(BaseModel):
+    """Request payload for re-scraping and refreshing extracted brand fields."""
+
+    max_pages: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of pages to scrape from the project domain.",
+    )
+    additional_context: str | None = Field(
+        default=None,
+        max_length=4000,
+        description="Optional context appended to the BrandExtractorAgent prompt.",
+    )
+    clear_suggested_icp_niches: bool = Field(
+        default=True,
+        description="Reset suggested ICP niches while refreshing extractor-driven fields.",
+    )
+
+
+class BrandScrapeRefreshResponse(BrandVisualContextResponse):
+    """Response payload for a scrape + extractor refresh operation."""
+
+    extraction_attempts: int = Field(ge=1)
+    extraction_warnings: list[str] = Field(default_factory=list)
+    refreshed_at: datetime
+
+
 class BrandAssetIngestRequest(BaseModel):
     """Manual URL-based asset ingestion request."""
 
