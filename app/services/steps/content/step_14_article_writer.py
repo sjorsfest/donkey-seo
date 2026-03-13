@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 ARTICLE_QUOTA_EXHAUSTED_ERROR = (
     "Article quota exhausted: no remaining article capacity in the current usage window."
 )
-ALLOWED_PILLAR_SLUGS = {"blog", "tools", "guides"}
+ALLOWED_PILLAR_SLUGS = {"learn", "compare", "guides", "resources"}
 
 
 @dataclass
@@ -522,7 +522,7 @@ class Step14ArticleWriterService(BaseStepService[ArticleWriterInput, ArticleWrit
         if missing_primary_brief_ids:
             raise ValueError(
                 "Cannot generate article: missing valid primary pillar assignment "
-                f"(allowed: blog/tools/guides) for briefs: {', '.join(missing_primary_brief_ids[:5])}"
+                f"(allowed: learn/compare/guides/resources) for briefs: {', '.join(missing_primary_brief_ids[:5])}"
             )
 
     async def _load_existing_article_brief_ids(self, briefs: list[ContentBrief]) -> set[str]:
