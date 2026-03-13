@@ -36,6 +36,8 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
     model: str | None = None
     temperature: float = 0.7
     max_retries: int = settings.llm_max_retries
+    # Optional model settings (e.g. max_tokens). Subclasses can override.
+    model_settings: dict[str, Any] | None = None
 
     def __init__(self, model_override: str | None = None) -> None:
         """Initialize the agent.
@@ -91,6 +93,7 @@ class BaseAgent(ABC, Generic[InputT, OutputT]):
                     output_type=self.output_type,
                     system_prompt=self._build_system_prompt(),
                     retries=self.max_retries,
+                    model_settings=self.model_settings,
                 ),
             )
             self._setup_tools()

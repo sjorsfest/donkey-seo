@@ -174,12 +174,12 @@ def test_arena_leaderboard_use_case_fallback_parser() -> None:
 def test_alias_matching_resolves_arena_name_to_candidate() -> None:
     """Alias matcher maps Arena display names to OpenRouter IDs."""
     candidates = [
-        "openrouter:anthropic/claude-sonnet-4-5",
+        "openrouter:anthropic/claude-sonnet-4-6",
         "openrouter:google/gemma-3-27b-it:free",
     ]
 
-    matched = resolve_arena_model_to_candidate("Claude Sonnet 4.5", candidates)
-    assert matched == "openrouter:anthropic/claude-sonnet-4-5"
+    matched = resolve_arena_model_to_candidate("Claude Sonnet 4.6", candidates)
+    assert matched == "openrouter:anthropic/claude-sonnet-4-6"
 
 
 def test_scoring_without_arena_signal_prefers_openrouter_rank() -> None:

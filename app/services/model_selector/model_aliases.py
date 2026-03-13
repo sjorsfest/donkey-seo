@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 _ALIAS_MAP: dict[str, str] = {
-    "claude sonnet 4.5": "anthropic claude sonnet 4 5",
+    "claude sonnet 4.6": "anthropic claude sonnet 4 6",
     "claude 3.7 sonnet": "anthropic claude 3 7 sonnet",
     "gemini 2.5 pro": "google gemini 2 5 pro",
     "gemini 2.5 flash": "google gemini 2 5 flash",

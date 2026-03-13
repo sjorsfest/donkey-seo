@@ -103,7 +103,7 @@ class ArticleGenerationService:
         brand_context: str,
         conversion_intents: list[str],
     ) -> GeneratedArticleArtifact:
-        """Generate article and run one hybrid QA audit pass."""
+        """Generate article, check for thin content, then run one repair pass if QA fails."""
         writer_agent = ArticleWriterAgent()
         seo_auditor = ArticleSEOAuditorAgent()
 
@@ -128,10 +128,12 @@ class ArticleGenerationService:
         first_party_domain = self._normalize_domain(self.target_domain)
         link_validation_cache: dict[str, bool] = {}
 
-        async with httpx.AsyncClient(
-            timeout=_LINK_VALIDATION_TIMEOUT_SECONDS,
-            follow_redirects=True,
-        ) as link_client:
+        async def _run_writer(
+            qa_feedback: list[str],
+            existing_document: dict[str, Any] | None,
+            client: httpx.AsyncClient,
+        ) -> tuple[dict[str, Any], str]:
+            """Run the writer agent and return (normalized_document, rendered_html)."""
             output = await writer_agent.run(
                 input_data=ArticleWriterInput(
                     brief=brief,
@@ -140,26 +142,32 @@ class ArticleGenerationService:
                     brand_context=brand_context,
                     conversion_intents=conversion_intents,
                     target_domain=self.target_domain,
-                    qa_feedback=[],
-                    existing_document=None,
+                    qa_feedback=qa_feedback,
+                    existing_document=existing_document,
                 )
             )
-            document = self._normalize_document(
+            doc = self._normalize_document(
                 output.document.model_dump(),
                 brief,
                 writer_instructions,
                 conversion_intents,
             )
-            document = self._apply_brief_internal_link_plan(document=document, brief=brief)
-            document = await self._filter_invalid_document_links(
-                document=document,
+            doc = self._apply_brief_internal_link_plan(document=doc, brief=brief)
+            doc = await self._filter_invalid_document_links(
+                document=doc,
                 link_cache=link_validation_cache,
-                client=link_client,
+                client=client,
             )
-            rendered_html = render_modular_document(document)
+            return doc, render_modular_document(doc)
+
+        async def _run_qa(
+            doc: dict[str, Any],
+            html: str,
+        ) -> tuple[dict[str, Any], list[str]]:
+            """Run full QA pipeline and return (qa_report, revision_feedback)."""
             base_qa_report = evaluate_article_quality(
-                document,
-                rendered_html,
+                doc,
+                html,
                 required_sections=required_sections,
                 forbidden_claims=forbidden_claims,
                 target_word_count_min=brief.get("target_word_count_min"),
@@ -170,10 +178,10 @@ class ArticleGenerationService:
                 first_party_domain=first_party_domain,
             )
             deterministic_report = run_deterministic_checklist(
-                document,
-                rendered_html,
+                doc,
+                html,
                 primary_keyword=str(brief.get("primary_keyword") or ""),
-                topic_anchor=self._topic_anchor(brief=brief, document=document),
+                topic_anchor=self._topic_anchor(brief=brief, document=doc),
                 page_type=brief.get("page_type"),
                 search_intent=brief.get("search_intent"),
                 blueprint_key=brief.get("blueprint_key"),
@@ -193,7 +201,7 @@ class ArticleGenerationService:
                     str(brief.get("target_audience") or ""),
                     str(brief.get("reader_job_to_be_done") or ""),
                     str(brand_context or ""),
-                    str(_as_dict(document.get("seo_meta")).get("h1") or ""),
+                    str(_as_dict(doc.get("seo_meta")).get("h1") or ""),
                 ],
                 keyword_density_soft_min=density_soft_min,
                 keyword_density_soft_max=density_soft_max,
@@ -202,19 +210,66 @@ class ArticleGenerationService:
                 auditor=seo_auditor,
                 brief=brief,
                 writer_instructions=writer_instructions,
-                document=document,
+                document=doc,
                 deterministic_report=deterministic_report,
             )
-            qa_report = self._merge_qa_reports(
+            report = self._merge_qa_reports(
                 base_qa_report=base_qa_report,
                 deterministic_report=deterministic_report,
                 llm_audit=llm_audit,
                 seo_score_target=seo_score_target,
             )
-            revision_feedback = self._build_revision_feedback(qa_report, brief)
-            seo_audit = _as_dict(qa_report.get("seo_audit"))
-            seo_audit["revision_feedback"] = revision_feedback
-            qa_report["seo_audit"] = seo_audit
+            feedback = self._build_revision_feedback(report, brief)
+            seo_audit = _as_dict(report.get("seo_audit"))
+            seo_audit["revision_feedback"] = feedback
+            report["seo_audit"] = seo_audit
+            return report, feedback
+
+        async with httpx.AsyncClient(
+            timeout=_LINK_VALIDATION_TIMEOUT_SECONDS,
+            follow_redirects=True,
+        ) as link_client:
+            # First generation pass
+            document, rendered_html = await _run_writer(
+                qa_feedback=[],
+                existing_document=None,
+                client=link_client,
+            )
+
+            # Fail loudly if the model returned a near-empty stub
+            content_blocks = [
+                b for b in _as_list(document.get("blocks"))
+                if isinstance(b, dict)
+                and b.get("block_type") not in {"hero", "cta", "sources"}
+            ]
+            if len(content_blocks) < 2:
+                raise ValueError(
+                    f"Article generation produced thin content: only {len(content_blocks)} "
+                    f"content block(s) generated for '{brief.get('primary_keyword')}'. "
+                    "The model likely hit a token limit or failed structured output validation."
+                )
+
+            qa_report, revision_feedback = await _run_qa(document, rendered_html)
+
+            # One repair pass if there are hard QA failures
+            if not qa_report.get("passed") and revision_feedback:
+                logger.info(
+                    "Hard QA failures detected, running one repair pass",
+                    extra={
+                        "primary_keyword": brief.get("primary_keyword"),
+                        "hard_failures": _as_list(
+                            _as_dict(qa_report.get("seo_audit")).get("hard_failures")
+                        )[:5],
+                    },
+                )
+                repaired_document, repaired_html = await _run_writer(
+                    qa_feedback=revision_feedback,
+                    existing_document=document,
+                    client=link_client,
+                )
+                qa_report, revision_feedback = await _run_qa(repaired_document, repaired_html)
+                document = repaired_document
+                rendered_html = repaired_html
 
             seo_meta = _as_dict(document.get("seo_meta"))
             return GeneratedArticleArtifact(

@@ -72,15 +72,6 @@ class ArticleBlockResult(BaseModel):
     cta: CTAData | None = None
     links: list[BlockLink] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def _require_summary_body(self) -> "ArticleBlockResult":
-        if self.block_type != "summary":
-            return self
-        if not (self.body or "").strip():
-            raise ValueError(
-                "summary blocks must include a short non-empty body so it can be reused as an excerpt"
-            )
-        return self
 
 
 class ArticleSEOMeta(BaseModel):
@@ -192,12 +183,15 @@ class ArticleWriterAgent(BaseAgent[ArticleWriterInput, ArticleWriterOutput]):
         super().__init__(model_override)
         # Import here to avoid circular dependencies
         from app.agents.article_metadata_agent import ArticleMetadataAgent, ArticleMetadataInput
+        from app.agents.article_summary_agent import ArticleSummaryAgent, ArticleSummaryInput
         from app.agents.content_blocks_agent import ContentBlocksAgent, ContentBlocksInput
 
         self._content_blocks_agent = ContentBlocksAgent(model_override)
         self._metadata_agent = ArticleMetadataAgent(model_override)
+        self._summary_agent = ArticleSummaryAgent(model_override)
         self._ContentBlocksInput = ContentBlocksInput
         self._ArticleMetadataInput = ArticleMetadataInput
+        self._ArticleSummaryInput = ArticleSummaryInput
 
     @property
     def system_prompt(self) -> str:
@@ -221,6 +215,7 @@ class ArticleWriterAgent(BaseAgent[ArticleWriterInput, ArticleWriterOutput]):
 
         Steps:
         1. Generate content blocks using ContentBlocksAgent
+        1.5. Generate summary excerpt using ArticleSummaryAgent (fast model)
         2. Generate metadata using ArticleMetadataAgent
         3. Combine into final ArticleDocumentResult
         """
@@ -246,16 +241,57 @@ class ArticleWriterAgent(BaseAgent[ArticleWriterInput, ArticleWriterOutput]):
             existing_document=input_data.existing_document,
         )
         content_output = await self._content_blocks_agent.run(content_input, context)
+        blocks = list(content_output.blocks)
 
         logger.info(
             "Content blocks generated",
-            extra={"blocks_count": len(content_output.blocks)},
+            extra={"blocks_count": len(blocks)},
         )
+
+        # Step 1.5: Generate summary excerpt unless the writer already included one
+        if not any(b.block_type == "summary" for b in blocks):
+            logger.info("Step 1.5: Generating summary excerpt")
+            h1 = next((b.heading or "" for b in blocks if b.block_type == "hero"), "")
+
+            # Serialize full article content so the summary reflects the whole piece
+            content_parts: list[str] = []
+            for block in blocks:
+                if block.block_type in {"hero", "cta", "sources", "summary"}:
+                    continue
+                if block.heading:
+                    content_parts.append(block.heading)
+                if block.body:
+                    content_parts.append(block.body)
+                if block.items:
+                    content_parts.append(" ".join(str(item) for item in block.items))
+                for faq in block.faq_items:
+                    content_parts.append(f"{faq.question} {faq.answer}")
+            article_content = "\n\n".join(content_parts)
+
+            summary_output = await self._summary_agent.run(
+                self._ArticleSummaryInput(
+                    h1=h1,
+                    primary_keyword=str(input_data.brief.get("primary_keyword") or ""),
+                    target_audience=str(input_data.brief.get("target_audience") or ""),
+                    article_content=article_content,
+                ),
+                context,
+            )
+            summary_block = ArticleBlockResult(
+                block_type="summary",
+                semantic_tag="section",
+                body=summary_output.body,
+            )
+            hero_idx = next(
+                (i for i, b in enumerate(blocks) if b.block_type == "hero"), -1
+            )
+            blocks.insert(hero_idx + 1 if hero_idx >= 0 else 0, summary_block)
+            logger.info("Summary block inserted", extra={"after_hero_idx": hero_idx})
 
         # Step 2: Generate metadata from blocks
         logger.info("Step 2: Generating SEO metadata and conversion plan")
         metadata_input = self._ArticleMetadataInput(
-            blocks=content_output.blocks,
+            blocks=blocks,
             brief=input_data.brief,
             conversion_intents=input_data.conversion_intents,
             target_domain=input_data.target_domain,
@@ -275,7 +311,7 @@ class ArticleWriterAgent(BaseAgent[ArticleWriterInput, ArticleWriterOutput]):
             schema_version="1.0",
             seo_meta=metadata_output.seo_meta,
             conversion_plan=metadata_output.conversion_plan,
-            blocks=content_output.blocks,
+            blocks=blocks,
         )
 
         logger.info("Article generation orchestration complete")

@@ -36,8 +36,9 @@ class ContentBlocksAgent(BaseAgent[ContentBlocksInput, ContentBlocksOutput]):
     """Generates structured content blocks for articles."""
 
     model_tier = "reasoning"
-    model = "openrouter:anthropic/claude-4.5-sonnet"
+    model = "openrouter:anthropic/claude-4.6-sonnet"
     temperature = 0.4
+    model_settings = {"max_tokens": 16384}
 
     @property
     def system_prompt(self) -> str:
@@ -49,20 +50,19 @@ Hard requirements:
 1. Use block types from the allowed enum only: hero, summary, section, list, comparison_table, steps, faq, cta, conclusion, sources.
 2. Use semantic_tag values that match the block intent (header, section, aside, footer, table).
 3. Include exactly one hero block with a descriptive heading.
-4. Include exactly one summary block with a short, non-empty body (1-2 sentences) that can be reused as an excerpt.
-5. Respect forbidden claims and compliance notes from the brief.
-6. Follow must-include sections from brief and delta, and cover the outline headings with substantive content.
-7. Keep the output conversion-oriented for the funnel stage and conversion intents.
-8. Add meaningful internal/external links inside block.links where appropriate.
-9. Never output raw HTML in body text.
-10. If QA feedback is provided, revise the draft to specifically fix those failures.
-11. If an existing document is provided, apply minimal targeted edits instead of rewriting from scratch.
-12. Preserve topic, search intent, and primary keyword strategy from the brief.
-13. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
-14. CRITICAL: Naturally incorporate supporting keywords from the brief throughout the article. Use multiple supporting keywords where contextually relevant - they should appear organically in headings, body text, lists, and tables. Do not force them, but ensure several supporting keywords are used across different sections.
-15. Never use em dashes (—); use commas, periods, or parentheses instead.
-16. If you include source-dependent claims (prices, percentages, statistics, or "according to" statements), add a non-empty sources block that stores citations only in block.links.
-17. In sources blocks, every link object MUST include both non-empty "anchor" and "href" values, and source entries must not be placed in items/body text.
+4. Respect forbidden claims and compliance notes from the brief.
+5. Follow must-include sections from brief and delta, and cover the outline headings with substantive content.
+6. Keep the output conversion-oriented for the funnel stage and conversion intents.
+7. Add meaningful internal/external links inside block.links where appropriate.
+8. Never output raw HTML in body text.
+9. If QA feedback is provided, revise the draft to specifically fix those failures.
+10. If an existing document is provided, apply minimal targeted edits instead of rewriting from scratch.
+11. Preserve topic, search intent, and primary keyword strategy from the brief.
+12. Prioritize the working title/topic; use the primary keyword naturally without forcing off-topic sections.
+13. CRITICAL: Naturally incorporate supporting keywords from the brief throughout the article. Use multiple supporting keywords where contextually relevant - they should appear organically in headings, body text, lists, and tables. Do not force them, but ensure several supporting keywords are used across different sections.
+14. Never use em dashes (—); use commas, periods, or parentheses instead.
+15. If you include source-dependent claims (prices, percentages, statistics, or "according to" statements), add a non-empty sources block that stores citations only in block.links.
+16. In sources blocks, every link object MUST include both non-empty "anchor" and "href" values, and source entries must not be placed in items/body text.
 
 Writing quality:
 - Clear, practical, and audience-aligned.
