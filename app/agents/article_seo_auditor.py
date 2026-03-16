@@ -200,7 +200,7 @@ class ArticleSEOAuditorAgent(BaseAgent[ArticleSEOAuditorInput, ArticleSEOAuditor
     """Evaluate generated article quality against SEO checklist modules."""
 
     model_tier = "reasoning"
-    model = "openrouter:anthropic/claude-4.6-sonnet"
+    model = "openrouter:google/gemini-3-flash-preview"
     temperature = 0.2
 
     @property

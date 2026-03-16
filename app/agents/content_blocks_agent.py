@@ -36,7 +36,7 @@ class ContentBlocksAgent(BaseAgent[ContentBlocksInput, ContentBlocksOutput]):
     """Generates structured content blocks for articles."""
 
     model_tier = "reasoning"
-    model = "openrouter:anthropic/claude-4.6-sonnet"
+    model = "openrouter:google/gemini-3-flash-preview"
     temperature = 0.4
     model_settings = {"max_tokens": 16384}
 
